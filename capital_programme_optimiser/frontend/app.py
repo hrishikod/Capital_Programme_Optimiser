@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import math
+import re
 import sys
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 
 from pathlib import Path
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -367,6 +370,449 @@ def compute_cash_axis_ticks(values: Iterable[float]) -> Tuple[List[float], List[
             tick_text.append(f"{val / unit_value:.0f}{unit_suffix}")
 
     return tick_vals, tick_text, unit_label
+
+def scale_series_to_nzd(series: pd.Series) -> pd.Series:
+    series = pd.to_numeric(series, errors="coerce")
+    return series.astype(float) * 1_000_000.0
+
+def series_from_df(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns or "Year" not in df.columns:
+        return pd.Series(dtype=float)
+    years = pd.to_numeric(df["Year"], errors="coerce")
+    values = pd.to_numeric(df[column], errors="coerce")
+    mask = years.notna()
+    if not mask.any():
+        return pd.Series(dtype=float)
+    return pd.Series(values[mask].astype(float).to_numpy(), index=years[mask].astype(int).to_numpy())
+
+def sorted_years(*dfs: Optional[pd.DataFrame]) -> List[int]:
+    years: Set[int] = set()
+    for df in dfs:
+        if df is None or df.empty:
+            continue
+        numeric_years = pd.to_numeric(df.get("Year"), errors="coerce").dropna().astype(int)
+        years.update(numeric_years.tolist())
+    return sorted(years)
+
+def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
+    sanitized = re.sub(r"[\\/*?:\[\]]", "_", name).strip()
+    if not sanitized:
+        sanitized = "Sheet"
+    sanitized = sanitized[:31]
+    candidate = sanitized
+    suffix = 1
+    while candidate.lower() in existing:
+        extra = f"_{suffix}"
+        candidate = f"{sanitized[:31 - len(extra)]}{extra}"
+        suffix += 1
+    existing.add(candidate.lower())
+    return candidate
+
+def build_export_workbook(tables: Dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer) as writer:
+        seen: Set[str] = set()
+        for name, df in tables.items():
+            sheet_name = sanitize_sheet_name(name, seen)
+            (df if df is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def prepare_efficiency_export(
+    data: DashboardData,
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    years = sorted_years(opt_df, cmp_df)
+    if not years:
+        return None
+    export = pd.DataFrame({"Financial year": years})
+    if opt_df is not None and not opt_df.empty:
+        cum_spend = series_from_df(opt_df, "CumSpend")
+        if not cum_spend.empty:
+            export["Optimised cumulative spend (NZD)"] = scale_series_to_nzd(cum_spend.reindex(years))
+        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix="Optimised")
+        if not series_opt.empty:
+            year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
+            mask = year_values.notna()
+            if mask.any():
+                aligned = pd.Series(
+                    series_opt[mask].astype(float).to_numpy(),
+                    index=year_values[mask].astype(int).to_numpy(),
+                )
+                export[f"{label_opt} (NZD)"] = scale_series_to_nzd(aligned.reindex(years))
+    if cmp_df is not None and not cmp_df.empty:
+        cum_spend_cmp = series_from_df(cmp_df, "CumSpend")
+        if not cum_spend_cmp.empty:
+            export["Comparison cumulative spend (NZD)"] = scale_series_to_nzd(cum_spend_cmp.reindex(years))
+        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix="Comparison")
+        if not series_cmp.empty:
+            year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
+            mask = year_values.notna()
+            if mask.any():
+                aligned = pd.Series(
+                    series_cmp[mask].astype(float).to_numpy(),
+                    index=year_values[mask].astype(int).to_numpy(),
+                )
+                export[f"{label_cmp} (NZD)"] = scale_series_to_nzd(aligned.reindex(years))
+    if len(export.columns) == 1:
+        return None
+    return export
+
+def prepare_cash_export(
+    df: Optional[pd.DataFrame],
+    *,
+    label_prefix: str,
+) -> Optional[pd.DataFrame]:
+    if df is None or df.empty:
+        return None
+    years = sorted_years(df)
+    if not years:
+        return None
+    export = pd.DataFrame({"Financial year": years})
+    column_map = {
+        "Spend": "Annual spend (NZD)",
+        "ClosingNet": "Closing net (NZD)",
+        "Envelope": "Envelope (NZD)",
+        "BenefitFlow": "Benefit flow (NZD)",
+        "PVBenefit": "PV benefit (NZD)",
+        "CumSpend": "Cumulative spend (NZD)",
+        "CumBenefit": "Cumulative benefit (NZD)",
+        "CumPVBenefit": "Cumulative PV benefit (NZD)",
+    }
+    for source, label in column_map.items():
+        if source not in df.columns:
+            continue
+        series = series_from_df(df, source)
+        if series.empty:
+            continue
+        export[f"{label_prefix} {label}"] = scale_series_to_nzd(series.reindex(years))
+    if len(export.columns) == 1:
+        return None
+    return export
+
+def prepare_benefit_export(
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[pd.DataFrame]:
+    years = sorted_years(opt_df, cmp_df)
+    if not years:
+        return None
+    export = pd.DataFrame({"Financial year": years})
+    if opt_df is not None and not opt_df.empty and "PVBenefit" in opt_df.columns:
+        series_opt = series_from_df(opt_df, "PVBenefit")
+        if not series_opt.empty:
+            export[f"{opt_label} benefit real (NZD)"] = scale_series_to_nzd(series_opt.reindex(years))
+    if cmp_df is not None and not cmp_df.empty and "PVBenefit" in cmp_df.columns:
+        series_cmp = series_from_df(cmp_df, "PVBenefit")
+        if not series_cmp.empty:
+            export[f"{cmp_label} benefit real (NZD)"] = scale_series_to_nzd(series_cmp.reindex(years))
+    if len(export.columns) == 1:
+        return None
+    return export
+
+def prepare_benefit_delta_export(
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+) -> Optional[pd.DataFrame]:
+    if opt_df is None or cmp_df is None or opt_df.empty or cmp_df.empty:
+        return None
+    merged = opt_df[["Year", "CumBenefit", "CumPVBenefit"]].merge(
+        cmp_df[["Year", "CumBenefit", "CumPVBenefit"]],
+        on="Year",
+        suffixes=("_opt", "_cmp"),
+    )
+    merged["Year"] = pd.to_numeric(merged["Year"], errors="coerce")
+    merged = merged.dropna(subset=["Year"])
+    if merged.empty:
+        return None
+    merged["Year"] = merged["Year"].astype(int)
+    export = pd.DataFrame({"Financial year": merged["Year"]})
+    export["Delta cumulative benefit real (NZD)"] = scale_series_to_nzd(
+        merged["CumBenefit_opt"] - merged["CumBenefit_cmp"]
+    )
+    export["Delta benefit real (NZD)"] = scale_series_to_nzd(
+        merged["CumPVBenefit_opt"] - merged["CumPVBenefit_cmp"]
+    )
+    return export
+
+def prepare_dimension_chart_export(
+    pivot: Optional[pd.DataFrame],
+    cumulative: bool,
+) -> Optional[pd.DataFrame]:
+    if pivot is None or pivot.empty:
+        return None
+    data = pivot.copy()
+    data.index = pd.to_numeric(data.index, errors="coerce")
+    data = data.dropna()
+    if data.empty:
+        return None
+    data.index = data.index.astype(int)
+    if cumulative:
+        data = data.cumsum()
+    if data.empty:
+        return None
+    scaled = data.apply(scale_series_to_nzd)
+    scaled.insert(0, "Financial year", scaled.index)
+    scaled.columns = [scaled.columns[0]] + [f"{col} (NZD)" for col in scaled.columns[1:]]
+    return scaled.reset_index(drop=True)
+
+def prepare_dimension_overlay_export(
+    years: Iterable[int],
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    dimensions: List[str],
+    cumulative: bool,
+) -> Optional[pd.DataFrame]:
+    selected_dims = [dim for dim in dimensions]
+    if not selected_dims:
+        return None
+    years_list = [int(y) for y in years]
+    export = pd.DataFrame({"Financial year": years_list})
+    added = False
+    if pivot_opt is not None and not pivot_opt.empty:
+        opt = pivot_opt.reindex(index=years_list)
+        opt.index = pd.Index(years_list, name="Year")
+        if cumulative:
+            opt = opt.cumsum()
+        for dim in selected_dims:
+            if dim in opt.columns:
+                export[f"Optimised - {dim} (NZD)"] = scale_series_to_nzd(opt[dim])
+                added = True
+    if pivot_cmp is not None and not pivot_cmp.empty:
+        cmp = pivot_cmp.reindex(index=years_list)
+        cmp.index = pd.Index(years_list, name="Year")
+        if cumulative:
+            cmp = cmp.cumsum()
+        for dim in selected_dims:
+            if dim in cmp.columns:
+                export[f"Comparison - {dim} (NZD)"] = scale_series_to_nzd(cmp[dim])
+                added = True
+    if not added:
+        return None
+    return export
+
+def prepare_waterfall_export(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+    *,
+    horizon_years: Optional[int] = None,
+    pv_opt: Optional[Dict[str, float]] = None,
+    pv_cmp: Optional[Dict[str, float]] = None,
+) -> Optional[pd.DataFrame]:
+    if pv_opt is None:
+        pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
+    if pv_cmp is None:
+        pv_cmp = pv_by_dimension(data, cmp_selection, horizon_years=horizon_years) if cmp_selection and cmp_selection.code else None
+    if not pv_opt or not pv_cmp:
+        return None
+    dims = set(pv_opt.keys()) | set(pv_cmp.keys())
+    ordered_dims = [dim for dim in data.dims if dim in dims]
+    remaining_dims = [dim for dim in dims if dim not in ordered_dims]
+    non_total_dims = [dim for dim in ordered_dims if str(dim).strip().lower() != "total"]
+    non_total_dims += [dim for dim in remaining_dims if str(dim).strip().lower() != "total"]
+    rows: List[Dict[str, float]] = []
+    for dim in non_total_dims:
+        opt_val = float(pv_opt.get(dim, 0.0))
+        cmp_val = float(pv_cmp.get(dim, 0.0))
+        rows.append(
+            {
+                "Dimension": str(dim),
+                "Optimised NPV (NZD)": opt_val * 1_000_000.0,
+                "Comparison NPV (NZD)": cmp_val * 1_000_000.0,
+                "Delta (NZD)": (opt_val - cmp_val) * 1_000_000.0,
+            }
+        )
+    total_dim = next((dim for dim in ordered_dims if str(dim).strip().lower() == "total"), None)
+    if total_dim is None:
+        total_dim = next((dim for dim in dims if str(dim).strip().lower() == "total"), None)
+    total_opt = float(pv_opt.get(total_dim, sum(pv_opt.values())))
+    total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
+    rows.append(
+        {
+            "Dimension": "Total",
+            "Optimised NPV (NZD)": total_opt * 1_000_000.0,
+            "Comparison NPV (NZD)": total_cmp * 1_000_000.0,
+            "Delta (NZD)": (total_opt - total_cmp) * 1_000_000.0,
+        }
+    )
+    return pd.DataFrame(rows)
+
+def prepare_bridge_export(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+    *,
+    horizon_years: Optional[int] = None,
+    pv_opt: Optional[Dict[str, float]] = None,
+    pv_cmp: Optional[Dict[str, float]] = None,
+) -> Optional[pd.DataFrame]:
+    if pv_opt is None:
+        pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
+    if pv_cmp is None:
+        pv_cmp = pv_by_dimension(data, cmp_selection, horizon_years=horizon_years) if cmp_selection and cmp_selection.code else None
+    if not pv_opt or not pv_cmp:
+        return None
+    dims = set(pv_opt.keys()) | set(pv_cmp.keys())
+    ordered_dims = [dim for dim in data.dims if dim in dims and str(dim).strip().lower() != "total"]
+    remaining_dims = sorted(
+        [dim for dim in dims if dim not in ordered_dims and str(dim).strip().lower() != "total"],
+        key=str,
+    )
+    dim_sequence = ordered_dims + remaining_dims
+    total_dim = next(
+        (dim for dim in data.dims if str(dim).strip().lower() == "total" and dim in dims),
+        None,
+    )
+    if total_dim is None:
+        total_dim = next((dim for dim in dims if str(dim).strip().lower() == "total"), None)
+    total_opt = float(pv_opt.get(total_dim, sum(pv_opt.values())))
+    total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
+    bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
+    rows = [
+        {"Step": "Optimised NPV total", "Value (NZD)": total_opt * 1_000_000.0, "Measure": "relative"}
+    ]
+    for dim, delta in zip(dim_sequence, bridge_diffs):
+        rows.append(
+            {
+                "Step": f"{dim} delta NPV",
+                "Value (NZD)": (-delta) * 1_000_000.0,
+                "Measure": "relative",
+            }
+        )
+    rows.append(
+        {"Step": "Comparison NPV total", "Value (NZD)": total_cmp * 1_000_000.0, "Measure": "total"}
+    )
+    return pd.DataFrame(rows)
+
+def prepare_radar_export(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+    *,
+    pv_opt: Optional[Dict[str, float]] = None,
+    pv_cmp: Optional[Dict[str, float]] = None,
+) -> Optional[pd.DataFrame]:
+    if pv_opt is None:
+        pv_opt = pv_by_dimension(data, opt_selection) if opt_selection and opt_selection.code else None
+    if pv_cmp is None:
+        pv_cmp = pv_by_dimension(data, cmp_selection) if cmp_selection and cmp_selection.code else None
+    if not pv_opt and not pv_cmp:
+        return None
+    dims = [dim for dim in data.dims if str(dim).strip().lower() != "total"]
+    extras: Set[str] = set()
+    if pv_opt:
+        extras.update(pv_opt.keys())
+    if pv_cmp:
+        extras.update(pv_cmp.keys())
+    for dim in sorted(extras, key=str):
+        if str(dim).strip().lower() == "total":
+            continue
+        if dim not in dims:
+            dims.append(dim)
+    if not dims:
+        return None
+    rows = []
+    for dim in dims:
+        rows.append(
+            {
+                "Dimension": str(dim),
+                "Optimised NPV (NZD)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                "Comparison NPV (NZD)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+def prepare_gantt_export(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    comparison_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    if not selection or not selection.code:
+        return None
+    runs = extract_project_runs(data, selection.code)
+    if not runs:
+        return None
+    comparison_runs = {}
+    if comparison_selection and comparison_selection.code:
+        comparison_runs = {run.project: run for run in extract_project_runs(data, comparison_selection.code)}
+    rows = []
+    for run in runs:
+        comp = comparison_runs.get(run.project)
+        rows.append(
+            {
+                "Project": run.project,
+                "Start FY": run.start_year,
+                "End FY": run.end_year,
+                "Duration (years)": run.end_year - run.start_year + 1,
+                "Total spend (NZD)": float(run.total_spend) * 1_000_000.0,
+                "Comparison start FY": comp.start_year if comp else None,
+                "Comparison end FY": comp.end_year if comp else None,
+                "Comparison total spend (NZD)": float(comp.total_spend) * 1_000_000.0 if comp else None,
+            }
+        )
+    return pd.DataFrame(rows)
+
+def prepare_schedule_export(
+    data: DashboardData,
+    selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    if not selection or not selection.code:
+        return None
+    runs = extract_project_runs(data, selection.code)
+    if not runs:
+        return None
+    rows = []
+    for run in runs:
+        for year, value in zip(data.years, run.values):
+            if abs(float(value)) <= 1e-9:
+                continue
+            rows.append(
+                {
+                    "Project": run.project,
+                    "Financial year": int(year),
+                    "Annual spend (NZD)": float(value) * 1_000_000.0,
+                    "Total spend (NZD)": float(run.total_spend) * 1_000_000.0,
+                    "Start FY": run.start_year,
+                    "End FY": run.end_year,
+                }
+            )
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+def prepare_capacity_export(series: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    if series is None or series.empty or "Spend" not in series or "Year" not in series:
+        return None
+    df = series[["Year", "Spend"]].copy()
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df = df.dropna(subset=["Year"])
+    if df.empty:
+        return None
+    df["Year"] = df["Year"].astype(int)
+    spend_b = pd.to_numeric(df["Spend"], errors="coerce").astype(float) / 1000.0
+    df["Annual spend (NZD)"] = scale_series_to_nzd(df["Spend"])
+    df["Annual spend (B NZD)"] = spend_b
+    status: List[str] = []
+    for value in spend_b:
+        if value <= 0.0:
+            status.append("No spend recorded")
+        elif value >= 3.0:
+            status.append("High pressure (>= $3.0B)")
+        elif value <= 2.0:
+            status.append("Comfortable (<= $2.0B)")
+        else:
+            status.append("Watch zone ($2.0B-$3.0B)")
+    df["Status"] = status
+    df = df.drop(columns=["Spend"])
+    return df.rename(columns={"Year": "Financial year"})
+
 
 def format_npv_context(rate: float, *horizon_values: Optional[int]) -> str:
     """Describe the NPV scope including horizon and discount rate."""
@@ -3434,6 +3880,11 @@ def main() -> None:
 
     cmp_series = build_timeseries(data, comp_selection)
 
+    export_tables: Dict[str, pd.DataFrame] = {}
+
+    opt_label = opt_selection.name or "Optimised"
+    cmp_label = comp_selection.name or "Comparison"
+
     project_colors = project_color_map(data)
 
     schedule_opt_fig = project_schedule_area_chart(
@@ -3533,6 +3984,16 @@ def main() -> None:
 
     st.plotly_chart(eff_fig, use_container_width=True)
 
+    efficiency_export = prepare_efficiency_export(
+        data,
+        opt_series,
+        cmp_series,
+        opt_selection,
+        comp_selection,
+    )
+    if efficiency_export is not None:
+        export_tables["Cumulative spend vs benefit"] = efficiency_export
+
     horizon_index = (
         npv_horizon_options.index(selected_npv_horizon)
         if selected_npv_horizon in npv_horizon_options
@@ -3549,6 +4010,17 @@ def main() -> None:
         )
     )
 
+    pv_opt_horizon = (
+        pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
+        if opt_selection and opt_selection.code
+        else None
+    )
+    pv_cmp_horizon = (
+        pv_by_dimension(data, comp_selection, horizon_years=selected_npv_horizon)
+        if comp_selection and comp_selection.code
+        else None
+    )
+
     pv_col1, pv_col2 = st.columns(2)
 
     with pv_col1:
@@ -3559,6 +4031,17 @@ def main() -> None:
             use_container_width=True,
         )
 
+        waterfall_export = prepare_waterfall_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
+        )
+        if waterfall_export is not None:
+            export_tables["NPV Waterfall"] = waterfall_export
+
     with pv_col2:
         st.plotly_chart(
             benefit_bridge_chart(
@@ -3566,6 +4049,17 @@ def main() -> None:
             ),
             use_container_width=True,
         )
+
+        bridge_export = prepare_bridge_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
+        )
+        if bridge_export is not None:
+            export_tables["NPV Bridge"] = bridge_export
 
     opt_dim_pivot = dimension_timeseries(data, opt_selection)
     cmp_dim_pivot = dimension_timeseries(data, comp_selection)
@@ -3622,6 +4116,16 @@ def main() -> None:
 
                 if comparison_fig is not None:
                     st.plotly_chart(comparison_fig, use_container_width=True)
+
+                    overlay_export = prepare_dimension_overlay_export(
+                        data.years,
+                        opt_dim_pivot,
+                        cmp_dim_pivot,
+                        selected_dims,
+                        show_cumulative_benefits,
+                    )
+                    if overlay_export is not None:
+                        export_tables["Dimension overlay comparison"] = overlay_export
                 else:
                     st.info("No overlapping dimension data available for comparison.")
     else:
@@ -3639,6 +4143,10 @@ def main() -> None:
             if opt_dim_fig is not None:
                 st.plotly_chart(opt_dim_fig, use_container_width=True)
 
+                opt_dim_export = prepare_dimension_chart_export(opt_dim_pivot, show_cumulative_benefits)
+                if opt_dim_export is not None:
+                    export_tables["Dimension mix - optimised"] = opt_dim_export
+
         with dim_col2:
             cmp_dim_fig = benefit_dimension_chart(
                 data,
@@ -3650,6 +4158,10 @@ def main() -> None:
 
             if cmp_dim_fig is not None:
                 st.plotly_chart(cmp_dim_fig, use_container_width=True)
+
+                cmp_dim_export = prepare_dimension_chart_export(cmp_dim_pivot, show_cumulative_benefits)
+                if cmp_dim_export is not None:
+                    export_tables["Dimension mix - comparison"] = cmp_dim_export
 
     st.markdown("### Project delivery schedule")
 
@@ -3703,6 +4215,14 @@ def main() -> None:
 
         st.plotly_chart(gantt_fig, use_container_width=True)
 
+        gantt_export = prepare_gantt_export(
+            data,
+            gantt_selection,
+            comparison_selection,
+        )
+        if gantt_export is not None:
+            export_tables[f"Gantt - {gantt_option}"] = gantt_export
+
     else:
 
         st.info("No spend matrix found for the selected scenario.")
@@ -3713,6 +4233,12 @@ def main() -> None:
 
         st.plotly_chart(capacity_fig, use_container_width=True)
 
+        capacity_export = prepare_capacity_export(
+            opt_series if gantt_option == "Optimised" else cmp_series
+        )
+        if capacity_export is not None:
+            export_tables[f"Market capacity - {gantt_option}"] = capacity_export
+
     schedule_col1, schedule_col2 = st.columns(2)
 
     with schedule_col1:
@@ -3720,6 +4246,10 @@ def main() -> None:
         if schedule_opt_fig is not None:
 
             st.plotly_chart(schedule_opt_fig, use_container_width=True)
+
+            schedule_export = prepare_schedule_export(data, opt_selection)
+            if schedule_export is not None:
+                export_tables["Project schedule - optimised"] = schedule_export
 
         elif opt_selection.code:
 
@@ -3734,6 +4264,10 @@ def main() -> None:
         if schedule_cmp_fig is not None:
 
             st.plotly_chart(schedule_cmp_fig, use_container_width=True)
+
+            schedule_export = prepare_schedule_export(data, comp_selection)
+            if schedule_export is not None:
+                export_tables["Project schedule - comparison"] = schedule_export
 
         elif comp_selection.code:
 
@@ -3764,6 +4298,13 @@ def main() -> None:
 
             )
 
+            cash_export = prepare_cash_export(
+                opt_series,
+                label_prefix=opt_label,
+            )
+            if cash_export is not None:
+                export_tables[f"Cash flow - {opt_label}"] = cash_export
+
     with chart_row1_col2:
 
         if cmp_series is not None:
@@ -3782,6 +4323,13 @@ def main() -> None:
                 use_container_width=True,
 
             )
+
+            cash_export = prepare_cash_export(
+                cmp_series,
+                label_prefix=cmp_label,
+            )
+            if cash_export is not None:
+                export_tables[f"Cash flow - {cmp_label}"] = cash_export
 
     benefit_col1, benefit_col2 = st.columns(2)
 
@@ -3819,14 +4367,43 @@ def main() -> None:
 
         )
 
+    benefit_export = prepare_benefit_export(
+        opt_series,
+        cmp_series,
+        opt_label=opt_label,
+        cmp_label=cmp_label,
+    )
+    if benefit_export is not None:
+        export_tables["Benefit trend (real)"] = benefit_export
+
+    benefit_delta_export = prepare_benefit_delta_export(opt_series, cmp_series)
+    if benefit_delta_export is not None:
+        export_tables["Benefit delta (real)"] = benefit_delta_export
+
     radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
 
     if radar_fig is not None:
 
         st.plotly_chart(radar_fig, use_container_width=True, theme=None)
 
+        radar_export = prepare_radar_export(
+            data,
+            opt_selection,
+            comp_selection,
+        )
+        if radar_export is not None:
+            export_tables["Benefit mix radar"] = radar_export
 
-
+    if export_tables:
+        export_filename = f"capital_programme_charts_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        export_bytes = build_export_workbook(export_tables)
+        st.download_button(
+            "Export charts to XLSX",
+            data=export_bytes,
+            file_name=export_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="charts_export_download",
+        )
 
     st.markdown("---")
 
