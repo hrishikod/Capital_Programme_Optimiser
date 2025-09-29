@@ -3826,19 +3826,6 @@ def main() -> None:
         st.plotly_chart(radar_fig, use_container_width=True, theme=None)
 
 
-    detail_col1, detail_col2 = st.columns(2)
-
-    with detail_col1:
-
-        st.subheader("Optimised scenario details")
-
-        st.dataframe(summarize_selection(opt_selection), use_container_width=True)
-
-    with detail_col2:
-
-        st.subheader("Comparison scenario details")
-
-        st.dataframe(summarize_selection(comp_selection), use_container_width=True)
 
 
     st.markdown("---")
