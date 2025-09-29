@@ -3263,84 +3263,86 @@ def main() -> None:
 
             st.stop()
 
-    opt_col, cmp_col = st.columns(2)
-
-    with opt_col:
-
-        st.subheader("Optimised scenario")
-
-        opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-
-        opt_default_index = opt_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in opt_profiles else 0
-
-        selected_opt_profile = st.selectbox(
-
-            "Optimised profile",
-
-            opt_profiles,
-
-            index=opt_default_index,
-
-            key="opt_profile_select",
-
-        )
-
-        opt_selection = scenario_selector(
-
-            name="Optimised",
-
-            data=data,
-
-            settings=settings,
-
-            prefer_comparison=False,
-
-            key_prefix="opt",
-
-            profile_name=selected_opt_profile,
-
-        )
-
-    with cmp_col:
-
-        st.subheader("Comparison scenario")
-
-        cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-
-        cmp_default_index = next((i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"), None)
-
-        if cmp_default_index is None:
-
-            cmp_default_index = cmp_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in cmp_profiles else 0
-
-        selected_cmp_profile = st.selectbox(
-
-            "Comparison profile",
-
-            cmp_profiles,
-
-            index=cmp_default_index,
-
-            key="cmp_profile_select",
-
-        )
-
-        comp_selection = scenario_selector(
-
-            name="Comparison",
-
-            data=data,
-
-            settings=settings,
-
-            prefer_comparison=True,
-
-            key_prefix="cmp",
-
-            profile_name=selected_cmp_profile,
-
-        )
-
+    with st.expander("Scenario filters", expanded=True):
+    
+        opt_col, cmp_col = st.columns(2)
+    
+        with opt_col:
+    
+            st.subheader("Optimised scenario")
+    
+            opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
+    
+            opt_default_index = opt_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in opt_profiles else 0
+    
+            selected_opt_profile = st.selectbox(
+    
+                "Optimised profile",
+    
+                opt_profiles,
+    
+                index=opt_default_index,
+    
+                key="opt_profile_select",
+    
+            )
+    
+            opt_selection = scenario_selector(
+    
+                name="Optimised",
+    
+                data=data,
+    
+                settings=settings,
+    
+                prefer_comparison=False,
+    
+                key_prefix="opt",
+    
+                profile_name=selected_opt_profile,
+    
+            )
+    
+        with cmp_col:
+    
+            st.subheader("Comparison scenario")
+    
+            cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
+    
+            cmp_default_index = next((i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"), None)
+    
+            if cmp_default_index is None:
+    
+                cmp_default_index = cmp_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in cmp_profiles else 0
+    
+            selected_cmp_profile = st.selectbox(
+    
+                "Comparison profile",
+    
+                cmp_profiles,
+    
+                index=cmp_default_index,
+    
+                key="cmp_profile_select",
+    
+            )
+    
+            comp_selection = scenario_selector(
+    
+                name="Comparison",
+    
+                data=data,
+    
+                settings=settings,
+    
+                prefer_comparison=True,
+    
+                key_prefix="cmp",
+    
+                profile_name=selected_cmp_profile,
+    
+            )
+    
     opt_series = build_timeseries(data, opt_selection)
 
     cmp_series = build_timeseries(data, comp_selection)
@@ -3754,230 +3756,232 @@ def main() -> None:
 
     st.markdown("---")
 
-    st.header("Scenario manager")
-
-    st.write("Use this workspace to create scenario folders and run new optimisation batches.")
-    st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
-
-    table_placeholder = st.empty()
-
-    def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
-        if not folders:
-            table_placeholder.info("No scenario folders available yet.")
-            return
-        rows = []
-        for folder in folders:
-            meta = folder.metadata or scenario_utils.load_manifest(folder.path)
-            last_run = (meta or {}).get("last_run") if meta else None
-            rows.append(
-                {
-                    "Folder": f"{folder.kind.title()} / {folder.name}",
-                    "Default": "Yes" if folder.is_default else "",
-                    "Path": str(folder.path),
-                    "Last run": last_run.get("finished_at", "") if last_run else "",
-                    "Files": len(last_run.get("output_files", [])) if last_run else 0,
-                }
-            )
-        table_placeholder.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    render_folder_table(scenario_folders)
-
-    with st.expander("Create new scenario folder", expanded=False):
-        new_name = st.text_input("Scenario name", key="scenario_new_name")
-        new_kind = st.radio("Folder type", ("saved", "preset"), index=0, format_func=str.title, horizontal=True, key="scenario_new_kind")
-        if st.button("Create folder", key="scenario_create_folder"):
-            if new_name.strip():
-                new_folder = scenario_utils.create_scenario_folder(settings, new_name.strip(), new_kind)
-                st.session_state["last_created_folder_name"] = new_folder.name
-                st.session_state["selected_cache_label"] = f"{new_folder.kind.title()} / {new_folder.name}"
-                load_dashboard_data.clear()
-                st.experimental_rerun()
-            else:
-                st.warning("Please provide a scenario name before creating a folder.")
-
-    st.subheader("Run optimiser")
-
-    if not scenario_folders:
-        st.info("Create a scenario folder before running the optimiser.")
-    else:
-        folder_labels = [f"{folder.kind.title()} / {folder.name}" for folder in scenario_folders]
-        folder_lookup = {label: folder for label, folder in zip(folder_labels, scenario_folders)}
-        default_folder_label = st.session_state.get("selected_cache_label")
-        if default_folder_label not in folder_lookup:
-            default_folder_label = folder_labels[0]
-        with st.form("scenario_run_form"):
-            target_label = st.selectbox(
-                "Target scenario folder",
-                folder_labels,
-                index=folder_labels.index(default_folder_label),
-                key="run_target_folder",
-            )
-            cost_type_options = list(settings.optimisation.cost_types)
-            cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
-            scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
-            scenario_keys = st.multiselect("Benefit scenarios", scenario_key_options, default=scenario_key_options)
-            dims_options = [str(dim) for dim in getattr(data, "dims", [])]
-            if not dims_options:
-                dims_options = ["Total"]
-            objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
-            col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
-            start_fy = col_cfg1.number_input("Start financial year", value=int(settings.optimisation.start_fy), step=1)
-            years = col_cfg2.number_input("Planning horizon (years)", value=int(settings.optimisation.years), min_value=1, step=1)
-            time_limit = col_cfg3.number_input("Solver time limit (seconds)", value=int(settings.optimisation.solve_seconds), min_value=60, step=60)
-            run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
-            st.markdown("Baseline annual envelopes (NZDm p.a.)")
-            envelope_defaults = pd.DataFrame([
-                {"Code": code, "AnnualNZDm": value} for code, value in settings.optimisation.surplus_options_m.items()
-            ])
-            envelopes_editor = st.data_editor(
-                envelope_defaults,
-                num_rows="dynamic",
-                hide_index=True,
-                key="envelope_editor",
-                column_config={
-                    "Code": st.column_config.TextColumn("Code", required=True),
-                    "AnnualNZDm": st.column_config.NumberColumn("Annual NZD (millions)", min_value=0.0),
-                },
-            )
-            st.markdown("+/- levels (NZDm)")
-            plus_defaults = pd.DataFrame({"LevelNZDm": settings.optimisation.plusminus_levels_m})
-            plus_editor = st.data_editor(
-                plus_defaults,
-                num_rows="dynamic",
-                hide_index=True,
-                key="plus_editor",
-                column_config={
-                    "LevelNZDm": st.column_config.NumberColumn("Level (+/- NZDm)", min_value=0.0),
-                },
-            )
-            st.markdown("Forced start rules")
-            forced_rows = []
-            for name, rule in settings.forced_start.items():
-                if rule.include is True:
-                    include_state = "Include"
-                elif rule.include is False:
-                    include_state = "Exclude"
-                else:
-                    include_state = "Default"
-                forced_rows.append({"Project": name, "Include": include_state, "StartFY": rule.start})
-            forced_defaults = pd.DataFrame(forced_rows)
-            forced_editor = st.data_editor(
-                forced_defaults,
-                num_rows="dynamic",
-                hide_index=True,
-                disabled=["Project"],
-                key="forced_editor",
-                column_config={
-                    "Include": st.column_config.SelectboxColumn("Include", options=["Default", "Include", "Exclude"]),
-                    "StartFY": st.column_config.NumberColumn("Forced start (FY)", help="Leave blank to let the optimiser decide."),
-                },
-            )
-            run_button = st.form_submit_button("Run optimiser", type="primary")
-
-        if run_button:
-            proceed = True
-            if not cost_types:
-                st.warning("Select at least one cost type.")
-                proceed = False
-            if not scenario_keys:
-                st.warning("Select at least one benefit scenario.")
-                proceed = False
-            envelopes = {}
-            for row in envelopes_editor.to_dict("records"):
-                code = str(row.get("Code", "")).strip()
-                value = row.get("AnnualNZDm")
-                if not code or pd.isna(value):
-                    continue
-                envelopes[code] = float(value)
-            if not envelopes:
-                st.warning("Provide at least one envelope value.")
-                proceed = False
-            plus_levels = []
-            if isinstance(plus_editor, pd.DataFrame) and "LevelNZDm" in plus_editor.columns:
-                for val in plus_editor["LevelNZDm"].tolist():
-                    if pd.isna(val):
-                        continue
-                    plus_levels.append(float(val))
-            plus_levels = sorted({round(val, 6) for val in plus_levels})
-            if run_plusminus and not plus_levels:
-                st.info("No +/- levels supplied; defaulting to [0.0].")
-                plus_levels = [0.0]
-            if not objective_dims:
-                objective_dims = dims_options
-            forced_inputs = {}
-            for row in forced_editor.to_dict("records"):
-                include_state = row.get("Include", "Default")
-                include_val = None
-                if include_state == "Include":
-                    include_val = True
-                elif include_state == "Exclude":
-                    include_val = False
-                start_val = row.get("StartFY")
-                if pd.isna(start_val):
-                    start_val = None
-                else:
-                    start_val = int(start_val)
-                forced_inputs[row["Project"]] = scenario_utils.ForcedStartInput(include=include_val, start=start_val)
-            if proceed:
-                progress_bar = st.progress(0)
-                status_placeholder = st.empty()
-                eta_placeholder = st.empty()
-                log_placeholder = st.empty()
-                progress_messages: List[str] = []
-
-                def handle_progress(snapshot: scenario_utils.ProgressSnapshot) -> None:
-                    total = max(snapshot.total, 1)
-                    percent = int(min(snapshot.percent, 1.0) * 100)
-                    progress_bar.progress(percent)
-                    payload = snapshot.payload
-                    if snapshot.stage == "solve_start":
-                        message = (
-                            f"Solving {payload.get('cost_type')} / {payload.get('scenario_key')} "
-                            f"| {payload.get('primary_dim')} | {payload.get('surplus_key')} +/-{payload.get('plus_level')}"
-                        )
-                    elif snapshot.stage == "solve_complete":
-                        message = f"{payload.get('status', 'ok').upper()} - {payload.get('cache_file', '')}"
-                    elif snapshot.stage == "run_complete":
-                        message = "Run complete."
-                    elif snapshot.stage == "run_error":
-                        message = "Run aborted."
-                    else:
-                        message = snapshot.stage.replace('_', ' ').title()
-                    status_placeholder.write(f"{snapshot.completed}/{total} - {message}")
-                    eta_placeholder.write(format_eta(snapshot.eta_seconds))
-                    if snapshot.stage in {"solve_start", "solve_complete"}:
-                        progress_messages.append(message)
-                        log_placeholder.write("\n".join(progress_messages[-6:]))
-
-                try:
-                    run_config = scenario_utils.OptimiserRunConfig(
-                        cost_types=cost_types,
-                        scenario_keys=scenario_keys,
-                        objective_dims=objective_dims,
-                        surplus_options_m=envelopes,
-                        plusminus_levels_m=plus_levels or [0.0],
-                        start_fy=int(start_fy),
-                        years=int(years),
-                        run_plusminus=run_plusminus,
-                        forced_start=forced_inputs,
-                        time_limit=int(time_limit) if time_limit else None,
-                    )
-                    summary = scenario_utils.run_optimiser_for_scenario(
-                        settings,
-                        folder_lookup[target_label],
-                        run_config,
-                        progress_callback=handle_progress,
-                        clean=True,
-                    )
-                except Exception as exc:
-                    progress_bar.empty()
-                    status_placeholder.error(f"Optimiser failed: {exc}")
-                else:
-                    st.session_state["last_run_summary"] = summary.serializable()
-                    st.session_state["selected_cache_label"] = target_label
+    with st.expander("Scenario manager", expanded=False):
+    
+        st.header("Scenario manager")
+    
+        st.write("Use this workspace to create scenario folders and run new optimisation batches.")
+        st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
+    
+        table_placeholder = st.empty()
+    
+        def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
+            if not folders:
+                table_placeholder.info("No scenario folders available yet.")
+                return
+            rows = []
+            for folder in folders:
+                meta = folder.metadata or scenario_utils.load_manifest(folder.path)
+                last_run = (meta or {}).get("last_run") if meta else None
+                rows.append(
+                    {
+                        "Folder": f"{folder.kind.title()} / {folder.name}",
+                        "Default": "Yes" if folder.is_default else "",
+                        "Path": str(folder.path),
+                        "Last run": last_run.get("finished_at", "") if last_run else "",
+                        "Files": len(last_run.get("output_files", [])) if last_run else 0,
+                    }
+                )
+            table_placeholder.dataframe(pd.DataFrame(rows), use_container_width=True)
+    
+        render_folder_table(scenario_folders)
+    
+        with st.expander("Create new scenario folder", expanded=False):
+            new_name = st.text_input("Scenario name", key="scenario_new_name")
+            new_kind = st.radio("Folder type", ("saved", "preset"), index=0, format_func=str.title, horizontal=True, key="scenario_new_kind")
+            if st.button("Create folder", key="scenario_create_folder"):
+                if new_name.strip():
+                    new_folder = scenario_utils.create_scenario_folder(settings, new_name.strip(), new_kind)
+                    st.session_state["last_created_folder_name"] = new_folder.name
+                    st.session_state["selected_cache_label"] = f"{new_folder.kind.title()} / {new_folder.name}"
                     load_dashboard_data.clear()
                     st.experimental_rerun()
-
+                else:
+                    st.warning("Please provide a scenario name before creating a folder.")
+    
+        st.subheader("Run optimiser")
+    
+        if not scenario_folders:
+            st.info("Create a scenario folder before running the optimiser.")
+        else:
+            folder_labels = [f"{folder.kind.title()} / {folder.name}" for folder in scenario_folders]
+            folder_lookup = {label: folder for label, folder in zip(folder_labels, scenario_folders)}
+            default_folder_label = st.session_state.get("selected_cache_label")
+            if default_folder_label not in folder_lookup:
+                default_folder_label = folder_labels[0]
+            with st.form("scenario_run_form"):
+                target_label = st.selectbox(
+                    "Target scenario folder",
+                    folder_labels,
+                    index=folder_labels.index(default_folder_label),
+                    key="run_target_folder",
+                )
+                cost_type_options = list(settings.optimisation.cost_types)
+                cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
+                scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
+                scenario_keys = st.multiselect("Benefit scenarios", scenario_key_options, default=scenario_key_options)
+                dims_options = [str(dim) for dim in getattr(data, "dims", [])]
+                if not dims_options:
+                    dims_options = ["Total"]
+                objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
+                col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+                start_fy = col_cfg1.number_input("Start financial year", value=int(settings.optimisation.start_fy), step=1)
+                years = col_cfg2.number_input("Planning horizon (years)", value=int(settings.optimisation.years), min_value=1, step=1)
+                time_limit = col_cfg3.number_input("Solver time limit (seconds)", value=int(settings.optimisation.solve_seconds), min_value=60, step=60)
+                run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
+                st.markdown("Baseline annual envelopes (NZDm p.a.)")
+                envelope_defaults = pd.DataFrame([
+                    {"Code": code, "AnnualNZDm": value} for code, value in settings.optimisation.surplus_options_m.items()
+                ])
+                envelopes_editor = st.data_editor(
+                    envelope_defaults,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="envelope_editor",
+                    column_config={
+                        "Code": st.column_config.TextColumn("Code", required=True),
+                        "AnnualNZDm": st.column_config.NumberColumn("Annual NZD (millions)", min_value=0.0),
+                    },
+                )
+                st.markdown("+/- levels (NZDm)")
+                plus_defaults = pd.DataFrame({"LevelNZDm": settings.optimisation.plusminus_levels_m})
+                plus_editor = st.data_editor(
+                    plus_defaults,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    key="plus_editor",
+                    column_config={
+                        "LevelNZDm": st.column_config.NumberColumn("Level (+/- NZDm)", min_value=0.0),
+                    },
+                )
+                st.markdown("Forced start rules")
+                forced_rows = []
+                for name, rule in settings.forced_start.items():
+                    if rule.include is True:
+                        include_state = "Include"
+                    elif rule.include is False:
+                        include_state = "Exclude"
+                    else:
+                        include_state = "Default"
+                    forced_rows.append({"Project": name, "Include": include_state, "StartFY": rule.start})
+                forced_defaults = pd.DataFrame(forced_rows)
+                forced_editor = st.data_editor(
+                    forced_defaults,
+                    num_rows="dynamic",
+                    hide_index=True,
+                    disabled=["Project"],
+                    key="forced_editor",
+                    column_config={
+                        "Include": st.column_config.SelectboxColumn("Include", options=["Default", "Include", "Exclude"]),
+                        "StartFY": st.column_config.NumberColumn("Forced start (FY)", help="Leave blank to let the optimiser decide."),
+                    },
+                )
+                run_button = st.form_submit_button("Run optimiser", type="primary")
+    
+            if run_button:
+                proceed = True
+                if not cost_types:
+                    st.warning("Select at least one cost type.")
+                    proceed = False
+                if not scenario_keys:
+                    st.warning("Select at least one benefit scenario.")
+                    proceed = False
+                envelopes = {}
+                for row in envelopes_editor.to_dict("records"):
+                    code = str(row.get("Code", "")).strip()
+                    value = row.get("AnnualNZDm")
+                    if not code or pd.isna(value):
+                        continue
+                    envelopes[code] = float(value)
+                if not envelopes:
+                    st.warning("Provide at least one envelope value.")
+                    proceed = False
+                plus_levels = []
+                if isinstance(plus_editor, pd.DataFrame) and "LevelNZDm" in plus_editor.columns:
+                    for val in plus_editor["LevelNZDm"].tolist():
+                        if pd.isna(val):
+                            continue
+                        plus_levels.append(float(val))
+                plus_levels = sorted({round(val, 6) for val in plus_levels})
+                if run_plusminus and not plus_levels:
+                    st.info("No +/- levels supplied; defaulting to [0.0].")
+                    plus_levels = [0.0]
+                if not objective_dims:
+                    objective_dims = dims_options
+                forced_inputs = {}
+                for row in forced_editor.to_dict("records"):
+                    include_state = row.get("Include", "Default")
+                    include_val = None
+                    if include_state == "Include":
+                        include_val = True
+                    elif include_state == "Exclude":
+                        include_val = False
+                    start_val = row.get("StartFY")
+                    if pd.isna(start_val):
+                        start_val = None
+                    else:
+                        start_val = int(start_val)
+                    forced_inputs[row["Project"]] = scenario_utils.ForcedStartInput(include=include_val, start=start_val)
+                if proceed:
+                    progress_bar = st.progress(0)
+                    status_placeholder = st.empty()
+                    eta_placeholder = st.empty()
+                    log_placeholder = st.empty()
+                    progress_messages: List[str] = []
+    
+                    def handle_progress(snapshot: scenario_utils.ProgressSnapshot) -> None:
+                        total = max(snapshot.total, 1)
+                        percent = int(min(snapshot.percent, 1.0) * 100)
+                        progress_bar.progress(percent)
+                        payload = snapshot.payload
+                        if snapshot.stage == "solve_start":
+                            message = (
+                                f"Solving {payload.get('cost_type')} / {payload.get('scenario_key')} "
+                                f"| {payload.get('primary_dim')} | {payload.get('surplus_key')} +/-{payload.get('plus_level')}"
+                            )
+                        elif snapshot.stage == "solve_complete":
+                            message = f"{payload.get('status', 'ok').upper()} - {payload.get('cache_file', '')}"
+                        elif snapshot.stage == "run_complete":
+                            message = "Run complete."
+                        elif snapshot.stage == "run_error":
+                            message = "Run aborted."
+                        else:
+                            message = snapshot.stage.replace('_', ' ').title()
+                        status_placeholder.write(f"{snapshot.completed}/{total} - {message}")
+                        eta_placeholder.write(format_eta(snapshot.eta_seconds))
+                        if snapshot.stage in {"solve_start", "solve_complete"}:
+                            progress_messages.append(message)
+                            log_placeholder.write("\n".join(progress_messages[-6:]))
+    
+                    try:
+                        run_config = scenario_utils.OptimiserRunConfig(
+                            cost_types=cost_types,
+                            scenario_keys=scenario_keys,
+                            objective_dims=objective_dims,
+                            surplus_options_m=envelopes,
+                            plusminus_levels_m=plus_levels or [0.0],
+                            start_fy=int(start_fy),
+                            years=int(years),
+                            run_plusminus=run_plusminus,
+                            forced_start=forced_inputs,
+                            time_limit=int(time_limit) if time_limit else None,
+                        )
+                        summary = scenario_utils.run_optimiser_for_scenario(
+                            settings,
+                            folder_lookup[target_label],
+                            run_config,
+                            progress_callback=handle_progress,
+                            clean=True,
+                        )
+                    except Exception as exc:
+                        progress_bar.empty()
+                        status_placeholder.error(f"Optimiser failed: {exc}")
+                    else:
+                        st.session_state["last_run_summary"] = summary.serializable()
+                        st.session_state["selected_cache_label"] = target_label
+                        load_dashboard_data.clear()
+                        st.experimental_rerun()
+    
 if __name__ == "__main__":
 
     main()
