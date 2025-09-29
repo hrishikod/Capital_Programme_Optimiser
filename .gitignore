@@ -1,0 +1,10 @@
+# Python envs
+.venv/
+
+# Bytecode
+__pycache__/
+*.pyc
+
+# Streamlit state
+.streamlit/
+

@@ -1,0 +1,152 @@
+root: .
+data:
+  scoring_workbook: Scoring_latest.xlsx
+  costs_sheet: Costs
+  benefit_scenarios:
+    A60: Benefits-A60
+    A45: Benefits-A45
+    B60: Benefits-B60
+    B45: Benefits-B45
+optimisation:
+  cost_types:
+  - P50 - Real
+  - P95 - Real
+  - P95 - Nominal
+  - P50 - Nominal
+  start_fy: 2025
+  years: 50
+  max_starts: 15
+  benefit_discount_rate: 0.02
+  run_benefit_plusminus: true
+  plusminus_levels_m:
+  - 0.0
+  - 100.0
+  - 200.0
+  - 300.0
+  surplus_options_m:
+    s750: 2500
+    s1500: 3500
+    s2500: 4500
+  early_stop_pct: 0.01
+  early_stop: true
+  greedy_warm_start: true
+  solve_seconds: 1200
+  verbose: 2
+  cash_pv_rate: 0.015
+paths:
+  cache_dir: scenario_cache_benefit
+  dashboard_output_dir: .
+  preset_dir: scenario_sets/presets
+  saved_dir: scenario_sets/saved_runs
+  default_preset: AllProjects_vs_NCorridorBroughtForward
+ui:
+  default_run_mode: standard
+forced_start:
+  Project 1:
+    start: null
+    include: true
+  Project 2:
+    start: null
+    include: true
+  Project 3:
+    start: null
+    include: true
+  Project 4:
+    start: null
+    include: true
+  Project 5:
+    start: null
+    include: true
+  Project 6:
+    start: null
+    include: true
+  Project 7:
+    start: null
+    include: true
+  Project 8:
+    start: null
+    include: true
+  Project 9:
+    start: null
+    include: true
+  Project 10:
+    start: null
+    include: true
+  Project 11:
+    start: null
+    include: true
+  Project 12:
+    start: null
+    include: true
+  Project 13:
+    start: null
+    include: true
+  Project 14:
+    start: null
+    include: true
+  Project 15:
+    start: null
+    include: true
+  Project 16:
+    start: null
+    include: true
+  Project 17:
+    start: null
+    include: true
+  Project 18:
+    start: null
+    include: true
+  Project 19:
+    start: null
+    include: true
+  Project 20:
+    start: null
+    include: true
+  Project 21:
+    start: null
+    include: true
+  Project 22:
+    start: null
+    include: true
+  Project 23:
+    start: null
+    include: true
+  Project 24:
+    start: null
+    include: true
+  Project 25:
+    start: null
+    include: true
+  Project 26:
+    start: null
+    include: true
+  Project 27:
+    start: null
+    include: true
+  Project 28:
+    start: null
+    include: true
+  Project 29:
+    start: null
+    include: true
+  Project 30:
+    start: null
+    include: true
+  Project 31:
+    start: null
+    include: true
+  Project 32:
+    start: null
+    include: true
+  Project 33:
+    start: null
+    include: true
+  Project 34:
+    start: null
+    include: true
+  Project 35:
+    start: null
+    include: true
+  Project 36:
+    start: null
+    include: true
