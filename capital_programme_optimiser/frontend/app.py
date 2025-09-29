@@ -1971,7 +1971,7 @@ def cash_chart(
 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
-        xaxis_title="Financial year",
+        xaxis_title=None,
 
         yaxis_title=yaxis_title_default,
 
@@ -2055,7 +2055,7 @@ def benefit_chart(
 
         title=f"Real benefit to date ({dimension})",
 
-        xaxis_title="Financial year",
+        xaxis_title=None,
 
         yaxis_title="Annual benefit (NZDm)",
 
@@ -2184,7 +2184,7 @@ def benefit_delta_chart(
 
         title=title_text,
 
-        xaxis_title="Financial year",
+        xaxis_title=None,
 
         yaxis_title=yaxis_text,
 
@@ -2735,7 +2735,7 @@ def efficiency_chart(
 
         title="Cumulative spend vs benefit",
 
-        xaxis_title="Financial year",
+        xaxis_title=None,
 
         yaxis_title="NZD millions",
 
@@ -2859,7 +2859,7 @@ def benefit_dimension_chart(
 
         title=title,
 
-        xaxis_title='Financial year',
+        xaxis_title=None,
 
         yaxis_title=yaxis_label,
 
@@ -3038,7 +3038,7 @@ def benefit_dimension_overlay_chart(
 
         title=f"Dimension benefit comparison{title_suffix}",
 
-        xaxis_title='Financial year',
+        xaxis_title=None,
 
         yaxis_title=yaxis_label,
 
@@ -3192,7 +3192,7 @@ def spend_gantt_chart(
 
         title=title,
 
-        xaxis=dict(title="Financial year", tickmode="linear", dtick=1, tickangle=-45),
+        xaxis=dict(title=None, tickmode="linear", dtick=1, tickangle=-45),
 
         yaxis=dict(title="Project", autorange="reversed"),
 
@@ -3339,7 +3339,7 @@ def project_schedule_area_chart(
 
                     "<b>%{fullData.name}</b><br>"
                     "Total spend: %{customdata[2]:,.0f} NZDm<br>"
-                    "Financial year: %{customdata[0]}<br>"
+                    "Year: %{customdata[0]}<br>"
                     "Annual spend: %{customdata[1]:,.0f} NZDm<extra></extra>"
                 ),
 
@@ -3363,7 +3363,7 @@ def project_schedule_area_chart(
 
         xaxis=dict(
 
-            title="Financial year",
+            title=None,
 
             tickmode="array",
 
@@ -3485,7 +3485,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
         colors.append(color)
 
-        hover_labels.append(f"Financial year: {year}<br>Total spend: {value:.1f} B NZD<br>Status: {descriptor}")
+        hover_labels.append(f"Year: {year}<br>Total spend: {value:.1f} B NZD<br>Status: {descriptor}")
 
         text_values.append(display_value)
 
@@ -3565,7 +3565,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
     fig.update_layout(
 
-        title="Market capacity indicator - total spend by financial year",
+        title="Market capacity indicator - total spend by year",
 
         height=110,
 
