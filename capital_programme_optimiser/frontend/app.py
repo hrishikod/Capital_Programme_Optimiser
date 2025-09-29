@@ -318,6 +318,56 @@ def format_large_amount(value: float) -> str:
         return f"{value / 1_000_000_000:.1f}b"
     return f"{value / 1_000_000:.1f}m"
 
+def compute_cash_axis_ticks(values: Iterable[float]) -> Tuple[List[float], List[str], str]:
+    finite_values = [val for val in values if np.isfinite(val)]
+    if not finite_values:
+        return [0.0], ["0"], "millions"
+
+    min_val = min(finite_values)
+    max_val = max(finite_values)
+    max_abs = max(abs(min_val), abs(max_val))
+
+    unit_value = 1_000_000_000 if max_abs >= 1_000_000_000 else 1_000_000
+    unit_suffix = "b" if unit_value == 1_000_000_000 else "m"
+    unit_label = "billions" if unit_suffix == "b" else "millions"
+
+    min_index = math.floor(min_val / unit_value)
+    max_index = math.ceil(max_val / unit_value)
+    approx_ticks = 6
+    span_units = max_index - min_index
+    if span_units <= 0:
+        span_units = 1
+
+    raw_step = span_units / approx_ticks
+    if raw_step <= 1:
+        step_multiplier = 1
+    else:
+        magnitude = 10 ** math.floor(math.log10(raw_step))
+        step_multiplier = None
+        for factor in (1, 2, 5, 10):
+            candidate = int(factor * magnitude)
+            if candidate < raw_step:
+                continue
+            step_multiplier = max(1, candidate)
+            break
+        if step_multiplier is None:
+            step_multiplier = int(10 * magnitude)
+
+    tick_indices = range(min_index, max_index + int(step_multiplier), int(step_multiplier))
+    tick_vals = [unit_value * idx for idx in tick_indices]
+    if 0.0 not in tick_vals:
+        tick_vals.append(0.0)
+        tick_vals.sort()
+
+    tick_text = []
+    for val in tick_vals:
+        if math.isclose(val, 0.0, abs_tol=1e-9):
+            tick_text.append("0")
+        else:
+            tick_text.append(f"{val / unit_value:.0f}{unit_suffix}")
+
+    return tick_vals, tick_text, unit_label
+
 def format_npv_context(rate: float, *horizon_values: Optional[int]) -> str:
     """Describe the NPV scope including horizon and discount rate."""
     rate_pct = float(rate) * 100.0
@@ -1354,6 +1404,21 @@ def cash_chart(
 
     fig = go.Figure()
 
+    spend_values = df["Spend"].astype(float) * 1_000_000.0
+    closing_values = df["ClosingNet"].astype(float) * 1_000_000.0
+    envelope_values = df["Envelope"].astype(float) * 1_000_000.0
+
+    axis_samples = [
+        spend_values.to_numpy(),
+        closing_values.to_numpy(),
+        envelope_values.to_numpy(),
+    ]
+
+    non_empty_samples = [arr for arr in axis_samples if arr.size]
+    tick_vals, tick_text, unit_label = compute_cash_axis_ticks(
+        np.concatenate(non_empty_samples) if non_empty_samples else [0.0]
+    )
+
     context_label: Optional[str] = None
 
     if data is not None and selection is not None:
@@ -1380,7 +1445,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["Spend"].astype(float) * 1_000_000.0,
+            y=spend_values,
 
             name="Annual spend",
 
@@ -1388,7 +1453,7 @@ def cash_chart(
 
             opacity=BAR_OPACITY,
 
-            customdata=[format_large_amount(val) for val in df["Spend"].astype(float) * 1_000_000.0],
+            customdata=[format_large_amount(val) for val in spend_values],
 
             hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
 
@@ -1402,7 +1467,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["ClosingNet"].astype(float) * 1_000_000.0,
+            y=closing_values,
 
             name="Closing net",
 
@@ -1410,7 +1475,7 @@ def cash_chart(
 
             line=dict(color=CLOSING_NET_COLOR, width=3),
 
-            customdata=[format_large_amount(val) for val in df["ClosingNet"].astype(float) * 1_000_000.0],
+            customdata=[format_large_amount(val) for val in closing_values],
 
             hovertemplate="<b>Closing net</b><br>FY %{x}: %{customdata}<extra></extra>",
 
@@ -1424,7 +1489,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["Envelope"].astype(float) * 1_000_000.0,
+            y=envelope_values,
 
             name="Envelope",
 
@@ -1434,7 +1499,7 @@ def cash_chart(
 
             marker=dict(color=ENVELOPE_COLOR, size=6),
 
-            customdata=[format_large_amount(val) for val in df["Envelope"].astype(float) * 1_000_000.0],
+            customdata=[format_large_amount(val) for val in envelope_values],
 
             hovertemplate="<b>Envelope</b><br>FY %{x}: %{customdata}<extra></extra>",
 
@@ -1444,11 +1509,13 @@ def cash_chart(
 
     fig.add_hline(y=0, line=dict(color="#888888", dash="dot", width=1))
 
-    yaxis_title_default = "NZD (millions/billions)"
+    yaxis_context = unit_label
 
     if context_label:
 
-        yaxis_title_default = f"NZD ({context_label}, millions/billions)"
+        yaxis_context = f"{context_label}, {unit_label}"
+
+    yaxis_title_default = f"NZD ({yaxis_context})"
 
     fig.update_layout(
 
@@ -1464,7 +1531,7 @@ def cash_chart(
 
         template="plotly_white",
 
-        yaxis=dict(tickformat="~s"),
+        yaxis=dict(tickmode="array", tickvals=tick_vals, ticktext=tick_text),
 
         hoverlabel=dict(namelength=-1),
 
