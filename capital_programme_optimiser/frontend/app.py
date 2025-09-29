@@ -2270,9 +2270,13 @@ def benefit_dimension_chart(
 
     cumulative: bool = False,
 
+    pivot: Optional[pd.DataFrame] = None,
+
 ) -> Optional[go.Figure]:
 
-    pivot = dimension_timeseries(data, selection)
+    if pivot is None:
+
+        pivot = dimension_timeseries(data, selection)
 
     if pivot is None or pivot.empty:
 
@@ -2291,8 +2295,6 @@ def benefit_dimension_chart(
     value_format = ',.1f' if cumulative else ',.0f'
 
     yaxis_label = "Cumulative benefit (NZDm)" if cumulative else "Annual benefit (NZDm)"
-
-    title_text = title
 
     fig = go.Figure()
 
@@ -2322,7 +2324,7 @@ def benefit_dimension_chart(
 
     fig.update_layout(
 
-        title=title_text,
+        title=title,
 
         xaxis_title='Financial year',
 
@@ -2331,6 +2333,187 @@ def benefit_dimension_chart(
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.0),
 
         template='plotly_white',
+
+    )
+
+    return fig
+
+
+def benefit_dimension_overlay_chart(
+
+    data: DashboardData,
+
+    opt_selection: ScenarioSelection,
+
+    comp_selection: ScenarioSelection,
+
+    *,
+
+    cumulative: bool = False,
+
+    dimensions: Optional[List[str]] = None,
+
+    opt_pivot: Optional[pd.DataFrame] = None,
+
+    cmp_pivot: Optional[pd.DataFrame] = None,
+
+) -> Optional[go.Figure]:
+
+    pivot_opt = opt_pivot if opt_pivot is not None else dimension_timeseries(data, opt_selection)
+
+    pivot_cmp = cmp_pivot if cmp_pivot is not None else dimension_timeseries(data, comp_selection)
+
+    if pivot_opt is None and pivot_cmp is None:
+
+        return None
+
+    if cumulative:
+
+        if pivot_opt is not None:
+
+            pivot_opt = pivot_opt.cumsum()
+
+        if pivot_cmp is not None:
+
+            pivot_cmp = pivot_cmp.cumsum()
+
+    dims_available: List[str] = []
+
+    for dim in data.dims:
+
+        if str(dim).strip().lower() == 'total':
+
+            continue
+
+        in_opt = pivot_opt is not None and dim in pivot_opt.columns
+
+        in_cmp = pivot_cmp is not None and dim in pivot_cmp.columns
+
+        if in_opt or in_cmp:
+
+            dims_available.append(str(dim))
+
+    if not dims_available:
+
+        return None
+
+    if dimensions:
+
+        dims_selected = [dim for dim in dimensions if dim in dims_available]
+
+    else:
+
+        dims_selected = dims_available
+
+    if not dims_selected:
+
+        return None
+
+    value_format = ',.1f' if cumulative else ',.0f'
+
+    yaxis_label = "Cumulative benefit (NZDm)" if cumulative else "Annual benefit (NZDm)"
+
+    title_suffix = " (cumulative)" if cumulative else ""
+
+    fig = go.Figure()
+
+    palette = list(qualitative.Plotly) if qualitative.Plotly else ['#1f77b4']
+
+    def series_for(pivot: Optional[pd.DataFrame], dim_label: str) -> Optional[pd.Series]:
+
+        if pivot is None or dim_label not in pivot.columns:
+
+            return None
+
+        return pivot[dim_label]  # type: ignore[index]
+
+    for idx, dim in enumerate(dims_selected):
+
+        color = palette[idx % len(palette)]
+
+        opt_series = series_for(pivot_opt, dim)
+
+        cmp_series = series_for(pivot_cmp, dim)
+
+        if opt_series is not None:
+
+            fig.add_trace(
+
+                go.Scatter(
+
+                    x=opt_series.index,
+
+                    y=opt_series,
+
+                    name=f"{dim} - Optimised",
+
+                    mode='lines',
+
+                    line=dict(color=color, width=2.6),
+
+                    fill='tozeroy',
+
+                    fillcolor=rgba_from_hex(color, 0.28),
+
+                    opacity=0.85,
+
+                    legendgroup=dim,
+
+                    hovertemplate=f"Optimised {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+
+                )
+
+            )
+
+        if cmp_series is not None:
+
+            fig.add_trace(
+
+                go.Scatter(
+
+                    x=cmp_series.index,
+
+                    y=cmp_series,
+
+                    name=f"{dim} - Comparison",
+
+                    mode='lines',
+
+                    line=dict(color=color, width=2.2, dash='dot'),
+
+                    fill='tozeroy',
+
+                    fillcolor=rgba_from_hex(color, 0.16),
+
+                    opacity=0.85,
+
+                    legendgroup=dim,
+
+                    hovertemplate=f"Comparison {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+
+                    showlegend=True,
+
+                )
+
+            )
+
+    if not fig.data:
+
+        return None
+
+    fig.update_layout(
+
+        title=f"Dimension benefit comparison{title_suffix}",
+
+        xaxis_title='Financial year',
+
+        yaxis_title=yaxis_label,
+
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.0),
+
+        template='plotly_white',
+
+        hoverlabel=dict(namelength=-1),
 
     )
 
@@ -3295,35 +3478,89 @@ def main() -> None:
             use_container_width=True,
         )
 
-    show_cumulative_benefits = st.checkbox(
-        "Show cumulative dimension benefits",
-        value=st.session_state.get("show_cumulative_dimension_benefits", False),
-        key="show_cumulative_dimension_benefits",
-    )
+    opt_dim_pivot = dimension_timeseries(data, opt_selection)
+    cmp_dim_pivot = dimension_timeseries(data, comp_selection)
 
-    dim_col1, dim_col2 = st.columns(2)
+    available_dimension_labels = [
+        str(dim)
+        for dim in getattr(data, "dims", [])
+        if str(dim).strip().lower() != "total"
+        and (
+            (opt_dim_pivot is not None and dim in opt_dim_pivot.columns)
+            or (cmp_dim_pivot is not None and dim in cmp_dim_pivot.columns)
+        )
+    ]
+    toggle_col1, toggle_col2 = st.columns(2)
 
-    with dim_col1:
-        opt_dim_fig = benefit_dimension_chart(
-            data,
-            opt_selection,
-            title="Optimised benefit mix by dimension",
-            cumulative=show_cumulative_benefits,
+    with toggle_col1:
+        show_cumulative_benefits = st.checkbox(
+            "Show cumulative dimension benefits",
+            value=st.session_state.get("show_cumulative_dimension_benefits", False),
+            key="show_cumulative_dimension_benefits",
         )
 
-        if opt_dim_fig is not None:
-            st.plotly_chart(opt_dim_fig, use_container_width=True)
-
-    with dim_col2:
-        cmp_dim_fig = benefit_dimension_chart(
-            data,
-            comp_selection,
-            title="Comparison benefit mix by dimension",
-            cumulative=show_cumulative_benefits,
+    with toggle_col2:
+        compare_dimension_overlays = st.checkbox(
+            "Compare dimension overlays",
+            value=st.session_state.get("compare_dimension_overlays", False),
+            key="compare_dimension_overlays",
         )
 
-        if cmp_dim_fig is not None:
-            st.plotly_chart(cmp_dim_fig, use_container_width=True)
+    if compare_dimension_overlays:
+        if not available_dimension_labels:
+            st.info("No dimension data available for comparison.")
+        else:
+            default_dims = available_dimension_labels[:1]
+            selected_dims = st.multiselect(
+                "Dimensions to display",
+                available_dimension_labels,
+                default=default_dims,
+                key="dimension_overlay_selection",
+            )
+
+            if not selected_dims:
+                st.info("Select at least one dimension to compare.")
+            else:
+                comparison_fig = benefit_dimension_overlay_chart(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    cumulative=show_cumulative_benefits,
+                    dimensions=selected_dims,
+                    opt_pivot=opt_dim_pivot,
+                    cmp_pivot=cmp_dim_pivot,
+                )
+
+                if comparison_fig is not None:
+                    st.plotly_chart(comparison_fig, use_container_width=True)
+                else:
+                    st.info("No overlapping dimension data available for comparison.")
+    else:
+        dim_col1, dim_col2 = st.columns(2)
+
+        with dim_col1:
+            opt_dim_fig = benefit_dimension_chart(
+                data,
+                opt_selection,
+                title="Optimised benefit mix by dimension",
+                cumulative=show_cumulative_benefits,
+                pivot=opt_dim_pivot,
+            )
+
+            if opt_dim_fig is not None:
+                st.plotly_chart(opt_dim_fig, use_container_width=True)
+
+        with dim_col2:
+            cmp_dim_fig = benefit_dimension_chart(
+                data,
+                comp_selection,
+                title="Comparison benefit mix by dimension",
+                cumulative=show_cumulative_benefits,
+                pivot=cmp_dim_pivot,
+            )
+
+            if cmp_dim_fig is not None:
+                st.plotly_chart(cmp_dim_fig, use_container_width=True)
 
     st.markdown("### Project delivery schedule")
 
@@ -3744,4 +3981,3 @@ def main() -> None:
 if __name__ == "__main__":
 
     main()
-
