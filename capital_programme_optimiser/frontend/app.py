@@ -394,6 +394,23 @@ def sorted_years(*dfs: Optional[pd.DataFrame]) -> List[int]:
         years.update(numeric_years.tolist())
     return sorted(years)
 
+
+
+def _create_export_table(years: Iterable[int]) -> Tuple[pd.DataFrame, pd.Index]:
+    index = pd.Index([int(year) for year in years], name="Financial year")
+    return pd.DataFrame(index=index), index
+
+
+def pv_to_nominal_index(data: DashboardData, years: Iterable[int]) -> pd.Series:
+    """Return discount multipliers to convert PV back to nominal dollars."""
+    base_rate = float(getattr(data, "benefit_rate", 0.0) or 0.0)
+    start_year = int(getattr(data, "start_fy", 0))
+    factor = 1.0 + base_rate
+    year_index = pd.Index([int(year) for year in years], name="Financial year")
+    offsets = (year_index - start_year).to_numpy()
+    multipliers = np.power(factor, np.clip(offsets, a_min=0, a_max=None))
+    return pd.Series(multipliers, index=year_index, name="Discount multiplier")
+
 def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
     sanitized = re.sub(r"[\\/*?:\[\]]", "_", name).strip()
     if not sanitized:
@@ -428,11 +445,13 @@ def prepare_efficiency_export(
     years = sorted_years(opt_df, cmp_df)
     if not years:
         return None
-    export = pd.DataFrame({"Financial year": years})
+    export, index = _create_export_table(years)
     if opt_df is not None and not opt_df.empty:
         cum_spend = series_from_df(opt_df, "CumSpend")
         if not cum_spend.empty:
-            export["Optimised cumulative spend (NZD)"] = scale_series_to_nzd(cum_spend.reindex(years))
+            aligned_spend = cum_spend.reindex(index)
+            if aligned_spend.notna().any():
+                export["Optimised cumulative spend (NZD)"] = scale_series_to_nzd(aligned_spend)
         series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix="Optimised")
         if not series_opt.empty:
             year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
@@ -441,12 +460,15 @@ def prepare_efficiency_export(
                 aligned = pd.Series(
                     series_opt[mask].astype(float).to_numpy(),
                     index=year_values[mask].astype(int).to_numpy(),
-                )
-                export[f"{label_opt} (NZD)"] = scale_series_to_nzd(aligned.reindex(years))
+                ).reindex(index)
+                if aligned.notna().any():
+                    export[f"{label_opt} (NZD)"] = scale_series_to_nzd(aligned)
     if cmp_df is not None and not cmp_df.empty:
         cum_spend_cmp = series_from_df(cmp_df, "CumSpend")
         if not cum_spend_cmp.empty:
-            export["Comparison cumulative spend (NZD)"] = scale_series_to_nzd(cum_spend_cmp.reindex(years))
+            aligned_cmp_spend = cum_spend_cmp.reindex(index)
+            if aligned_cmp_spend.notna().any():
+                export["Comparison cumulative spend (NZD)"] = scale_series_to_nzd(aligned_cmp_spend)
         series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix="Comparison")
         if not series_cmp.empty:
             year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
@@ -455,11 +477,12 @@ def prepare_efficiency_export(
                 aligned = pd.Series(
                     series_cmp[mask].astype(float).to_numpy(),
                     index=year_values[mask].astype(int).to_numpy(),
-                )
-                export[f"{label_cmp} (NZD)"] = scale_series_to_nzd(aligned.reindex(years))
-    if len(export.columns) == 1:
+                ).reindex(index)
+                if aligned.notna().any():
+                    export[f"{label_cmp} (NZD)"] = scale_series_to_nzd(aligned)
+    if export.shape[1] == 0:
         return None
-    return export
+    return export.reset_index()
 
 def prepare_cash_export(
     df: Optional[pd.DataFrame],
@@ -471,7 +494,7 @@ def prepare_cash_export(
     years = sorted_years(df)
     if not years:
         return None
-    export = pd.DataFrame({"Financial year": years})
+    export, index = _create_export_table(years)
     column_map = {
         "Spend": "Annual spend (NZD)",
         "ClosingNet": "Closing net (NZD)",
@@ -488,10 +511,12 @@ def prepare_cash_export(
         series = series_from_df(df, source)
         if series.empty:
             continue
-        export[f"{label_prefix} {label}"] = scale_series_to_nzd(series.reindex(years))
-    if len(export.columns) == 1:
+        aligned = series.reindex(index)
+        if aligned.notna().any():
+            export[f"{label_prefix} {label}"] = scale_series_to_nzd(aligned)
+    if export.shape[1] == 0:
         return None
-    return export
+    return export.reset_index()
 
 def prepare_benefit_export(
     opt_df: Optional[pd.DataFrame],
@@ -503,18 +528,22 @@ def prepare_benefit_export(
     years = sorted_years(opt_df, cmp_df)
     if not years:
         return None
-    export = pd.DataFrame({"Financial year": years})
+    export, index = _create_export_table(years)
     if opt_df is not None and not opt_df.empty and "PVBenefit" in opt_df.columns:
         series_opt = series_from_df(opt_df, "PVBenefit")
         if not series_opt.empty:
-            export[f"{opt_label} benefit real (NZD)"] = scale_series_to_nzd(series_opt.reindex(years))
+            aligned_opt = series_opt.reindex(index)
+            if aligned_opt.notna().any():
+                export[f"{opt_label} benefit real (NZD)"] = scale_series_to_nzd(aligned_opt)
     if cmp_df is not None and not cmp_df.empty and "PVBenefit" in cmp_df.columns:
         series_cmp = series_from_df(cmp_df, "PVBenefit")
         if not series_cmp.empty:
-            export[f"{cmp_label} benefit real (NZD)"] = scale_series_to_nzd(series_cmp.reindex(years))
-    if len(export.columns) == 1:
+            aligned_cmp = series_cmp.reindex(index)
+            if aligned_cmp.notna().any():
+                export[f"{cmp_label} benefit real (NZD)"] = scale_series_to_nzd(aligned_cmp)
+    if export.shape[1] == 0:
         return None
-    return export
+    return export.reset_index()
 
 def prepare_benefit_delta_export(
     opt_df: Optional[pd.DataFrame],
