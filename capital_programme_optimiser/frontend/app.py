@@ -1446,6 +1446,8 @@ def cash_chart(
 
         template="plotly_white",
 
+        hoverlabel=dict(namelength=-1),
+
     )
 
     return fig
@@ -1484,6 +1486,8 @@ def benefit_chart(
 
                 yaxis="y2",
 
+                hovertemplate="<b>Optimized Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
+
             )
 
         )
@@ -1507,6 +1511,8 @@ def benefit_chart(
                 opacity=0.85,
 
                 yaxis="y2",
+
+                hovertemplate="<b>Comparison Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
 
             )
 
@@ -1533,6 +1539,9 @@ def benefit_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
         template="plotly_white",
+
+        hoverlabel=dict(namelength=-1),
+
 
     )
 
@@ -1605,6 +1614,9 @@ def benefit_delta_chart(
             mode="lines",
 
             line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.0),
+            hovertemplate="<b>Delta Cumulative Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
+
+
 
         )
 
@@ -1623,12 +1635,15 @@ def benefit_delta_chart(
             mode="lines",
 
             line=dict(color=CUMULATIVE_CMP_LINE_COLOR, dash="dot", width=2.6),
+            hovertemplate="<b>Delta Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
+
+
 
         )
 
     )
 
-    title_text = f"{context_label} delta (optimised minus comparison)" if context_label else "Benefit delta (optimised minus comparison)"
+    title_text = "Cumulative Benefits Delta Real"
 
     yaxis_text = f"NZD millions ({context_label})" if context_label else "NZD millions (real)"
 
@@ -1643,6 +1658,9 @@ def benefit_delta_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
         template="plotly_white",
+
+        hoverlabel=dict(namelength=-1),
+
 
     )
 
@@ -1895,6 +1913,7 @@ def benefit_waterfall_chart(
 
             connector={"line": {"color": "#BBBBBB", "width": 0.5}},
 
+            hovertemplate="<b>%{x}</b><br>%{y:,.1f}m<extra></extra>",
         )
 
     )
@@ -1906,6 +1925,7 @@ def benefit_waterfall_chart(
         yaxis_title=f"NZD millions ({context_label})",
 
         template="plotly_white",
+        hoverlabel=dict(namelength=-1),
 
         waterfallgap=0.3,
 
@@ -2102,6 +2122,10 @@ def efficiency_chart(
 
                 opacity=0.55,
 
+                customdata=np.asarray(opt_df["CumSpend"], dtype=float) / 1000.0,
+
+                hovertemplate="<b>Optimised cumulative spend</b><br>FY %{x}: %{customdata:,.1f}b<extra></extra>",
+
             )
 
         )
@@ -2127,6 +2151,10 @@ def efficiency_chart(
                 mode="lines",
 
                 line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=2.6, dash="dash"),
+
+                customdata=np.asarray(series_cmp, dtype=float) / 1000.0,
+
+                hovertemplate=f"<b>{label_cmp}</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
             )
 
@@ -2160,6 +2188,10 @@ def efficiency_chart(
 
                 line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.2),
 
+                customdata=np.asarray(series_opt, dtype=float) / 1000.0,
+
+                hovertemplate=f"<b>{label_opt}</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
+
                 **fill_kwargs,
 
             )
@@ -2175,6 +2207,8 @@ def efficiency_chart(
         yaxis_title="NZD millions",
 
         template="plotly_white",
+
+        hoverlabel=dict(namelength=-1),
 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
