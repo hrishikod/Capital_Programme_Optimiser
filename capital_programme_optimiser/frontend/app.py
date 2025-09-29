@@ -312,6 +312,12 @@ def format_currency(value: float) -> str:
 
     return f"{value:,.0f} m" if np.isfinite(value) else "-"
 
+def format_large_amount(value: float) -> str:
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}b"
+    return f"{value / 1_000_000:.1f}m"
+
 def format_npv_context(rate: float, *horizon_values: Optional[int]) -> str:
     """Describe the NPV scope including horizon and discount rate."""
     rate_pct = float(rate) * 100.0
@@ -1374,7 +1380,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["Spend"],
+            y=df["Spend"].astype(float) * 1_000_000.0,
 
             name="Annual spend",
 
@@ -1382,6 +1388,10 @@ def cash_chart(
 
             opacity=BAR_OPACITY,
 
+            customdata=[format_large_amount(val) for val in df["Spend"].astype(float) * 1_000_000.0],
+
+            hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+
         )
 
     )
@@ -1392,7 +1402,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["ClosingNet"],
+            y=df["ClosingNet"].astype(float) * 1_000_000.0,
 
             name="Closing net",
 
@@ -1400,6 +1410,10 @@ def cash_chart(
 
             line=dict(color=CLOSING_NET_COLOR, width=3),
 
+            customdata=[format_large_amount(val) for val in df["ClosingNet"].astype(float) * 1_000_000.0],
+
+            hovertemplate="<b>Closing net</b><br>FY %{x}: %{customdata}<extra></extra>",
+
         )
 
     )
@@ -1410,7 +1424,7 @@ def cash_chart(
 
             x=df["Year"],
 
-            y=df["Envelope"],
+            y=df["Envelope"].astype(float) * 1_000_000.0,
 
             name="Envelope",
 
@@ -1420,17 +1434,21 @@ def cash_chart(
 
             marker=dict(color=ENVELOPE_COLOR, size=6),
 
+            customdata=[format_large_amount(val) for val in df["Envelope"].astype(float) * 1_000_000.0],
+
+            hovertemplate="<b>Envelope</b><br>FY %{x}: %{customdata}<extra></extra>",
+
         )
 
     )
 
     fig.add_hline(y=0, line=dict(color="#888888", dash="dot", width=1))
 
-    yaxis_title_default = "NZD millions (values already in M)"
+    yaxis_title_default = "NZD (millions/billions)"
 
     if context_label:
 
-        yaxis_title_default = f"NZD millions ({context_label})"
+        yaxis_title_default = f"NZD ({context_label}, millions/billions)"
 
     fig.update_layout(
 
@@ -1445,6 +1463,8 @@ def cash_chart(
         yaxis_title=yaxis_title_default,
 
         template="plotly_white",
+
+        yaxis=dict(tickformat="~s"),
 
         hoverlabel=dict(namelength=-1),
 
