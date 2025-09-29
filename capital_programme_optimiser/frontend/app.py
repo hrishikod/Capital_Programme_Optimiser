@@ -2268,6 +2268,8 @@ def benefit_dimension_chart(
 
     title: str,
 
+    cumulative: bool = False,
+
 ) -> Optional[go.Figure]:
 
     pivot = dimension_timeseries(data, selection)
@@ -2276,11 +2278,21 @@ def benefit_dimension_chart(
 
         return None
 
+    if cumulative:
+
+        pivot = pivot.cumsum()
+
     dims = [dim for dim in pivot.columns if str(dim).strip().lower() != 'total']
 
     if not dims:
 
         return None
+
+    value_format = ',.1f' if cumulative else ',.0f'
+
+    yaxis_label = "Cumulative benefit (NZDm)" if cumulative else "Annual benefit (NZDm)"
+
+    title_text = title
 
     fig = go.Figure()
 
@@ -2302,7 +2314,7 @@ def benefit_dimension_chart(
 
                 stackgroup='benefits',
 
-                hovertemplate='FY %{x}: %{y:,.0f} m<extra>' + str(dim) + '</extra>',
+                hovertemplate=f"FY %{{x}}: %{{y:{value_format}}} m<extra>{dim}</extra>",
 
             )
 
@@ -2310,11 +2322,11 @@ def benefit_dimension_chart(
 
     fig.update_layout(
 
-        title=title,
+        title=title_text,
 
         xaxis_title='Financial year',
 
-        yaxis_title='Annual benefit (NZDm)',
+        yaxis_title=yaxis_label,
 
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.0),
 
@@ -3283,11 +3295,20 @@ def main() -> None:
             use_container_width=True,
         )
 
+    show_cumulative_benefits = st.checkbox(
+        "Show cumulative dimension benefits",
+        value=st.session_state.get("show_cumulative_dimension_benefits", False),
+        key="show_cumulative_dimension_benefits",
+    )
+
     dim_col1, dim_col2 = st.columns(2)
 
     with dim_col1:
         opt_dim_fig = benefit_dimension_chart(
-            data, opt_selection, title="Optimised benefit mix by dimension"
+            data,
+            opt_selection,
+            title="Optimised benefit mix by dimension",
+            cumulative=show_cumulative_benefits,
         )
 
         if opt_dim_fig is not None:
@@ -3295,7 +3316,10 @@ def main() -> None:
 
     with dim_col2:
         cmp_dim_fig = benefit_dimension_chart(
-            data, comp_selection, title="Comparison benefit mix by dimension"
+            data,
+            comp_selection,
+            title="Comparison benefit mix by dimension",
+            cumulative=show_cumulative_benefits,
         )
 
         if cmp_dim_fig is not None:
