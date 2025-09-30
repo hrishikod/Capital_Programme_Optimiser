@@ -3858,7 +3858,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
             mode="markers+text",
 
-            marker=dict(color="rgba(0,0,0,0)", size=14),
+            marker=dict(color="rgba(0,0,0,0)", size=6),
 
             hovertext=hover_labels,
 
