@@ -3091,7 +3091,7 @@ def spend_gantt_chart(
 
     comparison_selection: ScenarioSelection,
 
-    show_arrows: bool,
+    show_outline: bool,
 
     title: str,
 
@@ -3111,17 +3111,22 @@ def spend_gantt_chart(
 
     y_labels = [run.project for run in runs]
 
+    y_positions = list(range(len(runs)))
+
     base_years = [run.start_year for run in runs]
 
     durations = [max(1, run.end_year - run.start_year + 1) for run in runs]
 
-    custom = [[run.end_year, run.total_spend] for run in runs]
+    custom = [
+        [run.project, run.start_year, run.end_year, run.total_spend]
+        for run in runs
+    ]
 
     fig = go.Figure(
 
         data=go.Bar(
 
-            y=y_labels,
+            y=y_positions,
 
             x=durations,
 
@@ -3129,89 +3134,95 @@ def spend_gantt_chart(
 
             orientation="h",
 
-            marker=dict(color=GANTT_COLOR),
-
-            hovertemplate="project: %{y}<br>start FY: %{base}<br>end FY: %{customdata[0]}<br>total spend: %{customdata[1]:,.0f} m<extra></extra>",
+            marker=dict(color=GANTT_COLOR, line=dict(width=0)),
 
             customdata=custom,
+
+            hovertemplate=(
+
+                "Project: %{customdata[0]}<br>"
+
+                "Start FY: %{customdata[1]}<br>"
+
+                "End FY: %{customdata[2]}<br>"
+
+                "Total spend: %{customdata[3]:,.0f} m<extra></extra>"
+
+            ),
 
         )
 
     )
 
-    if show_arrows and comparison_selection and comparison_selection.code:
+    if show_outline and comparison_selection and comparison_selection.code:
 
-        other_runs = {run.project: run for run in extract_project_runs(data, comparison_selection.code)}
+        comparison_runs = {
 
-        for run in runs:
+            run.project: run
 
-            other = other_runs.get(run.project)
+            for run in extract_project_runs(data, comparison_selection.code)
+
+        }
+
+        outline_color = "#98C2DC"
+
+        bar_half = 0.4
+
+        x_inset = 0.05
+
+        y_inset = 0.08
+
+        for idx, run in enumerate(runs):
+
+            other = comparison_runs.get(run.project)
 
             if not other:
 
                 continue
 
-            delta = other.start_year - run.start_year
+            y_center = y_positions[idx]
 
-            if delta == 0:
+            y_bottom = y_center - bar_half + y_inset
+
+            y_top = y_center + bar_half - y_inset
+
+            if y_bottom >= y_top:
 
                 continue
 
-            arrow_color = CLOSING_NET_COLOR if delta > 0 else COMPARISON_COLOR
+            start = float(other.start_year)
 
-            line_x = [other.start_year, run.start_year]
+            finish = float(other.end_year) + 1.0
 
-            line_y = [run.project, run.project]
+            left = start + x_inset
 
-            years = abs(delta)
+            right = finish - x_inset
 
-            direction_label = "T-" if delta > 0 else "T+"
+            if left >= right:
 
-            label = f"{direction_label}{years}"
+                midpoint = (start + finish) / 2.0
+
+                left = midpoint - 0.02
+
+                right = midpoint + 0.02
 
             fig.add_trace(
 
                 go.Scatter(
 
-                    x=line_x,
+                    x=[left, right, right, left, left],
 
-                    y=line_y,
+                    y=[y_bottom, y_bottom, y_top, y_top, y_bottom],
 
                     mode="lines",
 
-                    line=dict(color=arrow_color, width=4),
+                    line=dict(color=outline_color, width=1.5, dash="dot"),
 
-                    opacity=1.0,
-
-                    hoverinfo="text",
-
-                    text=[f"Schedule shift: {label}" for _ in line_x],
+                    hoverinfo="skip",
 
                     showlegend=False,
 
-                )
-
-            )
-
-            head_symbol = "triangle-left" if delta > 0 else "triangle-right"
-
-            fig.add_trace(
-
-                go.Scatter(
-
-                    x=[run.start_year],
-
-                    y=[run.project],
-
-                    mode="markers",
-
-                    marker=dict(symbol=head_symbol, size=12, color=arrow_color),
-
-                    hoverinfo="text",
-
-                    text=[label],
-
-                    showlegend=False,
+                    cliponaxis=False,
 
                 )
 
@@ -3223,7 +3234,19 @@ def spend_gantt_chart(
 
         xaxis=dict(title=None, tickmode="linear", dtick=1, tickangle=-45),
 
-        yaxis=dict(title="Project", autorange="reversed"),
+        yaxis=dict(
+
+            title="Project",
+
+            autorange="reversed",
+
+            tickmode="array",
+
+            tickvals=y_positions,
+
+            ticktext=y_labels,
+
+        ),
 
         template="plotly_white",
 
@@ -4212,13 +4235,13 @@ def main() -> None:
 
     with controls_col2:
 
-        show_arrows = st.checkbox(
+        show_outline = st.checkbox(
 
-            "Show schedule shift arrows",
+            "Show comparison schedule outline",
 
             value=True,
 
-            key="gantt_arrows",
+            key="gantt_outline",
 
         )
 
@@ -4234,7 +4257,7 @@ def main() -> None:
 
         comparison_selection=comparison_selection,
 
-        show_arrows=show_arrows,
+        show_outline=show_outline,
 
         title=f"Project delivery schedule - {gantt_option.lower()}",
 
