@@ -252,6 +252,17 @@ g.hoverlayer .hovertext text tspan {
 }
 </style>
 """
+def system_prefers_dark_mode() -> bool:
+    """Detect the Streamlit base theme to determine the default dark-mode preference."""
+    theme_base = (st.get_option("theme.base") or "").strip().lower()
+    if theme_base in {"dark", "light"}:
+        return theme_base == "dark"
+    background_setting = (st.get_option("theme.backgroundColor") or "").strip()
+    luminance = relative_luminance(background_setting) if background_setting else None
+    if luminance is not None:
+        return luminance < 0.45
+    return False
+
 def is_dark_mode() -> bool:
     """Return True when the dashboard should render in dark mode."""
     return bool(st.session_state.get(DARK_MODE_SESSION_KEY, False))
@@ -3940,15 +3951,21 @@ def main() -> None:
 
     st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
 
+    system_default_dark = system_prefers_dark_mode()
     if DARK_MODE_SESSION_KEY not in st.session_state:
-        st.session_state[DARK_MODE_SESSION_KEY] = False
+        st.session_state[DARK_MODE_SESSION_KEY] = system_default_dark
 
     st.sidebar.header("Display")
+    toggle_help = "Switch between light and dark presentation themes."
+    if system_default_dark:
+        toggle_help += " Your environment prefers dark mode by default."
+    else:
+        toggle_help += " Your environment prefers light mode by default."
     dark_mode = st.sidebar.toggle(
         "Dark mode",
         value=st.session_state[DARK_MODE_SESSION_KEY],
         key="dark_mode_toggle",
-        help="Switch between light and dark presentation themes.",
+        help=toggle_help,
     )
     st.session_state[DARK_MODE_SESSION_KEY] = dark_mode
     apply_app_theme(dark_mode)
@@ -4938,5 +4955,6 @@ def main() -> None:
 if __name__ == "__main__":
 
     main()
+
 
 
