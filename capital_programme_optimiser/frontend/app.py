@@ -3470,6 +3470,7 @@ def spend_gantt_chart(
                 seg_right = min(seg_end - x_inset, right)
                 if seg_right <= seg_left:
                     continue
+                hover_template = f"{hover_text}<extra></extra>"
                 fig.add_trace(
                     go.Scatter(
                         x=[seg_left, seg_right, seg_right, seg_left, seg_left],
@@ -3479,8 +3480,9 @@ def spend_gantt_chart(
                         fill="toself",
                         fillcolor="rgba(152, 194, 220, 0.02)",
                         hoveron="fills",
-                        hovertext=[hover_text] * 5,
-                        hovertemplate="%{hovertext}<extra></extra>",
+                        name="",
+                        hovertemplate=hover_template,
+                        hoverlabel=dict(namelength=0),
                         showlegend=False,
                         cliponaxis=False,
                     )
