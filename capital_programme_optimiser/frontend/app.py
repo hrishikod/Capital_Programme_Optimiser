@@ -3814,51 +3814,19 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
     gap_ratio = 0.05
 
-    shapes = []
-
-    for year, color in zip(years, colors):
-
-        half_gap = gap_ratio / 2.0
-
-        shapes.append(
-
-            dict(
-
-                type="rect",
-
-                xref="x",
-
-                yref="y",
-
-                x0=year - 0.5 + half_gap,
-
-                x1=year + 0.5 - half_gap,
-
-                y0=0.0,
-
-                y1=1.0,
-
-                fillcolor=color,
-
-                line=dict(color="#0F172A", width=1.0),
-
-                layer="below",
-
-            )
-
-        )
+    bar_width = max(0.0, 1.0 - gap_ratio)
 
     fig = go.Figure(
 
-        data=go.Scatter(
+        data=go.Bar(
 
             x=years,
 
-            y=[0.5] * len(years),
+            y=[1.0] * len(years),
 
-            mode="markers+text",
+            width=bar_width if years else None,
 
-            marker=dict(color="rgba(0,0,0,0)", size=6),
+            marker=dict(color=colors, line=dict(color="#0F172A", width=1.0)),
 
             hovertext=hover_labels,
 
@@ -3866,19 +3834,19 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
             text=text_values,
 
-            textposition="middle center",
+            textposition="inside",
 
             texttemplate="%{text}",
-
-            cliponaxis=False,
 
         )
 
     )
 
-    fig.update_traces(textfont=dict(size=14, color=text_colors))
+    fig.update_traces(textfont=dict(size=14), hoverlabel=dict(namelength=0))
+    if fig.data:
+        fig.data[0].textfont.color = text_colors
 
-    fig.update_layout(shapes=shapes)
+    fig.update_layout(bargap=gap_ratio, bargroupgap=0.0)
 
     tick0 = float(totals["Year"].min()) if not totals.empty else 0.0
 
