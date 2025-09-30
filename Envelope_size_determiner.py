@@ -51,7 +51,7 @@ DATA_FILE = Path(r"C:\Users\Adrian Desilvestro\Documents\NZTA\Project_Rons_optim
 COSTS_SHEET = "Costs"
 
 # >>> 3) Baseline capacity assumption (example from your note)
-BASELINE_TOTAL_B = 115.0   # NZD billions fits in...
+BASELINE_TOTAL_B = 115.0   # $ billions fits in...
 BASELINE_YEARS   = 50      # ...this many years
 
 # ---------- helpers ----------
@@ -84,13 +84,13 @@ if not mask_p95_nom.any():
 
 cut = df.loc[mask_p95_nom].copy()
 
-# normalise names and compute project totals (NZD)
+# normalise names and compute project totals ($)
 cut["Project_norm"] = cut[project_col].map(_norm_name)
 for c in year_cols:
     cut[c] = pd.to_numeric(cut[c], errors="coerce").fillna(0.0)
 
 # collapse possible duplicate rows per project (sum across variants if present)
-totals_by_project = cut.groupby("Project_norm")[year_cols].sum().sum(axis=1)  # NZD
+totals_by_project = cut.groupby("Project_norm")[year_cols].sum().sum(axis=1)  # $
 totals_by_project = totals_by_project[totals_by_project > 0]  # drop zero rows
 
 # ---------- choose INCLUDED set ----------
@@ -144,12 +144,12 @@ annual_envelope_M = included_total_M / years_needed
 # ---------- report ----------
 print("=== P95 Nominal (Included Projects) ===")
 print(f"Projects kept: {included_n} / {baseline_n} (whitelist mode: {whitelist_mode})")
-print(f"Total P95 Nominal: {included_total_B:,.3f} B NZD ({included_total_M:,.0f} M)")
+print(f"Total P95 Nominal: {included_total_B:,.3f} $B ({included_total_M:,.0f} M)")
 print(f"Baseline capacity: {BASELINE_TOTAL_B:.1f} B over {BASELINE_YEARS} years")
 print(f"Buffer multiplier: {buffer_mult:.3f}  (scarcity={slack1:.3f}, concentration={slack2:.3f})")
 print(f"Raw proportional years: {raw_years:.2f}")
 print(f"→ Years needed (buffered, ceil): {years_needed}")
-print(f"→ Annual envelope: {annual_envelope_B:,.3f} B NZD/yr ({annual_envelope_M:,.0f} M NZD/yr)")
+print(f"→ Annual envelope: {annual_envelope_B:,.3f} $B/yr ({annual_envelope_M:,.0f} M $/yr)")
 
 # Optional: see which projects are included and their totals
 # for p, v in included_series.sort_values(ascending=False).items():

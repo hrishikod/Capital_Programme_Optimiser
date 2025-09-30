@@ -146,11 +146,11 @@ def format_envelope_result(result: EnvelopeResult) -> str:
     return (
         "=== P95 Nominal (Included Projects) ===\n"
         f"Projects kept: {result.projects_kept} / {result.projects_total}\n"
-        f"Total P95 Nominal: {result.total_nominal_b:,.3f} B NZD ({result.total_nominal_m:,.0f} M)\n"
+        f"Total P95 Nominal: {result.total_nominal_b:,.3f} $B ({result.total_nominal_m:,.0f} M)\n"
         f"Buffer multiplier: {result.buffer_multiplier:,.3f}  (scarcity={result.scarcity:,.3f}, concentration={result.concentration:,.3f})\n"
         f"Raw proportional years: {result.raw_years:,.2f}\n"
         f"→ Years needed (buffered, ceil): {result.years_needed}\n"
-        f"→ Annual envelope: {result.annual_envelope_b:,.3f} B NZD/yr ({result.annual_envelope_m:,.0f} M NZD/yr)"
+        f"→ Annual envelope: {result.annual_envelope_b:,.3f} $B/yr ({result.annual_envelope_m:,.0f} M $/yr)"
     )
 
 

@@ -803,7 +803,7 @@ def dump_pickle(
         "PrimaryDim": primary_dim
     } for v, s in sel.items()]).sort_values(["StartFY","Project"], ignore_index=True)
 
-    # Spend matrix (M NZD)
+    # Spend matrix (M $)
     df_sp = pd.DataFrame(0.0, index=list(proj.keys()), columns=fy)
     for v, s in sel.items():
         base = var[v]["base"]
@@ -1099,7 +1099,7 @@ def optimise_family_for(ct: str, scenario_key: str, scenario_sheet: str):
 
 # ---------- main ------------------------------------------------------
 def main():
-    print("MAX_STARTS per FY:", CFG["MAX_STARTS"], "(unit = million NZ$)")
+    print("MAX_STARTS per FY:", CFG["MAX_STARTS"], "(unit = million $)")
     print(f"CFG window: START_FY={CFG['START_FY']}  YEARS={CFG['YEARS']}")
     if EARLY_STOP_ON:
         print(f">> Early‑stop active: halting when MIP gap ≤ {EARLY_STOP_PCT:.2f}%")

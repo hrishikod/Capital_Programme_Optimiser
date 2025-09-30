@@ -167,6 +167,104 @@ div[data-testid="stPlotlyChart"] > div {
 </style>
 """
 
+DARK_MODE_SESSION_KEY = "dark_mode_enabled"
+
+LIGHT_THEME_STYLE = """
+<style id="app-theme">
+:root {
+    color-scheme: light;
+    --hover-bg: rgba(255, 255, 255, 0.96);
+    --hover-border: rgba(15, 23, 42, 0.18);
+    --hover-text: #0f172a;
+    --hover-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
+}
+[data-testid="stAppViewContainer"] {
+    background-color: #f8fafc;
+    color: #0f172a;
+}
+[data-testid="stSidebar"] {
+    background-color: #ffffff;
+    color: #0f172a;
+}
+[data-testid="stSidebar"] * {
+    color: #0f172a !important;
+}
+section.main > div {
+    color: #0f172a;
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #0f172a;
+}
+</style>
+"""
+
+DARK_THEME_STYLE = """
+<style id="app-theme">
+:root {
+    color-scheme: dark;
+    --hover-bg: rgba(15, 23, 42, 0.94);
+    --hover-border: rgba(148, 163, 184, 0.45);
+    --hover-text: #e2e8f0;
+    --hover-shadow: 0 18px 32px rgba(15, 23, 42, 0.4);
+}
+[data-testid="stAppViewContainer"] {
+    background-color: #0b1623;
+    color: #f8fafc;
+}
+[data-testid="stSidebar"] {
+    background-color: #111e2f;
+}
+[data-testid="stSidebar"] * {
+    color: #f8fafc !important;
+}
+section.main > div {
+    color: #f8fafc;
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #f8fafc;
+}
+</style>
+"""
+
+PLOTLY_HOVER_STYLE = """
+<style id="plotly-hover-style">
+g.hoverlayer .hovertext rect.bg {
+    rx: 6 !important;
+    ry: 6 !important;
+    fill: var(--hover-bg) !important;
+    stroke: var(--hover-border) !important;
+    stroke-width: 1.25px !important;
+}
+
+g.hoverlayer .hovertext {
+    filter: drop-shadow(var(--hover-shadow));
+}
+
+g.hoverlayer .hovertext text {
+    font-family: "Inter", "Segoe UI", sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    fill: var(--hover-text) !important;
+}
+
+g.hoverlayer .hovertext text tspan {
+    font-family: inherit !important;
+}
+</style>
+"""
+def is_dark_mode() -> bool:
+    """Return True when the dashboard should render in dark mode."""
+    return bool(st.session_state.get(DARK_MODE_SESSION_KEY, False))
+
+def plotly_template() -> str:
+    """Resolve the Plotly template name based on the active theme."""
+    return "plotly_dark" if is_dark_mode() else "plotly_white"
+
+def apply_app_theme(dark_mode: bool) -> None:
+    """Apply global styles and keep Plotly charts transparent."""
+    st.markdown(DARK_THEME_STYLE if dark_mode else LIGHT_THEME_STYLE, unsafe_allow_html=True)
+    st.markdown(PLOTLY_HOVER_STYLE, unsafe_allow_html=True)
+    st.markdown(PLOTLY_TRANSPARENT_STYLE, unsafe_allow_html=True)
 CUMULATIVE_OPT_LINE_COLOR = "#2E7D32"
 CUMULATIVE_CMP_LINE_COLOR = "#66BB6A"
 
@@ -451,7 +549,7 @@ def prepare_efficiency_export(
         if not cum_spend.empty:
             aligned_spend = cum_spend.reindex(index)
             if aligned_spend.notna().any():
-                export["Optimised cumulative spend (NZD)"] = scale_series_to_nzd(aligned_spend)
+                export["Optimised cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
         series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix="Optimised")
         if not series_opt.empty:
             year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
@@ -462,13 +560,13 @@ def prepare_efficiency_export(
                     index=year_values[mask].astype(int).to_numpy(),
                 ).reindex(index)
                 if aligned.notna().any():
-                    export[f"{label_opt} (NZD)"] = scale_series_to_nzd(aligned)
+                    export[f"{label_opt} ($)"] = scale_series_to_nzd(aligned)
     if cmp_df is not None and not cmp_df.empty:
         cum_spend_cmp = series_from_df(cmp_df, "CumSpend")
         if not cum_spend_cmp.empty:
             aligned_cmp_spend = cum_spend_cmp.reindex(index)
             if aligned_cmp_spend.notna().any():
-                export["Comparison cumulative spend (NZD)"] = scale_series_to_nzd(aligned_cmp_spend)
+                export["Comparison cumulative spend ($)"] = scale_series_to_nzd(aligned_cmp_spend)
         series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix="Comparison")
         if not series_cmp.empty:
             year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
@@ -479,7 +577,7 @@ def prepare_efficiency_export(
                     index=year_values[mask].astype(int).to_numpy(),
                 ).reindex(index)
                 if aligned.notna().any():
-                    export[f"{label_cmp} (NZD)"] = scale_series_to_nzd(aligned)
+                    export[f"{label_cmp} ($)"] = scale_series_to_nzd(aligned)
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -496,14 +594,14 @@ def prepare_cash_export(
         return None
     export, index = _create_export_table(years)
     column_map = {
-        "Spend": "Annual spend (NZD)",
-        "ClosingNet": "Closing net (NZD)",
-        "Envelope": "Envelope (NZD)",
-        "BenefitFlow": "Benefit flow (NZD)",
-        "PVBenefit": "PV benefit (NZD)",
-        "CumSpend": "Cumulative spend (NZD)",
-        "CumBenefit": "Cumulative benefit (NZD)",
-        "CumPVBenefit": "Cumulative PV benefit (NZD)",
+        "Spend": "Annual spend ($)",
+        "ClosingNet": "Closing net ($)",
+        "Envelope": "Envelope ($)",
+        "BenefitFlow": "Benefit flow ($)",
+        "PVBenefit": "PV benefit ($)",
+        "CumSpend": "Cumulative spend ($)",
+        "CumBenefit": "Cumulative benefit ($)",
+        "CumPVBenefit": "Cumulative PV benefit ($)",
     }
     for source, label in column_map.items():
         if source not in df.columns:
@@ -534,13 +632,13 @@ def prepare_benefit_export(
         if not series_opt.empty:
             aligned_opt = series_opt.reindex(index)
             if aligned_opt.notna().any():
-                export[f"{opt_label} benefit real (NZD)"] = scale_series_to_nzd(aligned_opt)
+                export[f"{opt_label} benefit real ($)"] = scale_series_to_nzd(aligned_opt)
     if cmp_df is not None and not cmp_df.empty and "PVBenefit" in cmp_df.columns:
         series_cmp = series_from_df(cmp_df, "PVBenefit")
         if not series_cmp.empty:
             aligned_cmp = series_cmp.reindex(index)
             if aligned_cmp.notna().any():
-                export[f"{cmp_label} benefit real (NZD)"] = scale_series_to_nzd(aligned_cmp)
+                export[f"{cmp_label} benefit real ($)"] = scale_series_to_nzd(aligned_cmp)
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -562,10 +660,10 @@ def prepare_benefit_delta_export(
         return None
     merged["Year"] = merged["Year"].astype(int)
     export = pd.DataFrame({"Financial year": merged["Year"]})
-    export["Delta cumulative benefit real (NZD)"] = scale_series_to_nzd(
+    export["Delta cumulative benefit real ($)"] = scale_series_to_nzd(
         merged["CumBenefit_opt"] - merged["CumBenefit_cmp"]
     )
-    export["Delta benefit real (NZD)"] = scale_series_to_nzd(
+    export["Delta benefit real ($)"] = scale_series_to_nzd(
         merged["CumPVBenefit_opt"] - merged["CumPVBenefit_cmp"]
     )
     return export
@@ -588,7 +686,7 @@ def prepare_dimension_chart_export(
         return None
     scaled = data.apply(scale_series_to_nzd)
     scaled.insert(0, "Financial year", scaled.index)
-    scaled.columns = [scaled.columns[0]] + [f"{col} (NZD)" for col in scaled.columns[1:]]
+    scaled.columns = [scaled.columns[0]] + [f"{col} ($)" for col in scaled.columns[1:]]
     return scaled.reset_index(drop=True)
 
 def prepare_dimension_overlay_export(
@@ -611,7 +709,7 @@ def prepare_dimension_overlay_export(
             opt = opt.cumsum()
         for dim in selected_dims:
             if dim in opt.columns:
-                export[f"Optimised - {dim} (NZD)"] = scale_series_to_nzd(opt[dim])
+                export[f"Optimised - {dim} ($)"] = scale_series_to_nzd(opt[dim])
                 added = True
     if pivot_cmp is not None and not pivot_cmp.empty:
         cmp = pivot_cmp.reindex(index=years_list)
@@ -620,7 +718,7 @@ def prepare_dimension_overlay_export(
             cmp = cmp.cumsum()
         for dim in selected_dims:
             if dim in cmp.columns:
-                export[f"Comparison - {dim} (NZD)"] = scale_series_to_nzd(cmp[dim])
+                export[f"Comparison - {dim} ($)"] = scale_series_to_nzd(cmp[dim])
                 added = True
     if not added:
         return None
@@ -653,9 +751,9 @@ def prepare_waterfall_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                "Optimised NPV (NZD)": opt_val * 1_000_000.0,
-                "Comparison NPV (NZD)": cmp_val * 1_000_000.0,
-                "Delta (NZD)": (opt_val - cmp_val) * 1_000_000.0,
+                "Optimised NPV ($)": opt_val * 1_000_000.0,
+                "Comparison NPV ($)": cmp_val * 1_000_000.0,
+                "Delta ($)": (opt_val - cmp_val) * 1_000_000.0,
             }
         )
     total_dim = next((dim for dim in ordered_dims if str(dim).strip().lower() == "total"), None)
@@ -666,9 +764,9 @@ def prepare_waterfall_export(
     rows.append(
         {
             "Dimension": "Total",
-            "Optimised NPV (NZD)": total_opt * 1_000_000.0,
-            "Comparison NPV (NZD)": total_cmp * 1_000_000.0,
-            "Delta (NZD)": (total_opt - total_cmp) * 1_000_000.0,
+            "Optimised NPV ($)": total_opt * 1_000_000.0,
+            "Comparison NPV ($)": total_cmp * 1_000_000.0,
+            "Delta ($)": (total_opt - total_cmp) * 1_000_000.0,
         }
     )
     return pd.DataFrame(rows)
@@ -705,18 +803,18 @@ def prepare_bridge_export(
     total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
     bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
     rows = [
-        {"Step": "Optimised NPV total", "Value (NZD)": total_opt * 1_000_000.0, "Measure": "relative"}
+        {"Step": "Optimised NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
     ]
     for dim, delta in zip(dim_sequence, bridge_diffs):
         rows.append(
             {
                 "Step": f"{dim} delta NPV",
-                "Value (NZD)": (-delta) * 1_000_000.0,
+                "Value ($)": (-delta) * 1_000_000.0,
                 "Measure": "relative",
             }
         )
     rows.append(
-        {"Step": "Comparison NPV total", "Value (NZD)": total_cmp * 1_000_000.0, "Measure": "total"}
+        {"Step": "Comparison NPV total", "Value ($)": total_cmp * 1_000_000.0, "Measure": "total"}
     )
     return pd.DataFrame(rows)
 
@@ -752,8 +850,8 @@ def prepare_radar_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                "Optimised NPV (NZD)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
-                "Comparison NPV (NZD)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
+                "Optimised NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                "Comparison NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
             }
         )
     return pd.DataFrame(rows)
@@ -780,10 +878,10 @@ def prepare_gantt_export(
                 "Start FY": run.start_year,
                 "End FY": run.end_year,
                 "Duration (years)": run.end_year - run.start_year + 1,
-                "Total spend (NZD)": float(run.total_spend) * 1_000_000.0,
+                "Total spend ($)": float(run.total_spend) * 1_000_000.0,
                 "Comparison start FY": comp.start_year if comp else None,
                 "Comparison end FY": comp.end_year if comp else None,
-                "Comparison total spend (NZD)": float(comp.total_spend) * 1_000_000.0 if comp else None,
+                "Comparison total spend ($)": float(comp.total_spend) * 1_000_000.0 if comp else None,
             }
         )
     return pd.DataFrame(rows)
@@ -806,8 +904,8 @@ def prepare_schedule_export(
                 {
                     "Project": run.project,
                     "Financial year": int(year),
-                    "Annual spend (NZD)": float(value) * 1_000_000.0,
-                    "Total spend (NZD)": float(run.total_spend) * 1_000_000.0,
+                    "Annual spend ($)": float(value) * 1_000_000.0,
+                    "Total spend ($)": float(run.total_spend) * 1_000_000.0,
                     "Start FY": run.start_year,
                     "End FY": run.end_year,
                 }
@@ -826,8 +924,8 @@ def prepare_capacity_export(series: Optional[pd.DataFrame]) -> Optional[pd.DataF
         return None
     df["Year"] = df["Year"].astype(int)
     spend_b = pd.to_numeric(df["Spend"], errors="coerce").astype(float) / 1000.0
-    df["Annual spend (NZD)"] = scale_series_to_nzd(df["Spend"])
-    df["Annual spend (B NZD)"] = spend_b
+    df["Annual spend ($)"] = scale_series_to_nzd(df["Spend"])
+    df["Annual spend ($B)"] = spend_b
     status: List[str] = []
     for value in spend_b:
         if value <= 0.0:
@@ -1360,7 +1458,7 @@ def scenario_selector(
 
             st.selectbox(
 
-                f"{name} envelope (NZDm p.a.)",
+                f"{name} envelope ($m p.a.)",
 
                 envelope_choices,
 
@@ -1414,7 +1512,7 @@ def scenario_selector(
 
                 st.selectbox(
 
-                    f"{name} buffer (+/- NZDm)",
+                    f"{name} buffer (+/- $m)",
 
                     buffer_choices,
 
@@ -1466,7 +1564,7 @@ def scenario_selector(
 
                 st.selectbox(
 
-                    f"{name} cash uplift (+ NZDm)",
+                    f"{name} cash uplift (+ $m)",
 
                     cash_choices,
 
@@ -1990,7 +2088,7 @@ def cash_chart(
 
         yaxis_context = f"{context_label}, {unit_label}"
 
-    yaxis_title_default = f"NZD ({yaxis_context})"
+    yaxis_title_default = f"$ ({yaxis_context})"
 
     fig.update_layout(
 
@@ -2004,7 +2102,7 @@ def cash_chart(
 
         yaxis_title=yaxis_title_default,
 
-        template="plotly_white",
+        template=plotly_template(),
 
         yaxis=dict(tickmode="array", tickvals=tick_vals, ticktext=tick_text),
 
@@ -2086,11 +2184,11 @@ def benefit_chart(
 
         xaxis_title=None,
 
-        yaxis_title="Annual benefit (NZDm)",
+        yaxis_title="Annual benefit ($m)",
 
         yaxis2=dict(
 
-            title="Benefit to date (real NZDm)",
+            title="Benefit to date (real $m)",
 
             overlaying="y",
 
@@ -2100,7 +2198,7 @@ def benefit_chart(
 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
-        template="plotly_white",
+        template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
 
@@ -2133,7 +2231,7 @@ def benefit_delta_chart(
 
         fig.add_annotation(text="Select both scenarios to view the benefit delta", showarrow=False)
 
-        fig.update_layout(template="plotly_white")
+        fig.update_layout(template=plotly_template())
 
         return fig
 
@@ -2207,7 +2305,7 @@ def benefit_delta_chart(
 
     title_text = "Cumulative Benefits Delta Real"
 
-    yaxis_text = f"NZD millions ({context_label})" if context_label else "NZD millions (real)"
+    yaxis_text = f"$ millions ({context_label})" if context_label else "$ millions (real)"
 
     fig.update_layout(
 
@@ -2219,7 +2317,7 @@ def benefit_delta_chart(
 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
 
-        template="plotly_white",
+        template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
 
@@ -2263,7 +2361,9 @@ def benefit_radar_chart(
         return [float(pv_dict.get(dim, 0.0)) for dim in dims]
 
     theta_labels = [str(dim) for dim in dims]
-    theta_closed = theta_labels + theta_labels[:1]
+    n_dims = max(len(dims), 1)
+    theta_positions = [(idx / n_dims) * 360.0 for idx in range(len(dims))]
+    theta_closed = theta_positions + theta_positions[:1]
 
     opt_values = value_list(opt_pv)
     cmp_values = value_list(cmp_pv)
@@ -2272,24 +2372,31 @@ def benefit_radar_chart(
     cmp_closed = cmp_values + cmp_values[:1]
 
     max_val = max(opt_values + cmp_values + [1.0])
+    value_scale = max(max_val, 1.0)
 
     theme_base = (st.get_option("theme.base") or "").lower()
     background_setting = (st.get_option("theme.backgroundColor") or "").strip()
     text_setting = (st.get_option("theme.textColor") or "").strip()
+    dark_toggle_active = is_dark_mode()
 
-    background_color = background_setting or ("#0E1117" if theme_base == "dark" else "#FFFFFF")
-    background_luminance = relative_luminance(background_color)
-    is_dark_theme = theme_base == "dark"
-    if background_luminance is not None:
-        is_dark_theme = background_luminance < 0.45
+    if dark_toggle_active:
+        background_color = "#0E1117"
+        text_color = "#E2E8F0"
+        is_dark_theme = True
+    else:
+        background_color = background_setting or ("#0E1117" if theme_base == "dark" else "#FFFFFF")
+        background_luminance = relative_luminance(background_color)
+        is_dark_theme = theme_base == "dark"
+        if background_luminance is not None:
+            is_dark_theme = background_luminance < 0.45
 
-    text_color = text_setting or ("#E2E8F0" if is_dark_theme else "#1F2933")
-    text_luminance = relative_luminance(text_color)
-    if text_luminance is not None:
-        if is_dark_theme and text_luminance < 0.6:
-            text_color = "#E2E8F0"
-        elif not is_dark_theme and text_luminance > 0.4:
-            text_color = "#1F2933"
+        text_color = text_setting or ("#E2E8F0" if is_dark_theme else "#1F2933")
+        text_luminance = relative_luminance(text_color)
+        if text_luminance is not None:
+            if is_dark_theme and text_luminance < 0.6:
+                text_color = "#E2E8F0"
+            elif not is_dark_theme and text_luminance > 0.4:
+                text_color = "#1F2933"
 
     figure_background = "rgba(0, 0, 0, 0)" if is_dark_theme else background_color
     grid_color = "rgba(148, 163, 184, 0.35)" if is_dark_theme else "rgba(148, 163, 184, 0.28)"
@@ -2299,6 +2406,7 @@ def benefit_radar_chart(
 
     if opt_pv:
         opt_name = opt_selection.name if opt_selection and opt_selection.name else "Optimised"
+        opt_custom = theta_labels + theta_labels[:1]
         fig.add_trace(
             go.Scatterpolar(
                 r=opt_closed,
@@ -2308,11 +2416,14 @@ def benefit_radar_chart(
                 fill="toself",
                 fillcolor=rgba_from_hex(CUMULATIVE_OPT_LINE_COLOR, 0.26 if is_dark_theme else 0.18),
                 opacity=0.9,
+                customdata=opt_custom,
+                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{name}</extra>",
             )
         )
 
     if cmp_pv:
         cmp_name = cmp_selection.name if cmp_selection and cmp_selection.name else "Comparison"
+        cmp_custom = theta_labels + theta_labels[:1]
         fig.add_trace(
             go.Scatterpolar(
                 r=cmp_closed,
@@ -2322,35 +2433,90 @@ def benefit_radar_chart(
                 fill="toself",
                 fillcolor=rgba_from_hex(CUMULATIVE_CMP_LINE_COLOR, 0.22 if is_dark_theme else 0.16),
                 opacity=0.78,
+                customdata=cmp_custom,
+                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{name}</extra>",
             )
         )
 
-    selections_for_label = [sel for sel in (opt_selection, cmp_selection) if sel and sel.code]
-    context_label = npv_context_label(data, *selections_for_label) if selections_for_label else None
-    radial_title = f"NZD millions ({context_label})" if context_label else "NZD millions"
+    series_configs = []
+    if opt_pv:
+        series_configs.append((opt_values, CUMULATIVE_OPT_LINE_COLOR, -1))
+    if cmp_pv:
+        direction = 1 if opt_pv else -1
+        series_configs.append((cmp_values, CUMULATIVE_CMP_LINE_COLOR, direction))
 
-    fig.update_traces(hovertemplate="<b>%{theta}</b><br>%{r:,.0f} m<extra>%{name}</extra>")
+    def _text_anchor(base_angle_deg: float) -> str:
+        cos_a = math.cos(math.radians(base_angle_deg))
+        sin_a = math.sin(math.radians(base_angle_deg))
+        if abs(cos_a) >= 0.4:
+            return "middle right" if cos_a >= 0 else "middle left"
+        if sin_a >= 0:
+            return "bottom center"
+        return "top center"
 
+    label_padding = max(value_scale * 0.06, 2.0)
+    angle_base = max(10.0, 8.0 * (len(theta_labels) / max(len(theta_labels), 3)))
+
+    for idx, base_angle in enumerate(theta_positions):
+        for values, color, direction in series_configs:
+            if idx >= len(values):
+                continue
+            value = float(values[idx])
+            if value <= 0:
+                continue
+            angle_adjust = angle_base * direction
+            cos_a = math.cos(math.radians(base_angle))
+            if abs(cos_a) < 0.35:
+                angle_adjust *= 0.7
+            leader_end = min(value_scale * 1.15, value + max(label_padding, value * 0.12))
+            final_theta = (base_angle + angle_adjust) % 360.0
+            anchor = _text_anchor(final_theta)
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[value, (value + leader_end) / 2.0, leader_end],
+                    theta=[base_angle, base_angle + angle_adjust * 0.4, final_theta],
+                    mode="lines",
+                    line=dict(color=color, width=1.4, dash="dot"),
+                    showlegend=False,
+                    hoverinfo="skip",
+                    cliponaxis=False,
+                )
+            )
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[leader_end],
+                    theta=[final_theta],
+                    mode="text",
+                    text=[f"{value:,.0f}"],
+                    textposition=anchor,
+                    textfont=dict(color=color, size=11),
+                    showlegend=False,
+                    hoverinfo="skip",
+                    cliponaxis=False,
+                )
+            )
     fig.update_layout(
         title="Benefit mix radar",
         polar=dict(
             bgcolor="rgba(0, 0, 0, 0)",
             radialaxis=dict(
                 visible=True,
-                range=[0, max_val * 1.05],
-                title=radial_title,
-                title_font=dict(color=text_color, size=12),
-                tickfont=dict(color=text_color, size=11),
+                range=[0, value_scale * 1.12],
+                title="",
+                tickmode="array",
+                tickvals=[],
+                ticktext=[],
                 gridcolor=grid_color,
                 linecolor=outline_color,
                 gridwidth=1,
-                ticks="",
-                tickformat=",.0f",
-                nticks=5,
             ),
             angularaxis=dict(
                 direction="clockwise",
                 rotation=90,
+                tickmode="array",
+                tickvals=theta_positions,
+                ticktext=theta_labels,
+                thetaunit="degrees",
                 gridcolor=grid_color,
                 linecolor=outline_color,
                 tickfont=dict(color=text_color, size=11),
@@ -2397,7 +2563,7 @@ def benefit_waterfall_chart(
 
         fig.add_annotation(text="Select both scenarios to view the NPV waterfall", showarrow=False)
 
-        fig.update_layout(template="plotly_white")
+        fig.update_layout(template=plotly_template())
 
         return fig
 
@@ -2411,7 +2577,7 @@ def benefit_waterfall_chart(
 
         fig.add_annotation(text="Dimension-level NPV data unavailable for the selected scenarios", showarrow=False)
 
-        fig.update_layout(template="plotly_white")
+        fig.update_layout(template=plotly_template())
 
         return fig
 
@@ -2484,9 +2650,9 @@ def benefit_waterfall_chart(
 
         title=f"{context_label} delta by dimension (optimised minus comparison)",
 
-        yaxis_title=f"NZD millions ({context_label})",
+        yaxis_title=f"$ millions ({context_label})",
 
-        template="plotly_white",
+        template=plotly_template(),
         hoverlabel=dict(namelength=-1),
 
         waterfallgap=0.3,
@@ -2529,7 +2695,7 @@ def benefit_bridge_chart(
 
         fig.add_annotation(text="Select both scenarios to build the NPV bridge", showarrow=False)
 
-        fig.update_layout(template="plotly_white")
+        fig.update_layout(template=plotly_template())
 
         return fig
 
@@ -2541,7 +2707,7 @@ def benefit_bridge_chart(
 
         fig.add_annotation(text="Missing dimension NPV data for bridge", showarrow=False)
 
-        fig.update_layout(template="plotly_white")
+        fig.update_layout(template=plotly_template())
 
         return fig
 
@@ -2611,9 +2777,9 @@ def benefit_bridge_chart(
 
         title=f"{context_label} bridge (optimised to comparison)",
 
-        yaxis_title=f"NZD millions ({context_label})",
+        yaxis_title=f"$ millions ({context_label})",
 
-        template="plotly_white",
+        template=plotly_template(),
 
         waterfallgap=0.3,
 
@@ -2766,9 +2932,9 @@ def efficiency_chart(
 
         xaxis_title=None,
 
-        yaxis_title="NZD millions",
+        yaxis_title="$ millions",
 
-        template="plotly_white",
+        template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
 
@@ -2856,7 +3022,7 @@ def benefit_dimension_chart(
 
     value_format = ',.1f' if cumulative else ',.0f'
 
-    yaxis_label = "Cumulative benefit (NZDm)" if cumulative else "Annual benefit (NZDm)"
+    yaxis_label = "Cumulative benefit ($m)" if cumulative else "Annual benefit ($m)"
 
     fig = go.Figure()
 
@@ -2892,9 +3058,18 @@ def benefit_dimension_chart(
 
         yaxis_title=yaxis_label,
 
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.0),
+        legend=dict(
+            orientation='h',
+            yanchor='top',
+            y=1.12,
+            xanchor='center',
+            x=0.5,
+            title=None,
+        ),
 
-        template='plotly_white',
+        margin=dict(l=40, r=40, t=80, b=60),
+
+        template=plotly_template(),
 
     )
 
@@ -2973,7 +3148,7 @@ def benefit_dimension_overlay_chart(
 
     value_format = ',.1f' if cumulative else ',.0f'
 
-    yaxis_label = "Cumulative benefit (NZDm)" if cumulative else "Annual benefit (NZDm)"
+    yaxis_label = "Cumulative benefit ($m)" if cumulative else "Annual benefit ($m)"
 
     title_suffix = " (cumulative)" if cumulative else ""
 
@@ -3071,9 +3246,18 @@ def benefit_dimension_overlay_chart(
 
         yaxis_title=yaxis_label,
 
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0.0),
+        legend=dict(
+            orientation='h',
+            yanchor='top',
+            y=1.12,
+            xanchor='center',
+            x=0.5,
+            title=None,
+        ),
 
-        template='plotly_white',
+        margin=dict(l=40, r=40, t=80, b=60),
+
+        template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
 
@@ -3117,9 +3301,33 @@ def spend_gantt_chart(
 
     durations = [max(1, run.end_year - run.start_year + 1) for run in runs]
 
+    comparison_runs: Dict[str, scenario_utils.ProjectRun] = {}
+    if comparison_selection and comparison_selection.code:
+        comparison_runs = {
+            run.project: run
+            for run in extract_project_runs(data, comparison_selection.code)
+        }
+
+    comparison_available = bool(comparison_runs)
+    shift_labels: List[str] = []
+    italic_t = "<i>t</i>"
+    for run in runs:
+        other = comparison_runs.get(run.project)
+        if other:
+            diff = int(run.start_year - other.start_year)
+            if diff > 0:
+                shift = f"{italic_t} + {diff}"
+            elif diff < 0:
+                shift = f"{italic_t} - {abs(diff)}"
+            else:
+                shift = f"{italic_t} + 0"
+        else:
+            shift = f"{italic_t} n/a" if comparison_available else f"{italic_t} + 0"
+        shift_labels.append(shift)
+
     custom = [
-        [run.project, run.start_year, run.end_year, run.total_spend]
-        for run in runs
+        [run.project, run.start_year, run.end_year, run.total_spend, shift_labels[idx]]
+        for idx, run in enumerate(runs)
     ]
 
     fig = go.Figure(
@@ -3142,11 +3350,13 @@ def spend_gantt_chart(
 
                 "Project: %{customdata[0]}<br>"
 
+                "Total spend: %{customdata[3]:,.0f} m<br>"
+
                 "Start FY: %{customdata[1]}<br>"
 
                 "End FY: %{customdata[2]}<br>"
 
-                "Total spend: %{customdata[3]:,.0f} m<extra></extra>"
+                "Schedule shift: %{customdata[4]}<extra></extra>"
 
             ),
 
@@ -3154,15 +3364,7 @@ def spend_gantt_chart(
 
     )
 
-    if show_outline and comparison_selection and comparison_selection.code:
-
-        comparison_runs = {
-
-            run.project: run
-
-            for run in extract_project_runs(data, comparison_selection.code)
-
-        }
+    if show_outline and comparison_runs:
 
         outline_color = "#98C2DC"
 
@@ -3206,6 +3408,22 @@ def spend_gantt_chart(
 
                 right = midpoint + 0.02
 
+            shift_label = shift_labels[idx]
+
+            hover_lines = [
+
+                f"Project: {run.project}",
+
+                f"Schedule shift: {shift_label}",
+
+                f"Optimised start: {run.start_year}",
+
+                f"Comparison start: {other.start_year}",
+
+            ]
+
+            hover_text = "<br>".join(hover_lines)
+
             fig.add_trace(
 
                 go.Scatter(
@@ -3218,7 +3436,9 @@ def spend_gantt_chart(
 
                     line=dict(color=outline_color, width=1.5, dash="dot"),
 
-                    hoverinfo="skip",
+                    hovertext=[hover_text] * 5,
+
+                    hovertemplate="%{hovertext}<extra></extra>",
 
                     showlegend=False,
 
@@ -3248,7 +3468,21 @@ def spend_gantt_chart(
 
         ),
 
-        template="plotly_white",
+        hoverlabel=dict(
+
+            align="left",
+
+            bgcolor="rgba(0, 0, 0, 0)",
+
+            bordercolor="rgba(0, 0, 0, 0)",
+
+            font=dict(family="Inter, 'Segoe UI', sans-serif", size=12),
+
+            namelength=0,
+
+        ),
+
+        template=plotly_template(),
 
         height=max(280, 100 + 28 * len(runs)),
 
@@ -3390,9 +3624,9 @@ def project_schedule_area_chart(
                 hovertemplate=(
 
                     "<b>%{fullData.name}</b><br>"
-                    "Total spend: %{customdata[2]:,.0f} NZDm<br>"
+                    "Total spend: %{customdata[2]:,.0f} $m<br>"
                     "Year: %{customdata[0]}<br>"
-                    "Annual spend: %{customdata[1]:,.0f} NZDm<extra></extra>"
+                    "Annual spend: %{customdata[1]:,.0f} $m<extra></extra>"
                 ),
 
                 hoverlabel=dict(namelength=-1),
@@ -3433,7 +3667,7 @@ def project_schedule_area_chart(
 
         ),
 
-        yaxis=dict(title="Annual spend (NZDm)", rangemode="tozero", showgrid=True),
+        yaxis=dict(title="Annual spend ($m)", rangemode="tozero", showgrid=True),
 
         hovermode="closest",
 
@@ -3459,7 +3693,7 @@ def project_schedule_area_chart(
 
         margin=dict(l=40, r=220, t=60, b=80),
 
-        template="plotly_white",
+        template=plotly_template(),
 
     )
 
@@ -3537,7 +3771,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
         colors.append(color)
 
-        hover_labels.append(f"Year: {year}<br>Total spend: {value:.1f} B NZD<br>Status: {descriptor}")
+        hover_labels.append(f"Year: {year}<br>Total spend: {value:.1f} $B<br>Status: {descriptor}")
 
         text_values.append(display_value)
 
@@ -3645,7 +3879,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
         yaxis=dict(visible=False, range=[0, 1], fixedrange=True),
 
-        template="plotly_white",
+        template=plotly_template(),
 
         showlegend=False,
 
@@ -3667,9 +3901,9 @@ def summarize_selection(selection: ScenarioSelection) -> pd.DataFrame:
 
             "Mode",
 
-            "Envelope (NZDm)",
+            "Envelope ($m)",
 
-            "Buffer / Cash uplift (NZDm)",
+            "Buffer / Cash uplift ($m)",
 
             "Objective dimension",
 
@@ -3702,7 +3936,21 @@ def summarize_selection(selection: ScenarioSelection) -> pd.DataFrame:
 def main() -> None:
 
     st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
-    st.markdown(PLOTLY_TRANSPARENT_STYLE, unsafe_allow_html=True)
+
+    if DARK_MODE_SESSION_KEY not in st.session_state:
+        st.session_state[DARK_MODE_SESSION_KEY] = False
+
+    st.sidebar.header("Display")
+    dark_mode = st.sidebar.toggle(
+        "Dark mode",
+        value=st.session_state[DARK_MODE_SESSION_KEY],
+        key="dark_mode_toggle",
+        help="Switch between light and dark presentation themes.",
+    )
+    st.session_state[DARK_MODE_SESSION_KEY] = dark_mode
+    apply_app_theme(dark_mode)
+
+    st.sidebar.divider()
 
     st.title("Capital Programme Optimiser")
 
@@ -4527,14 +4775,13 @@ def main() -> None:
                 if not dims_options:
                     dims_options = ["Total"]
                 objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
-                col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+                col_cfg1, col_cfg2 = st.columns(2)
                 start_fy = col_cfg1.number_input("Start financial year", value=int(settings.optimisation.start_fy), step=1)
                 years = col_cfg2.number_input("Planning horizon (years)", value=int(settings.optimisation.years), min_value=1, step=1)
-                time_limit = col_cfg3.number_input("Solver time limit (seconds)", value=int(settings.optimisation.solve_seconds), min_value=60, step=60)
                 run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
-                st.markdown("Baseline annual envelopes (NZDm p.a.)")
+                st.markdown("Baseline annual envelopes ($m p.a.)")
                 envelope_defaults = pd.DataFrame([
-                    {"Code": code, "AnnualNZDm": value} for code, value in settings.optimisation.surplus_options_m.items()
+                    {"Code": code, "AnnualMillions": value} for code, value in settings.optimisation.surplus_options_m.items()
                 ])
                 envelopes_editor = st.data_editor(
                     envelope_defaults,
@@ -4543,18 +4790,18 @@ def main() -> None:
                     key="envelope_editor",
                     column_config={
                         "Code": st.column_config.TextColumn("Code", required=True),
-                        "AnnualNZDm": st.column_config.NumberColumn("Annual NZD (millions)", min_value=0.0),
+                        "AnnualMillions": st.column_config.NumberColumn("Annual $ (millions)", min_value=0.0),
                     },
                 )
-                st.markdown("+/- levels (NZDm)")
-                plus_defaults = pd.DataFrame({"LevelNZDm": settings.optimisation.plusminus_levels_m})
+                st.markdown("+/- levels ($m)")
+                plus_defaults = pd.DataFrame({"LevelMillions": settings.optimisation.plusminus_levels_m})
                 plus_editor = st.data_editor(
                     plus_defaults,
                     num_rows="dynamic",
                     hide_index=True,
                     key="plus_editor",
                     column_config={
-                        "LevelNZDm": st.column_config.NumberColumn("Level (+/- NZDm)", min_value=0.0),
+                        "LevelMillions": st.column_config.NumberColumn("Level (+/- $m)", min_value=0.0),
                     },
                 )
                 st.markdown("Forced start rules")
@@ -4592,7 +4839,7 @@ def main() -> None:
                 envelopes = {}
                 for row in envelopes_editor.to_dict("records"):
                     code = str(row.get("Code", "")).strip()
-                    value = row.get("AnnualNZDm")
+                    value = row.get("AnnualMillions")
                     if not code or pd.isna(value):
                         continue
                     envelopes[code] = float(value)
@@ -4600,8 +4847,8 @@ def main() -> None:
                     st.warning("Provide at least one envelope value.")
                     proceed = False
                 plus_levels = []
-                if isinstance(plus_editor, pd.DataFrame) and "LevelNZDm" in plus_editor.columns:
-                    for val in plus_editor["LevelNZDm"].tolist():
+                if isinstance(plus_editor, pd.DataFrame) and "LevelMillions" in plus_editor.columns:
+                    for val in plus_editor["LevelMillions"].tolist():
                         if pd.isna(val):
                             continue
                         plus_levels.append(float(val))
@@ -4667,7 +4914,7 @@ def main() -> None:
                             years=int(years),
                             run_plusminus=run_plusminus,
                             forced_start=forced_inputs,
-                            time_limit=int(time_limit) if time_limit else None,
+                            time_limit=int(settings.optimisation.solve_seconds),
                         )
                         summary = scenario_utils.run_optimiser_for_scenario(
                             settings,
@@ -4688,3 +4935,5 @@ def main() -> None:
 if __name__ == "__main__":
 
     main()
+
+

@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.set_defaults(func=cmd_build_dashboard)
 
     p_env = sub.add_parser("envelope", help="Compute buffered annual envelope")
-    p_env.add_argument("--baseline-total", type=float, default=115.0, help="Baseline total budget (B NZD)")
+    p_env.add_argument("--baseline-total", type=float, default=115.0, help="Baseline total budget ($B)")
     p_env.add_argument("--baseline-years", type=int, default=50, help="Number of baseline years")
     p_env.add_argument("--selection", help="Path to YAML file with project include flags")
     p_env.set_defaults(func=cmd_envelope)

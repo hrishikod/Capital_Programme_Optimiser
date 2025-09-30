@@ -90,14 +90,14 @@ FORCED_START: Dict[str, Dict] = {
     "Project 36": {"start": None, "include": True},
 }
 
-# Baseline annual envelopes (M NZD p.a.)
+# Baseline annual envelopes (M $ p.a.)
 SURPLUS_OPTIONS_M = {
     "s750":  2500,
     "s1500": 3500,
     "s2500": 4500,
 }
 
-# ± levels (absolute M NZD). Includes 0.0 to emulate 'fixed' via buffer bounds.
+# ± levels (absolute M $). Includes 0.0 to emulate 'fixed' via buffer bounds.
 PLUSMINUS_LEVELS_M = [100.0, 200.0, 300.0]
 
 # Secondary objective weights (linear penalty on late‑year envelope)
@@ -842,7 +842,7 @@ def dump_pickle(m: HighsModel, tag: str, suffix: str,
         "PrimaryDim": primary_dim
     } for v, s in sel.items()]).sort_values(["StartFY","Project"], ignore_index=True)
 
-    # Spend matrix (M NZD)
+    # Spend matrix (M $)
     df_sp = pd.DataFrame(0.0, index=list(proj.keys()), columns=fy)
     for v, s in sel.items():
         base = var[v]["base"]
@@ -1077,7 +1077,7 @@ def optimise_family_for(ct: str, scenario_key: str, scenario_sheet: str):
 
 # ---------- main ------------------------------------------------------
 def main():
-    print("MAX_STARTS per FY:", CFG["MAX_STARTS"], "(unit = million NZ$)")
+    print("MAX_STARTS per FY:", CFG["MAX_STARTS"], "(unit = million $)")
     print(f"CFG window: START_FY={CFG['START_FY']}  YEARS={CFG['YEARS']}")
     if EARLY_STOP_ON:
         print(f">> Early‑stop active: halting when MIP gap ≤ {EARLY_STOP_PCT:.2f}%")
