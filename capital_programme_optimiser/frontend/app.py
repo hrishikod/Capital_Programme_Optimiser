@@ -3453,23 +3453,28 @@ def spend_gantt_chart(
             compare_start = float(other.start_year)
             compare_end = float(other.end_year) + 1.0
 
+            overlap_start = max(compare_start, actual_start)
+            overlap_end = min(compare_end, actual_end)
+
             segments: list[tuple[float, float]] = []
-            if compare_start < actual_start:
-                seg_start = compare_start
-                seg_end = min(actual_start, compare_end)
-                if seg_end - seg_start > 0:
-                    segments.append((seg_start, seg_end))
-            if compare_end > actual_end:
-                seg_start = max(actual_end, compare_start)
-                seg_end = compare_end
-                if seg_end - seg_start > 0:
-                    segments.append((seg_start, seg_end))
+            if overlap_start >= overlap_end:
+                segments.append((compare_start, compare_end))
+            else:
+                if compare_start < overlap_start:
+                    segments.append((compare_start, overlap_start))
+                if overlap_end < compare_end:
+                    segments.append((overlap_end, compare_end))
 
             for seg_start, seg_end in segments:
-                seg_left = max(seg_start + x_inset, left)
-                seg_right = min(seg_end - x_inset, right)
-                if seg_right <= seg_left:
+                span = seg_end - seg_start
+                if span <= 0:
                     continue
+                shrink = min(0.02, span * 0.1)
+                seg_left = seg_start + shrink
+                seg_right = seg_end - shrink
+                if seg_right <= seg_left:
+                    seg_left = seg_start
+                    seg_right = seg_end
                 hover_template = f"{hover_text}<extra></extra>"
                 fig.add_trace(
                     go.Scatter(
