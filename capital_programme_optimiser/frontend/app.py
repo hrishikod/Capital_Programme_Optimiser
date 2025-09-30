@@ -3448,6 +3448,44 @@ def spend_gantt_chart(
 
             )
 
+            actual_start = float(run.start_year)
+            actual_end = float(run.end_year) + 1.0
+            compare_start = float(other.start_year)
+            compare_end = float(other.end_year) + 1.0
+
+            segments: list[tuple[float, float]] = []
+            if compare_start < actual_start:
+                seg_start = compare_start
+                seg_end = min(actual_start, compare_end)
+                if seg_end - seg_start > 0:
+                    segments.append((seg_start, seg_end))
+            if compare_end > actual_end:
+                seg_start = max(actual_end, compare_start)
+                seg_end = compare_end
+                if seg_end - seg_start > 0:
+                    segments.append((seg_start, seg_end))
+
+            for seg_start, seg_end in segments:
+                seg_left = max(seg_start + x_inset, left)
+                seg_right = min(seg_end - x_inset, right)
+                if seg_right <= seg_left:
+                    continue
+                fig.add_trace(
+                    go.Scatter(
+                        x=[seg_left, seg_right, seg_right, seg_left, seg_left],
+                        y=[y_bottom, y_bottom, y_top, y_top, y_bottom],
+                        mode="lines",
+                        line=dict(width=0),
+                        fill="toself",
+                        fillcolor="rgba(152, 194, 220, 0.02)",
+                        hoveron="fills",
+                        hovertext=[hover_text] * 5,
+                        hovertemplate="%{hovertext}<extra></extra>",
+                        showlegend=False,
+                        cliponaxis=False,
+                    )
+                )
+
     fig.update_layout(
 
         title=title,
