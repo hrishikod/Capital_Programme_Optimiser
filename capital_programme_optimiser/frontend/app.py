@@ -167,6 +167,9 @@ div[data-testid="stPlotlyChart"] > div {
 </style>
 """
 
+CUMULATIVE_OPT_LINE_COLOR = "#2E7D32"
+CUMULATIVE_CMP_LINE_COLOR = "#66BB6A"
+
 
 
 
@@ -188,6 +191,13 @@ def is_dark_mode() -> bool:
 def plotly_template() -> str:
     """Resolve the Plotly template name based on the detected theme."""
     return "plotly_dark" if is_dark_mode() else "plotly_white"
+
+def _normalise_project_key(name: str) -> str:
+    """Return a canonical project key for matching across scenarios."""
+    if name is None:
+        return ''
+    normalised = str(name).strip().lower()
+    return re.sub(r'\s+', ' ', normalised)
 
 def rgba_from_hex(hex_color: str, alpha: float) -> str:
     '''Return an rgba string for a hex colour code or existing rgba string.'''
@@ -787,12 +797,15 @@ def prepare_gantt_export(
     runs = extract_project_runs(data, selection.code)
     if not runs:
         return None
-    comparison_runs = {}
+    comparison_runs: Dict[str, scenario_utils.ProjectRun] = {}
     if comparison_selection and comparison_selection.code:
-        comparison_runs = {run.project: run for run in extract_project_runs(data, comparison_selection.code)}
+        comparison_runs = {
+            _normalise_project_key(run.project): run
+            for run in extract_project_runs(data, comparison_selection.code)
+        }
     rows = []
     for run in runs:
-        comp = comparison_runs.get(run.project)
+        comp = comparison_runs.get(_normalise_project_key(run.project))
         rows.append(
             {
                 "Project": run.project,
@@ -3225,7 +3238,7 @@ def spend_gantt_chart(
     comparison_runs: Dict[str, scenario_utils.ProjectRun] = {}
     if comparison_selection and comparison_selection.code:
         comparison_runs = {
-            run.project: run
+            _normalise_project_key(run.project): run
             for run in extract_project_runs(data, comparison_selection.code)
         }
 
@@ -3233,7 +3246,7 @@ def spend_gantt_chart(
     shift_labels: List[str] = []
     italic_t = "<i>t</i>"
     for run in runs:
-        other = comparison_runs.get(run.project)
+        other = comparison_runs.get(_normalise_project_key(run.project))
         if other:
             diff = int(run.start_year - other.start_year)
             if diff > 0:
@@ -3297,7 +3310,7 @@ def spend_gantt_chart(
 
         for idx, run in enumerate(runs):
 
-            other = comparison_runs.get(run.project)
+            other = comparison_runs.get(_normalise_project_key(run.project))
 
             if not other:
 
