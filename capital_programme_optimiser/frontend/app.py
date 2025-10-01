@@ -167,93 +167,14 @@ div[data-testid="stPlotlyChart"] > div {
 </style>
 """
 
-DARK_MODE_SESSION_KEY = "dark_mode_enabled"
 
-LIGHT_THEME_STYLE = """
-<style id="app-theme">
-:root {
-    color-scheme: light;
-    --hover-bg: rgba(255, 255, 255, 0.96);
-    --hover-border: rgba(15, 23, 42, 0.18);
-    --hover-text: #0f172a;
-    --hover-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
-}
-[data-testid="stAppViewContainer"] {
-    background-color: #f8fafc;
-    color: #0f172a;
-}
-[data-testid="stSidebar"] {
-    background-color: #ffffff;
-    color: #0f172a;
-}
-[data-testid="stSidebar"] * {
-    color: #0f172a !important;
-}
-section.main > div {
-    color: #0f172a;
-}
-h1, h2, h3, h4, h5, h6 {
-    color: #0f172a;
-}
-</style>
-"""
 
-DARK_THEME_STYLE = """
-<style id="app-theme">
-:root {
-    color-scheme: dark;
-    --hover-bg: rgba(15, 23, 42, 0.94);
-    --hover-border: rgba(148, 163, 184, 0.45);
-    --hover-text: #e2e8f0;
-    --hover-shadow: 0 18px 32px rgba(15, 23, 42, 0.4);
-}
-[data-testid="stAppViewContainer"] {
-    background-color: #0b1623;
-    color: #f8fafc;
-}
-[data-testid="stSidebar"] {
-    background-color: #111e2f;
-}
-[data-testid="stSidebar"] * {
-    color: #f8fafc !important;
-}
-section.main > div {
-    color: #f8fafc;
-}
-h1, h2, h3, h4, h5, h6 {
-    color: #f8fafc;
-}
-</style>
-"""
 
-PLOTLY_HOVER_STYLE = """
-<style id="plotly-hover-style">
-g.hoverlayer .hovertext rect.bg {
-    rx: 6 !important;
-    ry: 6 !important;
-    fill: var(--hover-bg) !important;
-    stroke: var(--hover-border) !important;
-    stroke-width: 1.25px !important;
-}
 
-g.hoverlayer .hovertext {
-    filter: drop-shadow(var(--hover-shadow));
-}
 
-g.hoverlayer .hovertext text {
-    font-family: "Inter", "Segoe UI", sans-serif !important;
-    font-size: 12px !important;
-    font-weight: 500 !important;
-    fill: var(--hover-text) !important;
-}
 
-g.hoverlayer .hovertext text tspan {
-    font-family: inherit !important;
-}
-</style>
-"""
-def system_prefers_dark_mode() -> bool:
-    """Detect the Streamlit base theme to determine the default dark-mode preference."""
+def is_dark_mode() -> bool:
+    """Return True when the Streamlit theme appears to be dark."""
     theme_base = (st.get_option("theme.base") or "").strip().lower()
     if theme_base in {"dark", "light"}:
         return theme_base == "dark"
@@ -263,21 +184,10 @@ def system_prefers_dark_mode() -> bool:
         return luminance < 0.45
     return False
 
-def is_dark_mode() -> bool:
-    """Return True when the dashboard should render in dark mode."""
-    return bool(st.session_state.get(DARK_MODE_SESSION_KEY, False))
 
 def plotly_template() -> str:
-    """Resolve the Plotly template name based on the active theme."""
+    """Resolve the Plotly template name based on the detected theme."""
     return "plotly_dark" if is_dark_mode() else "plotly_white"
-
-def apply_app_theme(dark_mode: bool) -> None:
-    """Apply global styles and keep Plotly charts transparent."""
-    st.markdown(DARK_THEME_STYLE if dark_mode else LIGHT_THEME_STYLE, unsafe_allow_html=True)
-    st.markdown(PLOTLY_HOVER_STYLE, unsafe_allow_html=True)
-    st.markdown(PLOTLY_TRANSPARENT_STYLE, unsafe_allow_html=True)
-CUMULATIVE_OPT_LINE_COLOR = "#2E7D32"
-CUMULATIVE_CMP_LINE_COLOR = "#66BB6A"
 
 def rgba_from_hex(hex_color: str, alpha: float) -> str:
     '''Return an rgba string for a hex colour code or existing rgba string.'''
@@ -3951,26 +3861,6 @@ def main() -> None:
 
     st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
 
-    system_default_dark = system_prefers_dark_mode()
-    if DARK_MODE_SESSION_KEY not in st.session_state:
-        st.session_state[DARK_MODE_SESSION_KEY] = system_default_dark
-
-    st.sidebar.header("Display")
-    toggle_help = "Switch between light and dark presentation themes."
-    if system_default_dark:
-        toggle_help += " Your environment prefers dark mode by default."
-    else:
-        toggle_help += " Your environment prefers light mode by default."
-    dark_mode = st.sidebar.toggle(
-        "Dark mode",
-        value=st.session_state[DARK_MODE_SESSION_KEY],
-        key="dark_mode_toggle",
-        help=toggle_help,
-    )
-    st.session_state[DARK_MODE_SESSION_KEY] = dark_mode
-    apply_app_theme(dark_mode)
-
-    st.sidebar.divider()
 
     st.title("Capital Programme Optimiser")
 
