@@ -192,6 +192,22 @@ def plotly_template() -> str:
     """Resolve the Plotly template name based on the detected theme."""
     return "plotly_dark" if is_dark_mode() else "plotly_white"
 
+def _hoverlabel_style() -> dict:
+    """Consistent hover label styling that respects the active theme."""
+    if is_dark_mode():
+        return {
+            "bgcolor": "rgba(15, 23, 42, 0.92)",
+            "bordercolor": "rgba(148, 163, 184, 0.45)",
+            "font": dict(color="#E2E8F0", size=12, family="Inter, 'Segoe UI', sans-serif"),
+            "namelength": 0,
+        }
+    return {
+        "bgcolor": "rgba(255, 255, 255, 0.96)",
+        "bordercolor": "rgba(148, 163, 184, 0.35)",
+        "font": dict(color="#0F172A", size=12, family="Inter, 'Segoe UI', sans-serif"),
+        "namelength": 0,
+    }
+
 def _normalise_project_key(name: str) -> str:
     """Return a canonical project key for matching across scenarios."""
     if name is None:
@@ -3294,6 +3310,8 @@ def spend_gantt_chart(
 
             ),
 
+            hoverlabel=_hoverlabel_style(),
+
         )
 
     )
@@ -3374,6 +3392,8 @@ def spend_gantt_chart(
 
                     hovertemplate="%{hovertext}<extra></extra>",
 
+                    hoverlabel=_hoverlabel_style(),
+
                     showlegend=False,
 
                     cliponaxis=False,
@@ -3411,7 +3431,7 @@ def spend_gantt_chart(
                         hoveron="fills",
                         name="",
                         hovertemplate=hover_template,
-                        hoverlabel=dict(namelength=0),
+                        hoverlabel=_hoverlabel_style(),
                         showlegend=False,
                         cliponaxis=False,
                     )
@@ -3776,7 +3796,7 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
 
     )
 
-    fig.update_traces(textfont=dict(size=14), hoverlabel=dict(namelength=0))
+    fig.update_traces(textfont=dict(size=14), hoverlabel=_hoverlabel_style())
     if fig.data:
         fig.data[0].textfont.color = text_colors
 
