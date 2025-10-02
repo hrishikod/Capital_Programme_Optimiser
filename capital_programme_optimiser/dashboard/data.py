@@ -51,7 +51,14 @@ def _derive_profile_label(cache_name: str) -> str:
     upper = name.upper()
     if any(upper.startswith(prefix) for prefix in DEFAULT_PROFILE_PREFIXES):
         return DEFAULT_PROFILE_LABEL
-    base = name.split("_", 1)[0].strip()
+    import re
+
+    match = re.search(r"(P(?:50|95))", name, flags=re.IGNORECASE)
+    if match:
+        base = name[: match.start()]
+    else:
+        base = name
+    base = base.strip("_- ")
     return base or DEFAULT_PROFILE_LABEL
 
 

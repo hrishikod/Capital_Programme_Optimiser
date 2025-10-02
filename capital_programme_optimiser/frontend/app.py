@@ -342,13 +342,52 @@ class ScenarioSelection:
 
     metadata: Optional[Dict[str, object]] = None
 
-@st.cache_resource(show_spinner=False)
+LOAD_DATA_SCHEMA_VERSION = 2
 
-def load_dashboard_data(cache_dir: str) -> DashboardData:
+
+def _cache_signature(cache_path: Path) -> Tuple[Tuple[str, int, int], ...]:
+
+    """Return a stable signature for the cache directory contents."""
+
+    entries: List[Tuple[str, int, int]] = []
+
+    if not cache_path.exists():
+
+        return tuple()
+
+    for pkl_file in sorted(cache_path.glob("*.pkl")):
+
+        try:
+
+            stat = pkl_file.stat()
+
+        except OSError:
+
+            continue
+
+        entries.append((pkl_file.name, int(stat.st_mtime), int(stat.st_size)))
+
+    return tuple(entries)
+
+
+@st.cache_resource(show_spinner=False)
+def load_dashboard_data(
+    cache_dir: str, signature: Tuple[Tuple[str, int, int], ...],
+    schema_version: int,
+) -> DashboardData:
 
     """Load dashboard-ready data from the supplied cache directory."""
 
     cache_path = Path(cache_dir)
+
+    if schema_version != LOAD_DATA_SCHEMA_VERSION:
+        raise ValueError('Streamlit cache schema mismatch')
+
+    _ = signature  # consumed by Streamlit cache hashing
+
+    if not cache_path.exists():
+
+        raise FileNotFoundError(f"Cache dir not found: {cache_path}")
 
     results = load_results(cache_path)
 
@@ -4027,11 +4066,15 @@ def main() -> None:
 
         st.rerun()
 
+    cache_sig = _cache_signature(selected_path)
+
     with st.spinner(f"Loading dashboard cache from {selected_path}..."):
 
         try:
 
-            data = load_dashboard_data(str(selected_path))
+            data = load_dashboard_data(
+                str(selected_path), cache_sig, LOAD_DATA_SCHEMA_VERSION
+            )
 
         except Exception as exc:
 
