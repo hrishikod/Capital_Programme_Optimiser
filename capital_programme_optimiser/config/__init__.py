@@ -2,6 +2,7 @@
 
 from .loader import (
     load_settings,
+    load_project_region_mapping,
     Settings,
     DataConfig,
     OptimisationConfig,

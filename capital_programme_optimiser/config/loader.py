@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import yaml
+import pandas as pd
+import re
 
 
 @dataclass
@@ -162,3 +164,66 @@ def load_settings(path: Optional[Path] = None) -> Settings:
         forced_start=forced,
     )
 
+
+
+
+def _normalise_text(value: Any) -> str:
+    if value is None:
+        return ''
+    value = re.sub(r"\s+", " ", str(value)).strip()
+    return value.lower()
+
+
+def _find_column(columns: Iterable[Any], *candidates: str) -> Optional[str]:
+    lookup = {str(c).strip().lower(): c for c in columns}
+    for cand in candidates:
+        key = str(cand).strip().lower()
+        if key in lookup:
+            return lookup[key]
+    return None
+
+
+def load_project_region_mapping(path: Optional[Path] = None) -> pd.DataFrame:
+    """Load the project-to-region mapping table from the packaged pickle file.
+
+    The return frame has normalised column names and helper columns for joins.
+    """
+    file_path = path if path is not None else Path(__file__).with_name('project_region_mapping.pkl')
+    if not file_path.exists():
+        raise FileNotFoundError(f"Project-region mapping not found: {file_path}")
+
+    df = pd.read_pickle(file_path)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
+    col_project = _find_column(df.columns, 'project')
+    col_region = _find_column(df.columns, 'region')
+    col_join = _find_column(df.columns, 'join key', 'join_key', 'joinkey')
+    col_gdp = _find_column(df.columns, 'gdp per capita', 'gdp_per_capita', 'gdp_pc')
+    col_pop = _find_column(df.columns, 'population', 'pop')
+
+    required = {
+        'project': col_project,
+        'region': col_region,
+        'join_key': col_join,
+        'gdp_per_capita': col_gdp,
+        'population': col_pop,
+    }
+    missing = [name for name, col in required.items() if col is None]
+    if missing:
+        raise ValueError(f"Missing expected columns in project-region mapping: {missing}")
+
+    df_proc = df[[required['project'], required['region'], required['join_key'], required['gdp_per_capita'], required['population']]].copy()
+    df_proc.columns = ['project', 'region', 'join_key', 'gdp_per_capita', 'population']
+
+    df_proc['project'] = df_proc['project'].astype(str).str.strip()
+    df_proc['region'] = df_proc['region'].astype(str).str.strip()
+    df_proc['join_key'] = df_proc['join_key'].astype(str).str.strip()
+
+    df_proc['project_norm'] = df_proc['project'].map(_normalise_text)
+    df_proc['join_key_norm'] = df_proc['join_key'].map(_normalise_text)
+
+    df_proc['gdp_per_capita'] = pd.to_numeric(df_proc['gdp_per_capita'], errors='coerce').fillna(0.0)
+    df_proc['population'] = pd.to_numeric(df_proc['population'], errors='coerce').fillna(0.0)
+
+    return df_proc

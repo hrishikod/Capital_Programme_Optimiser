@@ -12,13 +12,15 @@ from datetime import datetime
 
 from pathlib import Path
 
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
+import requests
 
 import pandas as pd
 
 import plotly.graph_objects as go
+import plotly.colors as plc
 
 if not hasattr(pd.Index, 'clip'):
 
@@ -43,6 +45,7 @@ if not hasattr(pd.Index, 'clip'):
 from plotly.colors import qualitative
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 ROOT_CWD = Path.cwd()
 
@@ -59,6 +62,14 @@ for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
         sys.path.insert(0, s)
 
 from capital_programme_optimiser.config import Settings, load_settings
+
+from capital_programme_optimiser.dashboard.regions import (
+    compute_region_metrics,
+    fetch_region_geojson,
+    get_geojson_name_field,
+    load_region_mapping,
+    region_baselines,
+)
 
 from capital_programme_optimiser.dashboard.data import (
 
@@ -86,6 +97,10 @@ COMPARISON_COLOR = "#C75643"
 BAR_OPACITY = 0.75
 
 GANTT_COLOR = "#3A7CA5"
+
+GANTT_OUTLINE_COLOR_BASE = "#98C2DC"
+GANTT_OUTLINE_COLOR_ALT = COMPARISON_COLOR
+GANTT_OUTLINE_VARIANT_KEY = "gantt_outline_variant"
 
 CLOSING_NET_COLOR = "#F9C80E"
 
@@ -150,6 +165,72 @@ PROJECT_COLOR_POOL = (
     "#CDBDAA",  # wheat
 
 )
+
+
+_GANTT_HOTKEY_HTML = """
+<script>
+(function() {
+  const frame = window.frameElement;
+  const frameId = frame && frame.id ? frame.id : null;
+  if (frame && frame.hasAttribute('data-gantt-hotkey')) {
+    return;
+  }
+  if (frame) {
+    frame.setAttribute('data-gantt-hotkey', '1');
+  }
+  const sendToggle = () => {
+    if (!frameId || !window.parent) {
+      return;
+    }
+    window.parent.postMessage({
+      type: 'streamlit:setComponentValue',
+      id: frameId,
+      value: {toggle: Date.now()}
+    }, '*');
+  };
+  const keyHandler = (event) => {
+    const key = event.key || event.keyCode;
+    if (key === 'z' || key === 'Z' || key === 90 || key === 122) {
+      sendToggle();
+    }
+  };
+  const attached = new WeakSet();
+  const attach = (target) => {
+    if (!target || attached.has(target)) {
+      return;
+    }
+    try {
+      target.addEventListener('keydown', keyHandler, true);
+      attached.add(target);
+    } catch (err) {
+      // ignore cross-origin or unsupported targets
+    }
+  };
+  attach(window);
+  attach(document);
+  if (window.parent && window.parent !== window) {
+    attach(window.parent);
+    if (window.parent.document) {
+      attach(window.parent.document);
+    }
+  }
+})();
+</script>
+"""
+
+
+def _inject_gantt_hotkey_listener() -> None:
+    if GANTT_OUTLINE_VARIANT_KEY not in st.session_state:
+        st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "base"
+    response = components.html(_GANTT_HOTKEY_HTML, height=0, width=0)
+    if isinstance(response, dict) and response.get("toggle"):
+        current = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
+        st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "alt" if current == "base" else "base"
+
+
+def _current_gantt_outline_color() -> str:
+    variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
+    return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
 BRIGHT_PRIMARY_COLOR = "#1976D2"
 
@@ -3357,7 +3438,7 @@ def spend_gantt_chart(
 
     if show_outline and comparison_runs:
 
-        outline_color = "#98C2DC"
+        outline_color = _current_gantt_outline_color()
 
         bar_half = 0.4
 
@@ -3929,6 +4010,512 @@ def summarize_selection(selection: ScenarioSelection) -> pd.DataFrame:
 
     return pd.DataFrame(data)
 
+
+# ---------------------------------------------------------------------
+# Regional investment view
+
+
+def _color_to_rgb_tuple(color: str) -> tuple[float, float, float]:
+    color = (color or '').strip()
+    if not color:
+        return 0.0, 0.0, 0.0
+    if color.startswith('#'):
+        r, g, b = plc.hex_to_rgb(color)
+        return float(r), float(g), float(b)
+    if color.startswith('rgba') or color.startswith('rgb'):
+        start = color.find('(') + 1
+        end = color.rfind(')')
+        parts = [p.strip() for p in color[start:end].split(',')]
+        if len(parts) >= 3:
+            return float(parts[0]), float(parts[1]), float(parts[2])
+    # Fallback – let Plotly help normalise then strip labels
+    try:
+        converted = plc.unlabel_rgb(plc.label_rgb(color))
+        return tuple(float(c) for c in converted[:3])
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def _colorscale_with_opacity(colorscale: Any, opacity: float) -> list[list[Any]]:
+    try:
+        resolved = plc.get_colorscale(colorscale)
+    except Exception:
+        resolved = colorscale if isinstance(colorscale, (list, tuple)) else plc.get_colorscale('YlOrRd')
+    opacity = float(np.clip(opacity, 0.0, 1.0))
+    adjusted = []
+    for stop, color in resolved:
+        r, g, b = _color_to_rgb_tuple(color)
+        adjusted.append([float(stop), f'rgba({int(r)}, {int(g)}, {int(b)}, {opacity:.3f})'])
+    return adjusted
+# ---------------------------------------------------------------------
+
+def _format_percentage(value: float, decimals: int = 1, *, signed: bool = False) -> str:
+    if value is None or not np.isfinite(value):
+        return "-"
+    if signed:
+        return f"{value:+.{decimals}f}%"
+    return f"{value:.{decimals}f}%"
+
+def _format_currency_nzd(value: float) -> str:
+    if value is None or not np.isfinite(value):
+        return "-"
+    return f"${value:,.0f}"
+
+def _format_currency_compact(value: float) -> str:
+    if value is None or not np.isfinite(value):
+        return "-"
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"${value / 1_000_000:.1f}m"
+    if abs_value >= 1_000:
+        return f"${value / 1_000:.1f}k"
+    return f"${value:,.0f}"
+
+REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
+    "Share_Cum": {
+        "label": "Cumulative share vs national",
+        "description": "Share of cumulative spend allocated to each region compared with the national total.",
+        "type": "sequential",
+        "colorscale": "YlOrRd",
+        "multiplier": 100.0,
+        "colorbar": "Share (%)",
+        "ticksuffix": "%",
+        "tickformat": ".1f",
+        "force_zero_min": True,
+        "formatter": lambda v: _format_percentage(v, 1),
+        "sort": "desc",
+    },
+    "Share_Year": {
+        "label": "Annual share vs national",
+        "description": "Share of annual spend in the selected year compared with the national total.",
+        "type": "sequential",
+        "colorscale": "OrRd",
+        "multiplier": 100.0,
+        "colorbar": "Share (%)",
+        "ticksuffix": "%",
+        "tickformat": ".1f",
+        "force_zero_min": True,
+        "formatter": lambda v: _format_percentage(v, 1),
+        "sort": "desc",
+    },
+    "PerCap_Cum": {
+        "label": "Cumulative spend per capita",
+        "description": "Cumulative spend per resident since the start of the programme.",
+        "type": "sequential",
+        "colorscale": "Purples",
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Per-cap cum",
+        "sort": "desc",
+    },
+    "PerCap_Year": {
+        "label": "Annual spend per capita",
+        "description": "Annual spend in the selected year per resident.",
+        "type": "sequential",
+        "colorscale": "Blues",
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Per-cap annual",
+        "sort": "desc",
+    },
+    "OU_vs_Pop": {
+        "label": "Over / under vs population share",
+        "description": "Difference between cumulative spend share and population share (percentage points).",
+        "type": "diverging",
+        "colorscale": "RdBu_r",
+        "multiplier": 100.0,
+        "colorbar": "Δ vs pop (pp)",
+        "ticksuffix": " pp",
+        "tickformat": ".1f",
+        "formatter": lambda v: _format_percentage(v, 1, signed=True),
+        "sort": "abs_desc",
+    },
+    "OU_vs_GDP": {
+        "label": "Over / under vs GDP share",
+        "description": "Difference between cumulative spend share and GDP share (percentage points).",
+        "type": "diverging",
+        "colorscale": "RdBu_r",
+        "multiplier": 100.0,
+        "colorbar": "Δ vs GDP (pp)",
+        "ticksuffix": " pp",
+        "tickformat": ".1f",
+        "formatter": lambda v: _format_percentage(v, 1, signed=True),
+        "sort": "abs_desc",
+    },
+    "Ramp_Rate": {
+        "label": "Ramp rate (Δ cumulative share)",
+        "description": "Year-on-year change in cumulative share (percentage points).",
+        "type": "diverging",
+        "colorscale": "PuOr",
+        "multiplier": 100.0,
+        "colorbar": "Δ share (pp)",
+        "ticksuffix": " pp",
+        "tickformat": ".1f",
+        "formatter": lambda v: _format_percentage(v, 1, signed=True),
+        "sort": "abs_desc",
+    },
+}
+
+REGION_METRIC_ORDER = list(REGION_METRIC_CONFIG.keys())
+
+def _scaled_region_metric(df: pd.DataFrame, metric_key: str) -> pd.Series:
+    if metric_key not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    series = pd.to_numeric(df[metric_key], errors="coerce")
+    config = REGION_METRIC_CONFIG.get(metric_key, {})
+    multiplier = float(config.get("multiplier", 1.0))
+    offset = float(config.get("offset", 0.0))
+    return series * multiplier + offset
+
+def _format_region_metric_value(metric_key: str, value: float) -> str:
+    config = REGION_METRIC_CONFIG.get(metric_key, {})
+    formatter = config.get("formatter")
+    if formatter is not None:
+        try:
+            return formatter(value)
+        except Exception:
+            pass
+    if value is None or not np.isfinite(value):
+        return "-"
+    return f"{value:,.2f}"
+
+def build_region_map_figure(
+    map_df: pd.DataFrame,
+    metric_key: str,
+    *,
+    geojson: Dict[str, Any],
+    scenario_label: str,
+    year: int,
+    show_borders: bool,
+    fill_opacity: float,
+    name_field: str,
+) -> go.Figure:
+    config = REGION_METRIC_CONFIG[metric_key]
+    values = map_df["_metric_value"].to_numpy(dtype=float)
+    is_diverging = config.get("type") == "diverging"
+    if is_diverging:
+        max_abs = float(np.nanmax(np.abs(values))) if values.size else 0.0
+        if not np.isfinite(max_abs) or max_abs == 0.0:
+            max_abs = 1.0
+        zmin, zmax = -max_abs, max_abs
+    else:
+        zmin = 0.0 if config.get("force_zero_min", False) else float(np.nanmin(values)) if values.size else 0.0
+        if not np.isfinite(zmin):
+            zmin = 0.0
+        zmax = float(np.nanmax(values)) if values.size else 0.0
+        if not np.isfinite(zmax) or np.isclose(zmin, zmax):
+            zmax = zmin + max(1.0, abs(zmin) * 0.1 + 1.0)
+    dark_mode = is_dark_mode()
+    line_color = "#1f2937" if dark_mode else "#0b1120"
+    coastline_color = "#f1f5f9" if dark_mode else "#1f2937"
+    land_color = "rgba(148, 163, 184, 0.32)" if dark_mode else "rgba(148, 163, 184, 0.18)"
+    marker_line_width = 1.2 if show_borders else 0.3
+    opacity = float(np.clip(fill_opacity, 0.05, 1.0))
+    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", "YlOrRd"), opacity)
+    map_df = map_df.copy()
+    map_df["_metric_display"] = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+    map_df["_share_cum_fmt"] = (map_df["Share_Cum"] * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_share_year_fmt"] = (map_df["Share_Year"] * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_percap_cum_fmt"] = (map_df["PerCap_Cum"] * 1_000_000).map(_format_currency_compact)
+    map_df["_percap_year_fmt"] = (map_df["PerCap_Year"] * 1_000_000).map(_format_currency_compact)
+    map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
+    map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
+    customdata = map_df[
+        [
+            "region",
+            "_year_str",
+            "_metric_display",
+            "_share_cum_fmt",
+            "_share_year_fmt",
+            "_percap_cum_fmt",
+            "_percap_year_fmt",
+            "_population_fmt",
+        ]
+    ].to_numpy()
+    hovertemplate = (
+        "<b>%{customdata[0]}</b><br>"
+        "Year: %{customdata[1]}<br>"
+        f"{config['label']}: %{customdata[2]}<br>"
+        "Cumulative share: %{customdata[3]}<br>"
+        "Annual share: %{customdata[4]}<br>"
+        "Per-capita cumulative: %{customdata[5]}<br>"
+        "Per-capita annual: %{customdata[6]}<br>"
+        "Population: %{customdata[7]}<extra></extra>"
+    )
+    colorbar = dict(
+        title=dict(text=config.get("colorbar", config["label"]), side="right"),
+        ticksuffix=config.get("ticksuffix"),
+        tickformat=config.get("tickformat"),
+        len=0.7,
+        thickness=16,
+        x=1.05,
+        y=0.5,
+        xpad=12,
+        outlinewidth=0,
+        bgcolor="rgba(0,0,0,0)",
+    )
+    trace = go.Choropleth(
+        geojson=geojson,
+        featureidkey=f"properties.{name_field}",
+        locations=map_df["join_key"],
+        z=map_df["_metric_value"],
+        zmin=zmin,
+        zmax=zmax,
+        colorscale=effective_colorscale,
+        reversescale=bool(config.get("reversescale", False)),
+        marker=dict(line=dict(color=line_color, width=marker_line_width)),
+        colorbar=colorbar,
+        customdata=customdata,
+        hovertemplate=hovertemplate,
+    )
+    fig = go.Figure(data=[trace])
+    fig.update_geos(
+        visible=False,
+        projection_type="mercator",
+        projection_scale=2.0,
+        center=dict(lat=-41.0, lon=173.0),
+        lataxis=dict(range=[-58.0, -24.0]),
+        lonaxis=dict(range=[152.0, 195.0]),
+        showcountries=False,
+        showcoastlines=True,
+        coastlinecolor=coastline_color,
+        coastlinewidth=1.5,
+        showland=True,
+        landcolor=land_color,
+    )
+    fig.update_layout(
+        margin=dict(l=0, r=140, t=60, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=520,
+        title=dict(
+            text=f"{config['label']} — {scenario_label} ({year})",
+            x=0.02,
+            y=0.96,
+            xanchor="left",
+            yanchor="top",
+            font=dict(size=16),
+            pad=dict(b=12),
+        ),
+    )
+    return fig
+
+def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFrame:
+    config = REGION_METRIC_CONFIG[metric_key]
+    table = df.copy()
+    table["_metric_value"] = _scaled_region_metric(table, metric_key)
+    table["_metric_display"] = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+    table["_share_cum_fmt"] = (table["Share_Cum"] * 100).map(lambda v: _format_percentage(v, 1))
+    table["_share_year_fmt"] = (table["Share_Year"] * 100).map(lambda v: _format_percentage(v, 1))
+    table["_percap_cum_fmt"] = (table["PerCap_Cum"] * 1_000_000).map(_format_currency_compact)
+    table["_percap_year_fmt"] = (table["PerCap_Year"] * 1_000_000).map(_format_currency_compact)
+    sort_mode = config.get("sort", "desc")
+    if sort_mode == "asc":
+        table = table.sort_values("_metric_value", ascending=True)
+    elif sort_mode == "abs_desc":
+        table = table.assign(_abs=table["_metric_value"].abs()).sort_values("_abs", ascending=False).drop(columns="_abs")
+    else:
+        table = table.sort_values("_metric_value", ascending=False)
+    columns = {
+        "region": "Region",
+        "_metric_display": config.get("table_label", config["label"]),
+        "_share_cum_fmt": "Share (cum)",
+        "_share_year_fmt": "Share (annual)",
+        "_percap_cum_fmt": "Per-cap cum",
+        "_percap_year_fmt": "Per-cap annual",
+    }
+    formatted = table[list(columns.keys())].rename(columns=columns)
+    formatted.reset_index(drop=True, inplace=True)
+    return formatted.head(10)
+
+def render_region_map(
+    df_year: pd.DataFrame,
+    metric_key: str,
+    *,
+    scenario_label: str,
+    year: int,
+    show_borders: bool,
+    fill_opacity: float,
+) -> None:
+    geojson = fetch_region_geojson()
+    name_field = get_geojson_name_field(geojson)
+    valid_regions = set()
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        value = props.get(name_field)
+        if value is None:
+            continue
+        text_value = str(value).strip()
+        if text_value:
+            valid_regions.add(text_value)
+    df_year = df_year.copy()
+    region_mapping = load_region_mapping()
+    catalog, _, _ = region_baselines(region_mapping)
+    baseline_keys = catalog[["region", "join_key", "population", "gdp_per_capita"]].drop_duplicates(subset=["region"]).copy()
+    df_year = baseline_keys.merge(
+        df_year,
+        on=["region", "join_key"],
+        how="left",
+        suffixes=("", "_data"),
+    )
+    if "population_data" in df_year.columns:
+        df_year["population"] = df_year["population_data"].fillna(df_year["population"])
+    if "gdp_per_capita_data" in df_year.columns:
+        df_year["gdp_per_capita"] = df_year["gdp_per_capita_data"].fillna(df_year["gdp_per_capita"])
+    df_year.drop(columns=[c for c in ("population_data", "gdp_per_capita_data") if c in df_year.columns], inplace=True)
+    df_year["Year"] = df_year["Year"].fillna(int(year))
+    numeric_cols = df_year.select_dtypes(include=[np.number]).columns
+    df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
+    df_year["join_key"] = df_year["join_key"].astype(str).str.strip()
+    map_df = df_year[df_year["join_key"].isin(valid_regions) & df_year["join_key"].str.len() > 0].copy()
+    map_df["join_key"] = map_df["join_key"].astype(str).str.strip()
+    if map_df.empty or map_df[metric_key].dropna().empty:
+        st.info("No mapped regional spend for the selected inputs.")
+        summary = build_region_summary_table(df_year, metric_key)
+        st.dataframe(summary, hide_index=True, use_container_width=True)
+        return
+    map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
+    if map_df["_metric_value"].dropna().empty:
+        st.info("Selected metric has no values for this year.")
+        summary = build_region_summary_table(df_year, metric_key)
+        st.dataframe(summary, hide_index=True, use_container_width=True)
+        return
+    map_col, table_col = st.columns([2, 1])
+    with map_col:
+        fig = build_region_map_figure(
+            map_df,
+            metric_key,
+            geojson=geojson,
+            scenario_label=scenario_label,
+            year=year,
+            show_borders=show_borders,
+            fill_opacity=fill_opacity,
+            name_field=name_field,
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"})
+    with table_col:
+        summary = build_region_summary_table(df_year, metric_key)
+        st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
+        st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
+        if (df_year["region"] == "Unmapped").any():
+            st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
+
+def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> None:
+    available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
+    if not available_years:
+        st.info("No spend data available for the selected scenario.")
+        return
+    default_year = st.session_state.get("region_metric_year", available_years[0])
+    if default_year not in available_years:
+        default_year = available_years[0]
+    col_year, col_metric, col_opts = st.columns([2, 1, 1])
+    with col_year:
+        selected_year = st.slider(
+            "Financial year",
+            min_value=int(available_years[0]),
+            max_value=int(available_years[-1]),
+            value=int(default_year),
+            step=1,
+            key="region_metric_year_slider",
+        )
+    metric_options = REGION_METRIC_ORDER
+    default_metric = st.session_state.get("region_metric_key", metric_options[0])
+    if default_metric not in metric_options:
+        default_metric = metric_options[0]
+    with col_metric:
+        metric_key = st.selectbox(
+            "Metric",
+            metric_options,
+            index=metric_options.index(default_metric),
+            format_func=lambda key: REGION_METRIC_CONFIG[key]["label"],
+            key="region_metric_select",
+        )
+    with col_opts:
+        show_borders = st.checkbox(
+            "Show borders",
+            value=st.session_state.get("region_metric_show_borders", True),
+            key="region_metric_borders_checkbox",
+        )
+        fill_opacity = st.slider(
+            "Fill opacity",
+            min_value=0.2,
+            max_value=1.0,
+            value=float(st.session_state.get("region_metric_opacity", 0.85)),
+            step=0.05,
+            key="region_metric_opacity_slider",
+        )
+    st.session_state["region_metric_year"] = int(selected_year)
+    st.session_state["region_metric_key"] = metric_key
+    st.session_state["region_metric_show_borders"] = bool(show_borders)
+    st.session_state["region_metric_opacity"] = float(fill_opacity)
+    config = REGION_METRIC_CONFIG[metric_key]
+    st.caption(config.get("description", ""))
+    year_df = metrics_df[metrics_df["Year"] == int(selected_year)].copy()
+    if year_df.empty:
+        st.info(f"No regional spend recorded in {selected_year}.")
+        return
+    render_region_map(
+        year_df,
+        metric_key,
+        scenario_label=scenario_label,
+        year=int(selected_year),
+        show_borders=bool(show_borders),
+        fill_opacity=float(fill_opacity),
+    )
+
+def render_region_section(
+    data: DashboardData,
+    *,
+    opt_selection,
+    comp_selection,
+    opt_label: str,
+    cmp_label: str,
+    cache_signature: tuple | None = None,
+) -> None:
+    with st.container():
+        st.subheader("Regional investment overview")
+        scenario_options: Dict[str, Any] = {}
+        if getattr(opt_selection, "code", None):
+            scenario_options[opt_label] = opt_selection
+        if getattr(comp_selection, "code", None):
+            scenario_options[cmp_label] = comp_selection
+        if not scenario_options:
+            st.info("Select a scenario to view the regional investment map.")
+            return
+        labels = list(scenario_options.keys())
+        default_label = st.session_state.get("region_metric_scenario", labels[0])
+        if default_label not in scenario_options:
+            default_label = labels[0]
+        selected_label = st.selectbox(
+            "Scenario for regional map",
+            labels,
+            index=labels.index(default_label),
+            key="region_metric_scenario_select",
+        )
+        st.session_state["region_metric_scenario"] = selected_label
+        selection = scenario_options[selected_label]
+        scenario_code = getattr(selection, "code", None)
+        if not scenario_code:
+            st.info("Select a scenario with an available cache entry to view the regional investment map.")
+            return
+        cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
+        cache_key = (cache_signature or "default", scenario_code)
+        metrics_df = cache_bucket.get(cache_key)
+        if metrics_df is None:
+            try:
+                metrics_df = compute_region_metrics(data, scenario_code)
+            except Exception as exc:
+                st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
+                return
+            cache_bucket[cache_key] = metrics_df
+        render_region_map_controls(metrics_df, selected_label)
+
 def main() -> None:
 
     st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
@@ -4166,10 +4753,19 @@ def main() -> None:
 
     cmp_series = build_timeseries(data, comp_selection)
 
-    export_tables: Dict[str, pd.DataFrame] = {}
-
     opt_label = opt_selection.name or "Optimised"
     cmp_label = comp_selection.name or "Comparison"
+
+    render_region_section(
+        data,
+        opt_selection=opt_selection,
+        comp_selection=comp_selection,
+        opt_label=opt_label,
+        cmp_label=cmp_label,
+        cache_signature=cache_sig,
+    )
+
+    export_tables: Dict[str, pd.DataFrame] = {}
 
     project_colors = project_color_map(data)
 
@@ -4482,6 +5078,8 @@ def main() -> None:
     gantt_selection = opt_selection if gantt_option == "Optimised" else comp_selection
 
     comparison_selection = comp_selection if gantt_option == "Optimised" else opt_selection
+
+    _inject_gantt_hotkey_listener()
 
     gantt_fig = spend_gantt_chart(
 
@@ -4921,6 +5519,10 @@ def main() -> None:
 if __name__ == "__main__":
 
     main()
+
+
+
+
 
 
 

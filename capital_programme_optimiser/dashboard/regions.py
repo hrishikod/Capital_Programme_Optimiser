@@ -1,0 +1,643 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import json
+import re
+import unicodedata
+import numpy as np
+import requests
+import pandas as pd
+
+from .data import DashboardData
+from ..config import load_project_region_mapping
+
+
+# -----------------------------
+# Region geometry source (ArcGIS REST)
+# -----------------------------
+
+@dataclass(frozen=True)
+class RegionGeometrySource:
+    # Stats NZ/ArcGIS services occasionally move; keep fields minimal and modern.
+    url: str = (
+        "https://services.arcgis.com/XTtANUDT8Va4DLwI/arcgis/rest/services/"
+        "nz_regional_councils/FeatureServer/0/query"
+    )
+    where: str = "1=1"
+    out_fields: Tuple[str, ...] = (
+        # 2025 schema name fields (primary + ascii)
+        "REGC2025_V1_00_NAME",
+        "REGC2025_V1_00_NAME_ASCII",
+        # Useful but optional:
+        "AREA_SQ_KM",
+    )
+    spatial_ref: int = 4326
+
+
+GEOMETRY_LOCAL_PATH = Path(__file__).with_name("nz_regional_councils_2025.geojson")
+
+# Prefer 2025 fields first; keep legacy fallbacks as distant backups
+NAME_FIELD_PRIORITY: Tuple[str, ...] = (
+    "REGC2025_V1_00_NAME",
+    "REGC_NAME",      # legacy fallback if seen on some services
+    "REGC_name",      # another legacy form
+)
+
+ASCII_FIELD_PRIORITY: Tuple[str, ...] = (
+    "REGC2025_V1_00_NAME_ASCII",
+    "REGC_NAME_ASCII",  # legacy
+    "REGC_name_ascii",  # legacy
+)
+
+NAME_FIELD_CANDIDATES: Tuple[str, ...] = tuple(
+    dict.fromkeys((*NAME_FIELD_PRIORITY, *ASCII_FIELD_PRIORITY))
+)
+
+# -----------------------------
+# Normalisation helpers
+# -----------------------------
+
+def _normalise_region_label(value: Any) -> str:
+    """Lowercase, strip accents, normalise punctuation, drop the word 'region'."""
+    if value is None:
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "'")
+    text = text.replace("–", "-").replace("—", "-")
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\bregion\b", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _ascii_region_name(value: Any) -> str:
+    if value is None:
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "'")
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+OFFICIAL_REGION_TITLES: Tuple[str, ...] = (
+    "Northland Region",
+    "Auckland Region",
+    "Waikato Region",
+    "Bay of Plenty Region",
+    "Gisborne Region",
+    "Hawke's Bay Region",
+    "Taranaki Region",
+    "Manawatū-Whanganui Region",
+    "Wellington Region",
+    "Tasman Region",
+    "Nelson Region",
+    "Marlborough Region",
+    "West Coast Region",
+    "Canterbury Region",
+    "Otago Region",
+    "Southland Region",
+    "Area Outside Region",
+)
+
+OFFICIAL_REGION_NAMES: Dict[str, str] = {
+    _normalise_region_label(name): name for name in OFFICIAL_REGION_TITLES
+}
+
+OFFICIAL_REGION_ASCII: Dict[str, str] = {
+    key: _ascii_region_name(value) for key, value in OFFICIAL_REGION_NAMES.items()
+}
+
+
+def _canonical_region_name(value: Any) -> Optional[str]:
+    """Map arbitrary input to official 'X Region' label if possible."""
+    norm = _normalise_region_label(value)
+    if not norm:
+        return None
+    canonical = OFFICIAL_REGION_NAMES.get(norm)
+    if canonical:
+        return canonical
+    # Common case: caller forgot the 'Region' suffix
+    if value is not None:
+        fallback_norm = _normalise_region_label(f"{value} Region")
+        if fallback_norm and fallback_norm != norm:
+            return OFFICIAL_REGION_NAMES.get(fallback_norm)
+    return None
+
+
+# -----------------------------
+# GeoJSON helpers
+# -----------------------------
+
+def _resolve_geojson_name_fields(geojson: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    """Pick the best available name fields present in the payload."""
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        if not props:
+            continue
+        name_field = next(
+            (field for field in NAME_FIELD_PRIORITY if field in props and props[field]),
+            None,
+        )
+        ascii_field = next(
+            (field for field in ASCII_FIELD_PRIORITY if field in props and props[field]),
+            None,
+        )
+        if name_field:
+            return name_field, ascii_field
+    # Fallbacks
+    fallback_name = "REGC2025_V1_00_NAME"
+    fallback_ascii = "REGC2025_V1_00_NAME_ASCII"
+    return fallback_name, fallback_ascii
+
+
+def _ensure_official_geojson_fields(geojson: Dict[str, Any]) -> bool:
+    """Inject/standardise official 2025 name fields in-place for robust joins."""
+    changed = False
+    if not isinstance(geojson, dict):
+        return changed
+
+    for feature in geojson.get("features", []):
+        props = feature.get("properties")
+        if not isinstance(props, dict):
+            continue
+        candidates: List[str] = []
+        for field in NAME_FIELD_CANDIDATES:
+            if not field:
+                continue
+            value = props.get(field)
+            if value is None:
+                continue
+            text_value = str(value).strip()
+            if not text_value:
+                continue
+            candidates.append(text_value)
+
+        canonical = None
+        for label in candidates:
+            canonical = _canonical_region_name(label)
+            if canonical:
+                break
+        if canonical is None and candidates:
+            canonical = candidates[0].strip()
+        if not canonical:
+            continue
+
+        ascii_value = _ascii_region_name(canonical)
+        if props.get("REGC2025_V1_00_NAME") != canonical:
+            props["REGC2025_V1_00_NAME"] = canonical
+            changed = True
+        if props.get("REGC2025_V1_00_NAME_ASCII") != ascii_value:
+            props["REGC2025_V1_00_NAME_ASCII"] = ascii_value
+            changed = True
+    return changed
+
+
+def _geojson_has_official_field(geojson: Dict[str, Any]) -> bool:
+    if not isinstance(geojson, dict):
+        return False
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        if not props.get("REGC2025_V1_00_NAME"):
+            return False
+    return True
+
+
+def _geojson_name_lookup(geojson: Dict[str, Any]) -> Dict[str, str]:
+    """Build a normalised name → canonical name lookup from the GeoJSON."""
+    _ensure_official_geojson_fields(geojson)
+    name_field, ascii_field = _resolve_geojson_name_fields(geojson)
+    candidate_fields = [field for field in NAME_FIELD_CANDIDATES if field]
+    lookup: Dict[str, str] = {}
+
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        if not props:
+            continue
+
+        canonical_raw = props.get(name_field)
+        canonical = _canonical_region_name(canonical_raw) if canonical_raw is not None else None
+        if not canonical and ascii_field:
+            ascii_raw = props.get(ascii_field)
+            canonical = _canonical_region_name(ascii_raw) if ascii_raw is not None else None
+
+        candidates: List[str] = []
+        for field in candidate_fields:
+            value = props.get(field)
+            if value is None:
+                continue
+            text_value = str(value).strip()
+            if not text_value:
+                continue
+            candidates.append(text_value)
+            if not canonical:
+                candidate_canonical = _canonical_region_name(text_value)
+                if candidate_canonical:
+                    canonical = candidate_canonical
+
+        if not canonical and candidates:
+            canonical = candidates[0].strip()
+        if not canonical:
+            continue
+
+        canonical_text = str(canonical).strip()
+        if not canonical_text:
+            continue
+
+        ascii_alias = _ascii_region_name(canonical_text)
+        lookup.setdefault(_normalise_region_label(canonical_text), canonical_text)
+        if ascii_alias:
+            lookup.setdefault(_normalise_region_label(ascii_alias), canonical_text)
+
+        for label in candidates:
+            norm = _normalise_region_label(label)
+            if norm:
+                lookup.setdefault(norm, canonical_text)
+
+    return lookup
+
+
+def get_geojson_name_field(geojson: Dict[str, Any]) -> str:
+    name_field, _ = _resolve_geojson_name_fields(geojson)
+    return name_field
+
+
+@lru_cache(maxsize=1)
+def fetch_region_geojson(
+    source: RegionGeometrySource = RegionGeometrySource(),
+    local_path: Optional[Path] = GEOMETRY_LOCAL_PATH,
+) -> Dict[str, Any]:
+    """Fetch regional polygons as GeoJSON, caching to disk and memory."""
+    lp: Optional[Path] = Path(local_path) if local_path is not None else None
+
+    def _download() -> Dict[str, Any]:
+        params = {
+            "where": source.where,
+            "outFields": ",".join(source.out_fields),
+            "returnGeometry": "true",
+            "f": "geojson",
+            "outSR": str(source.spatial_ref),
+        }
+        r = requests.get(source.url, params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        _ensure_official_geojson_fields(data)
+        return data
+
+    geojson: Optional[Dict[str, Any]] = None
+
+    # Try local cache first
+    if lp is not None and lp.exists():
+        with lp.open("r", encoding="utf-8") as fh:
+            geojson = json.load(fh)
+        if geojson:
+            changed = _ensure_official_geojson_fields(geojson)
+            if not _geojson_has_official_field(geojson):
+                try:
+                    remote = _download()
+                except Exception:
+                    remote = None
+                if remote is not None:
+                    geojson = remote
+                    changed = True
+            if changed:
+                try:
+                    lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+            return geojson
+
+    # Otherwise download
+    geojson = _download()
+    if lp is not None and geojson:
+        try:
+            lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+    return geojson
+
+
+# -----------------------------
+# Mapping normalisation
+# -----------------------------
+
+def _standardise_mapping_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rename common variants from the user PKL/CSV to canonical snake_case:
+    Project, Region, Join key, GDP per capita, Population
+      -> project, region, join_key, gdp_per_capita, population
+    """
+    if df is None or df.empty:
+        return df
+
+    def norm_col(c: str) -> str:
+        return re.sub(r"\s+", " ", c.strip().lower())
+
+    rename_map: Dict[str, str] = {}
+    for c in df.columns:
+        lc = norm_col(str(c))
+        if lc in {"project", "project id", "code"}:
+            rename_map[c] = "project"
+        elif lc in {"region", "region name"}:
+            rename_map[c] = "region"
+        elif lc in {"join key", "join_key", "joinkey", "join region", "join"}:
+            rename_map[c] = "join_key"
+        elif "gdp" in lc and "capita" in lc:
+            rename_map[c] = "gdp_per_capita"
+        elif lc in {"population", "pop"}:
+            rename_map[c] = "population"
+
+    out = df.rename(columns=rename_map).copy()
+
+    # Ensure required columns exist
+    if "region" not in out.columns:
+        raise KeyError("Mapping must contain a 'Region' column (or equivalent).")
+    if "project" not in out.columns:
+        raise KeyError("Mapping must contain a 'Project' column (or equivalent).")
+    if "join_key" not in out.columns:
+        # If no explicit join key, default to region label
+        out["join_key"] = out["region"]
+
+    # Coerce numerics where present
+    if "gdp_per_capita" in out.columns:
+        out["gdp_per_capita"] = pd.to_numeric(out["gdp_per_capita"], errors="coerce")
+    else:
+        out["gdp_per_capita"] = np.nan
+
+    if "population" in out.columns:
+        out["population"] = pd.to_numeric(out["population"], errors="coerce")
+    else:
+        out["population"] = np.nan
+
+    # Normalised forms for joins
+    out["project_norm"] = _normalise_project(out["project"])
+    out["join_key"] = out["join_key"].astype(str).str.strip()
+    out["region"] = out["region"].astype(str).str.strip()
+    out["join_key_norm"] = out["join_key"].map(_normalise_region_label)
+
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_region_mapping(path: Optional[Path] = None) -> pd.DataFrame:
+    raw = load_project_region_mapping(path)
+    return _harmonise_join_keys(raw)
+
+
+def _harmonise_join_keys(mapping: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardise mapping columns; align join_key/region to official names using:
+      1) GeoJSON lookup (if available)
+      2) OFFICIAL_REGION_NAMES (normalized)
+      3) Canonicalization fallback by appending 'Region'
+    Also guarantees presence of: project_norm, join_key_norm
+    """
+    if mapping is None or mapping.empty:
+        return mapping
+
+    aligned = _standardise_mapping_columns(mapping)
+    geojson = fetch_region_geojson()
+    lookup = _geojson_name_lookup(geojson) if geojson else {}
+
+    norm_join = aligned["join_key"].map(_normalise_region_label)
+    norm_region = aligned["region"].map(_normalise_region_label)
+
+    resolved = norm_join.map(lookup).fillna(norm_region.map(lookup))
+    resolved = resolved.fillna(norm_join.map(OFFICIAL_REGION_NAMES))
+    resolved = resolved.fillna(norm_region.map(OFFICIAL_REGION_NAMES))
+
+    fallback = aligned["join_key"].map(_canonical_region_name).fillna(
+        aligned["region"].map(_canonical_region_name)
+    )
+    resolved = resolved.fillna(fallback)
+
+    # Apply canonical names where found
+    mask = resolved.notna()
+    aligned.loc[mask, "join_key"] = resolved[mask]
+    aligned.loc[mask, "region"] = resolved[mask]
+
+    aligned["join_key_norm"] = aligned["join_key"].map(_normalise_region_label)
+
+    # Keep a single row per project if duplicates appear; last-one-wins is fine
+    aligned = aligned.copy()
+
+    return aligned
+
+
+# -----------------------------
+# Metrics
+# -----------------------------
+
+def region_baselines(mapping: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]:
+    catalog = mapping[["region", "join_key", "population", "gdp_per_capita"]].drop_duplicates(subset=["join_key"]).copy()
+    catalog["population"] = pd.to_numeric(catalog["population"], errors="coerce").fillna(0.0)
+    catalog["gdp_per_capita"] = pd.to_numeric(catalog["gdp_per_capita"], errors="coerce").fillna(0.0)
+
+    pop_total = catalog["population"].sum()
+    pop_share = {row.region: (row.population / pop_total) if pop_total > 0 else np.nan
+                 for row in catalog.itertuples()}
+
+    gdp_mass = catalog["population"] * catalog["gdp_per_capita"]
+    gdp_total = gdp_mass.sum()
+    gdp_share = {row.region: (row.population * row.gdp_per_capita / gdp_total) if gdp_total > 0 else np.nan
+                 for row in catalog.itertuples()}
+
+    return catalog, pop_share, gdp_share
+
+
+def _safe_divide(num: pd.Series, denom: pd.Series) -> pd.Series:
+    denom = denom.replace({0: np.nan})
+    return num.div(denom)
+
+
+def _prepare_region_info(mapping: pd.DataFrame) -> pd.DataFrame:
+    cols = ["region", "join_key", "join_key_norm", "gdp_per_capita", "population"]
+    missing = [c for c in cols if c not in mapping.columns]
+    if missing:
+        raise KeyError(f"Mapping missing required columns after standardisation: {missing}")
+    info = mapping[cols].drop_duplicates(subset=["join_key"]).copy()
+    info["population"] = pd.to_numeric(info["population"], errors="coerce")
+    info["gdp_per_capita"] = pd.to_numeric(info["gdp_per_capita"], errors="coerce")
+    return info
+
+
+def _normalise_project(series: pd.Series) -> pd.Series:
+    return (
+        series.astype(str)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str.lower()
+    )
+
+
+def compute_region_metrics(
+    data: DashboardData,
+    scenario_code: str,
+    *,
+    mapping: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """
+    Compute annual and cumulative region vs national spend metrics with fairness lenses.
+    Expects data.spend_matrix with columns: ['Code','Project', <year1>, <year2>, ...]
+    """
+    if scenario_code is None:
+        raise ValueError("scenario_code must be provided")
+
+    mapping_df = mapping if mapping is not None else load_region_mapping()
+    if mapping_df is None or mapping_df.empty:
+        raise ValueError("Project-region mapping is empty")
+
+    region_info = _prepare_region_info(mapping_df)
+    pop_total = region_info["population"].sum(skipna=True)
+    gdp_total = (region_info["gdp_per_capita"] * region_info["population"]).sum(skipna=True)
+
+    # Filter the scenario's spend matrix
+    spend_df = data.spend_matrix[data.spend_matrix["Code"] == scenario_code]
+    if spend_df.empty:
+        raise ValueError(f"No spend matrix data for scenario code {scenario_code}")
+
+    # Years to melt — use the actual intersection of provided years/columns
+    candidate_years = list(data.years)
+    # Keep only columns that exist
+    value_vars = [y for y in candidate_years if y in spend_df.columns]
+
+    long_df = spend_df.melt(
+        id_vars=["Code", "Project"],
+        value_vars=value_vars,
+        var_name="Year",
+        value_name="Spend_M",
+    )
+    # Robust year typing
+    long_df["Year"] = pd.to_numeric(long_df["Year"], errors="coerce").astype("Int64")
+    long_df = long_df[long_df["Year"].notna()].copy()
+    long_df["Year"] = long_df["Year"].astype(int)
+
+    long_df["Spend_M"] = pd.to_numeric(long_df["Spend_M"], errors="coerce").fillna(0.0)
+
+    # Project normalisation (both sides)
+    long_df["project_norm"] = _normalise_project(long_df["Project"])
+    # Ensure mapping has project_norm
+    if "project_norm" not in mapping_df.columns:
+        mapping_df = mapping_df.copy()
+        mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
+
+    merged = long_df.merge(
+        mapping_df,
+        how="left",
+        on="project_norm",
+        suffixes=("", "_map"),
+    )
+
+    # Handle unmapped projects explicitly
+    merged["region"] = merged["region"].fillna("Unmapped")
+    merged.loc[merged["region"] == "Unmapped", ["join_key", "join_key_norm"]] = ""
+    merged.loc[merged["region"] == "Unmapped", ["population", "gdp_per_capita"]] = np.nan
+
+    region_spend = (
+        merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
+    )
+
+    if (merged["region"] == "Unmapped").any() and "Unmapped" not in region_info["region"].values:
+        extra = pd.DataFrame({
+            "region": ["Unmapped"],
+            "join_key": [""],
+            "join_key_norm": [""],
+            "gdp_per_capita": [0.0],
+            "population": [0.0],
+        })
+        region_info = pd.concat([region_info, extra], ignore_index=True)
+
+    # Construct a complete grid over observed years and all known regions
+    years_present = sorted(region_spend["Year"].unique().tolist())
+    all_regions = region_info["region"].unique().tolist()
+    full_index = pd.MultiIndex.from_product([years_present, all_regions], names=["Year", "region"])
+    region_spend = (
+        region_spend
+        .set_index(["Year", "region"])
+        .reindex(full_index, fill_value=0.0)
+        .reset_index()
+    )
+
+    # Attach static attributes
+    region_spend = region_spend.merge(
+        region_info,
+        how="left",
+        on="region",
+        suffixes=("", "_info"),
+    )
+
+    # National totals and shares
+    total_by_year = region_spend.groupby("Year")["Spend_M"].sum().rename("Spend_National")
+    total_cum = total_by_year.sort_index().cumsum()
+
+    region_spend = region_spend.merge(total_by_year, on="Year", how="left")
+    region_spend["Share_Year"] = _safe_divide(region_spend["Spend_M"], region_spend["Spend_National"]).fillna(0.0)
+
+    # Cumulative shares
+    region_spend = region_spend.sort_values(["region", "Year"])
+    region_spend["Spend_Cum_Region"] = region_spend.groupby("region")["Spend_M"].cumsum()
+    region_spend["Spend_Cum_National"] = region_spend["Year"].map(total_cum)
+    region_spend["Share_Cum"] = _safe_divide(
+        region_spend["Spend_Cum_Region"], region_spend["Spend_Cum_National"]
+    ).fillna(0.0)
+
+    # Per-capita metrics
+    region_spend["PerCap_Year"] = _safe_divide(region_spend["Spend_M"], region_spend["population"])
+    region_spend["PerCap_Cum"] = _safe_divide(region_spend["Spend_Cum_Region"], region_spend["population"])
+
+    # Fairness benchmarks
+    pop_share_series = region_info.set_index("region")["population"]
+    pop_share_series = pop_share_series / pop_total if pop_total > 0 else pd.Series(dtype=float)
+
+    gdp_mass = region_info.set_index("region")["gdp_per_capita"] * region_info.set_index("region")["population"]
+    gdp_share_series = gdp_mass / gdp_total if gdp_total > 0 else pd.Series(dtype=float)
+
+    pop_share_map = pop_share_series.to_dict() if not pop_share_series.empty else {}
+    gdp_share_map = gdp_share_series.to_dict() if not gdp_share_series.empty else {}
+
+    region_spend["Pop_Share_Benchmark"] = region_spend["region"].map(pop_share_map)
+    region_spend["GDP_Share_Benchmark"] = region_spend["region"].map(gdp_share_map)
+
+    region_spend["OU_vs_Pop"] = region_spend["Share_Cum"] - region_spend["Pop_Share_Benchmark"]
+    region_spend["OU_vs_GDP"] = region_spend["Share_Cum"] - region_spend["GDP_Share_Benchmark"]
+
+    # Acceleration (change in cumulative share)
+    region_spend["Ramp_Rate"] = region_spend.groupby("region")["Share_Cum"].diff()
+    region_spend["Ramp_Rate"] = region_spend["Ramp_Rate"].fillna(region_spend["Share_Cum"])
+
+    # Final tidy / rename for output
+    region_spend.rename(
+        columns={
+            "Spend_M": "Spend_Year",
+        },
+        inplace=True,
+    )
+
+    return region_spend[
+        [
+            "Year",
+            "region",
+            "join_key",
+            "Spend_Year",
+            "Spend_National",
+            "Spend_Cum_Region",
+            "Spend_Cum_National",
+            "Share_Year",
+            "Share_Cum",
+            "PerCap_Year",
+            "PerCap_Cum",
+            "Pop_Share_Benchmark",
+            "GDP_Share_Benchmark",
+            "OU_vs_Pop",
+            "OU_vs_GDP",
+            "Ramp_Rate",
+            "population",
+            "gdp_per_capita",
+        ]
+    ]
