@@ -269,88 +269,181 @@ NAV_TABS = ["Overview", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"
 def inject_powerbi_theme() -> None:
     css = """
         <style>
-            :root {{
-                --pbi-blue: {blue};
-                --pbi-green: {green};
-            }}
-            body {{
+            :root {
+                --pbi-blue: __BLUE__;
+                --pbi-green: __GREEN__;
+            }
+            body {
                 background-color: #f8fafc;
-            }}
-            .pbi-header {{
+            }
+            .pbi-header {
                 font-family: 'Segoe UI', 'Inter', sans-serif;
                 color: var(--pbi-blue);
                 font-size: 2.2rem;
                 font-weight: 600;
                 margin-bottom: 0.2rem;
-            }}
-            .pbi-header-underline {{
+            }
+            .pbi-header-underline {
                 width: 180px;
                 height: 6px;
                 border-radius: 999px;
                 background: var(--pbi-green);
                 margin-bottom: 1.2rem;
-            }}
-            .pbi-section-title {{
+            }
+            .pbi-section-title {
                 font-family: 'Segoe UI', 'Inter', sans-serif;
                 color: var(--pbi-blue);
                 font-size: 1.35rem;
                 font-weight: 600;
                 margin: 1.0rem 0 0.5rem;
-            }}
-            .pbi-card {{
+            }
+            .pbi-card {
                 background: #ffffff;
                 border-radius: 16px;
                 padding: 1.1rem 1.3rem;
                 box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
                 border: 1px solid rgba(15, 23, 42, 0.06);
                 margin-bottom: 1.1rem;
-            }}
-            .pbi-table .stDataFrame {{
+            }
+            .pbi-table .stDataFrame {
                 border-radius: 12px;
                 border: 1px solid rgba(15, 23, 42, 0.08);
                 overflow: hidden;
-            }}
-            div[data-testid='stDataFrame'] table thead tr th {{
+            }
+            div[data-testid='stDataFrame'] table thead tr th {
                 background: rgba(25, 69, 107, 0.06) !important;
                 color: #0f172a !important;
                 font-weight: 600;
-            }}
-            div[data-testid='stDataFrame'] table tbody tr:hover td {{
+            }
+            div[data-testid='stDataFrame'] table tbody tr:hover td {
                 background-color: rgba(25, 69, 107, 0.08) !important;
-            }}
+            }
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link {
+                color: var(--pbi-blue) !important;
+                display: flex;
+                align-items: center;
+                gap: 0.55rem;
+            }
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link .icon {
+                color: var(--pbi-blue) !important;
+            }
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active {
+                color: #ffffff !important;
+            }
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active .icon {
+                color: #ffffff !important;
+            }
         </style>
     """
+    css = css.replace("{", "{{").replace("}", "}}")
+    css = css.replace("__BLUE__", "{blue}").replace("__GREEN__", "{green}")
     st.markdown(css.format(blue=POWERBI_BLUE, green=POWERBI_GREEN), unsafe_allow_html=True)
 
 
-def render_powerbi_navigation(active_tab: str, *, key: str) -> str:
-    with st.container():
+def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "vertical") -> str:
+    styles_vertical = {
+        "container": {
+            "padding": "0!important",
+            "background": "linear-gradient(180deg, rgba(25, 69, 107, 0.1), rgba(175, 189, 34, 0.12))",
+            "border-radius": "20px",
+            "border": "1px solid rgba(25, 69, 107, 0.18)",
+            "box-shadow": "0 14px 32px rgba(25, 69, 107, 0.16)",
+            "width": "100%",
+        },
+        "menu-title": {
+            "font-family": "\'Segoe UI\', \'Inter\', sans-serif",
+            "font-size": "0.84rem",
+            "font-weight": "600",
+            "letter-spacing": "0.08em",
+            "text-transform": "uppercase",
+            "color": "var(--pbi-blue)",
+            "padding": "0.75rem 0.95rem 0.35rem",
+            "margin": "0",
+        },
+        "nav": {
+            "display": "flex",
+            "flex-direction": "column",
+            "gap": "0.55rem",
+            "align-items": "stretch",
+            "justify-content": "flex-start",
+            "padding": "0 0.9rem 0.85rem",
+        },
+        "icon": {"color": "var(--pbi-blue)", "font-size": "1.05rem"},
+        "nav-link": {
+            "border-radius": "14px",
+            "padding": "0.6rem 0.9rem",
+            "background": "rgba(255, 255, 255, 0.92)",
+            "color": "var(--pbi-blue)",
+            "font-size": "0.96rem",
+            "font-weight": "600",
+            "border": "1px solid rgba(25, 69, 107, 0.22)",
+            "transition": "background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease",
+            "text-align": "left",
+        },
+        "nav-link-selected": {
+            "background": "var(--pbi-blue)",
+            "color": "#ffffff",
+            "box-shadow": "0 14px 28px rgba(25, 69, 107, 0.28)",
+            "border": "1px solid rgba(25, 69, 107, 0.32)",
+            "opacity": "1",
+        },
+    }
+    styles_horizontal = {
+        "container": {"padding": "0!important", "background-color": "transparent"},
+        "menu-title": {
+            "font-family": "\'Segoe UI\', \'Inter\', sans-serif",
+            "font-size": "0.84rem",
+            "font-weight": "600",
+            "letter-spacing": "0.08em",
+            "text-transform": "uppercase",
+            "color": "var(--pbi-blue)",
+            "padding": "0.75rem 0.95rem 0.35rem",
+            "margin": "0",
+        },
+        "nav": {"gap": "0.4rem", "justify-content": "center"},
+        "icon": {"color": "#ffffff", "font-size": "1rem"},
+        "nav-link": {
+            "border-radius": "12px",
+            "padding": "0.5rem 0.9rem",
+            "background": "rgba(255, 255, 255, 0.92)",
+            "color": "var(--pbi-blue)",
+            "font-size": "0.95rem",
+            "font-weight": "600",
+            "border": "1px solid rgba(25, 69, 107, 0.16)",
+        },
+        "nav-link-selected": {
+            "background": "var(--pbi-blue)",
+            "color": "#ffffff",
+            "box-shadow": "0 8px 18px rgba(25, 69, 107, 0.24)",
+            "border": "1px solid rgba(25, 69, 107, 0.26)",
+        },
+    }
+    styles = styles_vertical if orientation == "vertical" else styles_horizontal
+    container = st.container()
+    if orientation == "vertical":
+        with container:
+            selection = option_menu(
+                "Bookmarks",
+                options=NAV_TABS,
+                icons=["speedometer", "geo-alt", "truck", "cash", "diagram-3", "gear"],
+                menu_icon="",
+                default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
+                orientation=orientation,
+                key=key,
+                styles=styles,
+            )
+        return selection
+    with container:
         return option_menu(
             "",
             options=NAV_TABS,
             icons=["speedometer", "geo-alt", "truck", "cash", "diagram-3", "gear"],
             menu_icon="",
             default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
-            orientation="horizontal",
+            orientation=orientation,
             key=key,
-            styles={
-                "container": {"padding": "0!important", "background-color": "transparent"},
-                "nav": {"gap": "0.4rem", "justify-content": "center"},
-                "nav-link": {
-                    "border-radius": "12px",
-                    "padding": "0.5rem 0.9rem",
-                    "background": "transparent",
-                    "color": "#1f2937",
-                    "font-size": "0.95rem",
-                },
-                "nav-link-selected": {
-                    "background": "linear-gradient(135deg, var(--pbi-blue), #0f2d46)",
-                    "color": "#ffffff",
-                    "box-shadow": "0 6px 16px rgba(25, 69, 107, 0.22)",
-                },
-            },
+            styles=styles,
         )
-
 
 def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
     if not tables:
@@ -5553,92 +5646,91 @@ def main() -> None:
     cmp_label = comp_selection.name or "Comparison"
 
     st.session_state.setdefault("active_tab", NAV_TABS[0])
-    active_tab = render_powerbi_navigation(st.session_state["active_tab"], key="pbi_nav_top")
+    nav_col, content_col = st.columns((2.2, 7.8), gap="large")
+
+    with nav_col:
+        active_tab = render_powerbi_navigation(
+            st.session_state["active_tab"],
+            key="pbi_nav",
+            orientation="vertical",
+        )
+
     st.session_state["active_tab"] = active_tab
 
-    download_tables: Dict[str, pd.DataFrame] = {}
+    with content_col:
+        download_tables: Dict[str, pd.DataFrame] = {}
 
-    if active_tab == "Overview":
-        download_tables.update(
-            render_overview_tab(
-                data,
-                opt_selection,
-                comp_selection,
-                opt_series,
-                cmp_series,
-                opt_label=opt_label,
-                cmp_label=cmp_label,
+        if active_tab == "Overview":
+            download_tables.update(
+                render_overview_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
             )
-        )
-    elif active_tab == "Regions":
-        download_tables.update(
-            render_region_tab(
-                data,
-                opt_selection=opt_selection,
-                comp_selection=comp_selection,
-                opt_label=opt_label,
-                cmp_label=cmp_label,
-                cache_signature=cache_sig,
+        elif active_tab == "Regions":
+            download_tables.update(
+                render_region_tab(
+                    data,
+                    opt_selection=opt_selection,
+                    comp_selection=comp_selection,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                    cache_signature=cache_sig,
+                )
             )
-        )
-    elif active_tab == "Delivery":
-        download_tables.update(
-            render_delivery_tab(
-                data,
-                opt_selection,
-                comp_selection,
-                opt_series,
-                cmp_series,
-                opt_label=opt_label,
-                cmp_label=cmp_label,
+        elif active_tab == "Delivery":
+            download_tables.update(
+                render_delivery_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
             )
-        )
-    elif active_tab == "Cash Flow":
-        download_tables.update(
-            render_cash_flow_tab(
-                data,
-                opt_selection,
-                comp_selection,
-                opt_series,
-                cmp_series,
-                opt_label=opt_label,
-                cmp_label=cmp_label,
+        elif active_tab == "Cash Flow":
+            download_tables.update(
+                render_cash_flow_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
             )
-        )
-    elif active_tab == "Gantt":
-        download_tables.update(
-            render_gantt_tab(
-                data,
-                opt_selection,
-                comp_selection,
-                opt_label=opt_label,
-                cmp_label=cmp_label,
+        elif active_tab == "Gantt":
+            download_tables.update(
+                render_gantt_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
             )
-        )
-    elif active_tab == "Scenarios":
-        render_scenarios_tab(
-            settings,
-            preset_root,
-            saved_root,
-            scenario_folders,
-            data,
-        )
+        elif active_tab == "Scenarios":
+            render_scenarios_tab(
+                settings,
+                preset_root,
+                saved_root,
+                scenario_folders,
+                data,
+            )
 
-    if download_tables:
-        render_export_download(download_tables)
-
-    bottom_selection = render_powerbi_navigation(active_tab, key="pbi_nav_bottom")
-    if bottom_selection != active_tab:
-        st.session_state["active_tab"] = bottom_selection
-        st.rerun()
+        if download_tables:
+            render_export_download(download_tables)
 
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
 
