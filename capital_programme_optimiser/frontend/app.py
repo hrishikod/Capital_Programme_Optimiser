@@ -46,6 +46,7 @@ from plotly.colors import qualitative
 
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_option_menu import option_menu
 
 ROOT_CWD = Path.cwd()
 
@@ -90,7 +91,10 @@ from capital_programme_optimiser.dashboard.data import (
 from capital_programme_optimiser.frontend import scenarios as scenario_utils
 from capital_programme_optimiser.optimisation import solver_core
 
-PRIMARY_COLOR = "#19456B"
+POWERBI_BLUE = "#19456B"
+POWERBI_GREEN = "#AFBD22"
+
+PRIMARY_COLOR = POWERBI_BLUE
 
 COMPARISON_COLOR = "#C75643"
 
@@ -220,18 +224,148 @@ _GANTT_HOTKEY_HTML = """
 
 
 def _inject_gantt_hotkey_listener() -> None:
-    if GANTT_OUTLINE_VARIANT_KEY not in st.session_state:
-        st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "base"
-    response = components.html(_GANTT_HOTKEY_HTML, height=0, width=0)
-    if isinstance(response, dict) and response.get("toggle"):
-        current = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
-        st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "alt" if current == "base" else "base"
+    """
+    Mount a tiny HTML shim that listens for the 'Z' key and toggles the
+    Gantt outline colour. Works on modern Streamlit; degrades gracefully
+    on older builds that don't support `key=` or returning a value.
+    """
+    # Session defaults
+    st.session_state.setdefault(GANTT_OUTLINE_VARIANT_KEY, "base")
+    st.session_state.setdefault("_gantt_last_toggle", 0)
+    st.session_state.setdefault("_gantt_hotkey_supported", True)
+
+    # Try to mount with `key=` first (newer Streamlit). Fall back if unsupported.
+    try:
+        response = components.html(
+            _GANTT_HOTKEY_HTML,
+            height=0,
+            width=0,
+            key="_gantt_hotkey",
+        )
+    except TypeError:
+        # Older Streamlit: no `key` kwarg and no return value
+        components.html(_GANTT_HOTKEY_HTML, height=0, width=0)
+        st.session_state["_gantt_hotkey_supported"] = False
+        response = None
+
+    # If the HTML shim can post a value back, use it to flip the variant.
+    if isinstance(response, dict):
+        toggle_value = response.get("toggle")
+        if toggle_value and toggle_value != st.session_state["_gantt_last_toggle"]:
+            st.session_state["_gantt_last_toggle"] = toggle_value
+            current = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
+            st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "alt" if current == "base" else "base"
+            st.rerun()
+
 
 
 def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
+NAV_TABS = ["Overview", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"]
+
+
+def inject_powerbi_theme() -> None:
+    css = """
+        <style>
+            :root {{
+                --pbi-blue: {blue};
+                --pbi-green: {green};
+            }}
+            body {{
+                background-color: #f8fafc;
+            }}
+            .pbi-header {{
+                font-family: 'Segoe UI', 'Inter', sans-serif;
+                color: var(--pbi-blue);
+                font-size: 2.2rem;
+                font-weight: 600;
+                margin-bottom: 0.2rem;
+            }}
+            .pbi-header-underline {{
+                width: 180px;
+                height: 6px;
+                border-radius: 999px;
+                background: var(--pbi-green);
+                margin-bottom: 1.2rem;
+            }}
+            .pbi-section-title {{
+                font-family: 'Segoe UI', 'Inter', sans-serif;
+                color: var(--pbi-blue);
+                font-size: 1.35rem;
+                font-weight: 600;
+                margin: 1.0rem 0 0.5rem;
+            }}
+            .pbi-card {{
+                background: #ffffff;
+                border-radius: 16px;
+                padding: 1.1rem 1.3rem;
+                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+                border: 1px solid rgba(15, 23, 42, 0.06);
+                margin-bottom: 1.1rem;
+            }}
+            .pbi-table .stDataFrame {{
+                border-radius: 12px;
+                border: 1px solid rgba(15, 23, 42, 0.08);
+                overflow: hidden;
+            }}
+            div[data-testid='stDataFrame'] table thead tr th {{
+                background: rgba(25, 69, 107, 0.06) !important;
+                color: #0f172a !important;
+                font-weight: 600;
+            }}
+            div[data-testid='stDataFrame'] table tbody tr:hover td {{
+                background-color: rgba(25, 69, 107, 0.08) !important;
+            }}
+        </style>
+    """
+    st.markdown(css.format(blue=POWERBI_BLUE, green=POWERBI_GREEN), unsafe_allow_html=True)
+
+
+def render_powerbi_navigation(active_tab: str, *, key: str) -> str:
+    with st.container():
+        return option_menu(
+            "",
+            options=NAV_TABS,
+            icons=["speedometer", "geo-alt", "truck", "cash", "diagram-3", "gear"],
+            menu_icon="",
+            default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
+            orientation="horizontal",
+            key=key,
+            styles={
+                "container": {"padding": "0!important", "background-color": "transparent"},
+                "nav": {"gap": "0.4rem", "justify-content": "center"},
+                "nav-link": {
+                    "border-radius": "12px",
+                    "padding": "0.5rem 0.9rem",
+                    "background": "transparent",
+                    "color": "#1f2937",
+                    "font-size": "0.95rem",
+                },
+                "nav-link-selected": {
+                    "background": "linear-gradient(135deg, var(--pbi-blue), #0f2d46)",
+                    "color": "#ffffff",
+                    "box-shadow": "0 6px 16px rgba(25, 69, 107, 0.22)",
+                },
+            },
+        )
+
+
+def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
+    if not tables:
+        return
+    filename = f"capital_programme_dashboard_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    export_bytes = build_export_workbook(tables)
+    st.download_button(
+        "Export current tab",
+        data=export_bytes,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
+    )
+
+BRIGHT_PRIMARY_COLOR = "#1976D2"
 BRIGHT_PRIMARY_COLOR = "#1976D2"
 
 BRIGHT_COMPARISON_COLOR = "#D81B60"
@@ -4342,7 +4476,7 @@ def render_region_map(
     year: int,
     show_borders: bool,
     fill_opacity: float,
-) -> None:
+) -> pd.DataFrame | None:
     geojson = fetch_region_geojson()
     name_field = get_geojson_name_field(geojson)
     valid_regions = set()
@@ -4379,13 +4513,13 @@ def render_region_map(
         st.info("No mapped regional spend for the selected inputs.")
         summary = build_region_summary_table(df_year, metric_key)
         st.dataframe(summary, hide_index=True, use_container_width=True)
-        return
+        return summary
     map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
     if map_df["_metric_value"].dropna().empty:
         st.info("Selected metric has no values for this year.")
         summary = build_region_summary_table(df_year, metric_key)
         st.dataframe(summary, hide_index=True, use_container_width=True)
-        return
+        return summary
     map_col, table_col = st.columns([2, 1])
     with map_col:
         fig = build_region_map_figure(
@@ -4405,12 +4539,13 @@ def render_region_map(
         st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
         if (df_year["region"] == "Unmapped").any():
             st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
+        return summary
 
-def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> None:
+def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> pd.DataFrame | None:
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
-        return
+        return None
     default_year = st.session_state.get("region_metric_year", available_years[0])
     if default_year not in available_years:
         default_year = available_years[0]
@@ -4459,8 +4594,8 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
     year_df = metrics_df[metrics_df["Year"] == int(selected_year)].copy()
     if year_df.empty:
         st.info(f"No regional spend recorded in {selected_year}.")
-        return
-    render_region_map(
+        return None
+    return render_region_map(
         year_df,
         metric_key,
         scenario_label=scenario_label,
@@ -4469,7 +4604,7 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         fill_opacity=float(fill_opacity),
     )
 
-def render_region_section(
+def render_region_tab(
     data: DashboardData,
     *,
     opt_selection,
@@ -4477,333 +4612,72 @@ def render_region_section(
     opt_label: str,
     cmp_label: str,
     cache_signature: tuple | None = None,
-) -> None:
-    with st.container():
-        st.subheader("Regional investment overview")
-        scenario_options: Dict[str, Any] = {}
-        if getattr(opt_selection, "code", None):
-            scenario_options[opt_label] = opt_selection
-        if getattr(comp_selection, "code", None):
-            scenario_options[cmp_label] = comp_selection
-        if not scenario_options:
-            st.info("Select a scenario to view the regional investment map.")
-            return
-        labels = list(scenario_options.keys())
-        default_label = st.session_state.get("region_metric_scenario", labels[0])
-        if default_label not in scenario_options:
-            default_label = labels[0]
-        selected_label = st.selectbox(
-            "Scenario for regional map",
-            labels,
-            index=labels.index(default_label),
-            key="region_metric_scenario_select",
-        )
-        st.session_state["region_metric_scenario"] = selected_label
-        selection = scenario_options[selected_label]
-        scenario_code = getattr(selection, "code", None)
-        if not scenario_code:
-            st.info("Select a scenario with an available cache entry to view the regional investment map.")
-            return
-        cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
-        cache_key = (cache_signature or "default", scenario_code)
-        metrics_df = cache_bucket.get(cache_key)
-        if metrics_df is None:
-            try:
-                metrics_df = compute_region_metrics(data, scenario_code)
-            except Exception as exc:
-                st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
-                return
-            cache_bucket[cache_key] = metrics_df
-        render_region_map_controls(metrics_df, selected_label)
-
-def main() -> None:
-
-    st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
-
-
-    st.title("Capital Programme Optimiser")
-
-    if "last_run_summary" in st.session_state:
-
-        info = st.session_state.pop("last_run_summary")
-
-        folder_info = info.get("folder", {})
-
-        elapsed = info.get("elapsed_seconds", 0.0)
-
-        st.success(
-
-            f"Optimiser finished for {folder_info.get('name', 'scenario')} in {elapsed:.1f}s "
-
-            f"({len(info.get('output_files', []))} files saved)."
-
-        )
-
-    if "last_created_folder_name" in st.session_state:
-
-        created_name = st.session_state.pop("last_created_folder_name")
-
-        st.success(f"Scenario folder {created_name} created.")
-
-    settings = load_settings()
-
-    preset_root, saved_root = scenario_utils.ensure_scenario_roots(settings)
-
-    scenario_folders = scenario_utils.list_scenario_folders(settings)
-
-    cache_options = [
-
-        {
-
-            "label": "Configured cache (settings.yaml)",
-
-            "path": settings.cache_dir(),
-
-            "folder": None,
-
-        }
-
-    ]
-
-    for folder in scenario_folders:
-
-        label = f"{folder.kind.title()} / {folder.name}"
-
-        if folder.is_default:
-
-            label += " (default)"
-
-        cache_options.append(
-
-            {
-
-                "label": label,
-
-                "path": folder.path,
-
-                "folder": folder,
-
-            }
-
-        )
-
-    labels = [opt["label"] for opt in cache_options]
-
-    default_index = 0
-
-    if st.session_state.get("selected_cache_label") in labels:
-
-        default_index = labels.index(st.session_state["selected_cache_label"])
-
-    st.sidebar.header("Scenario cache")
-
-    selected_label = st.sidebar.selectbox(
-
-        "Choose scenario bundle",
-
-        labels,
-
-        index=default_index,
-
-    )
-
-    st.session_state["selected_cache_label"] = selected_label
-
-    selected_option = cache_options[labels.index(selected_label)]
-
-    selected_path = Path(selected_option["path"])
-
-    st.sidebar.caption(f"Active cache: {selected_path}")
-
-    manifest = None
-
-    folder_meta = selected_option.get("folder")
-
-    if folder_meta is not None:
-
-        manifest = folder_meta.metadata or scenario_utils.load_manifest(folder_meta.path)
-
-    if manifest and manifest.get("last_run"):
-
-        last_run = manifest["last_run"]
-
-        st.sidebar.write(
-
-            f"Last run finished: {last_run.get('finished_at', 'unknown')}"
-
-        )
-
-        if last_run.get("output_files"):
-
-            st.sidebar.write(f"Files: {len(last_run['output_files'])}")
-
-    else:
-
-        st.sidebar.caption("No recorded manifest details yet for this folder.")
-
-    st.sidebar.divider()
-
-    st.sidebar.header("Configuration")
-
-    st.sidebar.write(f"Dashboard output folder: {settings.dashboard_output_dir()}")
-
-    if st.sidebar.button("Reload cache data"):
-
-        load_dashboard_data.clear()
-
-        st.rerun()
-
-    cache_sig = _cache_signature(selected_path)
-
-    with st.spinner(f"Loading dashboard cache from {selected_path}..."):
-
-        try:
-
-            data = load_dashboard_data(
-                str(selected_path), cache_sig, LOAD_DATA_SCHEMA_VERSION
-            )
-
-        except Exception as exc:
-
-            st.error(f"Unable to load scenario cache from {selected_path}: {exc}")
-
-            st.stop()
-
-    with st.expander("Scenario filters", expanded=True):
-    
-        opt_col, cmp_col = st.columns(2)
-    
-        with opt_col:
-    
-            st.subheader("Optimised scenario")
-    
-            opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-    
-            opt_default_index = opt_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in opt_profiles else 0
-    
-            selected_opt_profile = st.selectbox(
-    
-                "Optimised profile",
-    
-                opt_profiles,
-    
-                index=opt_default_index,
-    
-                key="opt_profile_select",
-    
-            )
-    
-            opt_selection = scenario_selector(
-    
-                name="Optimised",
-    
-                data=data,
-    
-                settings=settings,
-    
-                prefer_comparison=False,
-    
-                key_prefix="opt",
-    
-                profile_name=selected_opt_profile,
-    
-            )
-    
-        with cmp_col:
-    
-            st.subheader("Comparison scenario")
-    
-            cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-    
-            cmp_default_index = next((i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"), None)
-    
-            if cmp_default_index is None:
-    
-                cmp_default_index = cmp_profiles.index(DEFAULT_PROFILE_LABEL) if DEFAULT_PROFILE_LABEL in cmp_profiles else 0
-    
-            selected_cmp_profile = st.selectbox(
-    
-                "Comparison profile",
-    
-                cmp_profiles,
-    
-                index=cmp_default_index,
-    
-                key="cmp_profile_select",
-    
-            )
-    
-            comp_selection = scenario_selector(
-    
-                name="Comparison",
-    
-                data=data,
-    
-                settings=settings,
-    
-                prefer_comparison=True,
-    
-                key_prefix="cmp",
-    
-                profile_name=selected_cmp_profile,
-    
-            )
-    
-    opt_series = build_timeseries(data, opt_selection)
-
-    cmp_series = build_timeseries(data, comp_selection)
-
-    opt_label = opt_selection.name or "Optimised"
-    cmp_label = comp_selection.name or "Comparison"
-
-    render_region_section(
-        data,
-        opt_selection=opt_selection,
-        comp_selection=comp_selection,
-        opt_label=opt_label,
-        cmp_label=cmp_label,
-        cache_signature=cache_sig,
-    )
-
+) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
-
-    project_colors = project_color_map(data)
-
-    schedule_opt_fig = project_schedule_area_chart(
-
-        data,
-
-        opt_selection,
-
-        title="Project schedule - optimised",
-
-        color_map=project_colors,
-
+    st.markdown('<div class="pbi-section-title">Regional investment overview</div>', unsafe_allow_html=True)
+    scenario_options: Dict[str, Any] = {}
+    if getattr(opt_selection, "code", None):
+        scenario_options[opt_label] = opt_selection
+    if getattr(comp_selection, "code", None):
+        scenario_options[cmp_label] = comp_selection
+    if not scenario_options:
+        st.info("Select a scenario to view the regional investment map.")
+        return export_tables
+    labels = list(scenario_options.keys())
+    default_label = st.session_state.get("region_metric_scenario", labels[0])
+    if default_label not in scenario_options:
+        default_label = labels[0]
+    selected_label = st.selectbox(
+        "Scenario for regional map",
+        labels,
+        index=labels.index(default_label),
+        key="region_metric_scenario_select",
     )
+    st.session_state["region_metric_scenario"] = selected_label
+    selection = scenario_options[selected_label]
+    scenario_code = getattr(selection, "code", None)
+    if not scenario_code:
+        st.info("Select a scenario with an available cache entry to view the regional investment map.")
+        return export_tables
+    cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
+    cache_key = (cache_signature or "default", scenario_code)
+    metrics_df = cache_bucket.get(cache_key)
+    if metrics_df is None:
+        try:
+            metrics_df = compute_region_metrics(data, scenario_code)
+        except Exception as exc:
+            st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
+            return export_tables
+        cache_bucket[cache_key] = metrics_df
+    summary = render_region_map_controls(metrics_df, selected_label)
+    if summary is not None and not summary.empty:
+        export_tables[f"Regional summary - {selected_label}"] = summary
+    return export_tables
 
-    schedule_cmp_fig = project_schedule_area_chart(
 
-        data,
 
-        comp_selection,
 
-        title="Project schedule - comparison",
 
-        color_map=project_colors,
-
-    )
-
+def render_overview_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+    st.markdown('<div class="pbi-section-title">Programme summary</div>', unsafe_allow_html=True)
     summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
-
     npv_summary_label = npv_context_label(
         data,
         opt_selection,
         comp_selection,
         horizon_override=summary_horizon_years,
     )
-
     summary_col1, summary_col2, summary_col3 = st.columns(3)
-
     stats_opt = (
         scenario_metrics(
             opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years
@@ -4811,7 +4685,6 @@ def main() -> None:
         if opt_series is not None
         else None
     )
-
     stats_cmp = (
         scenario_metrics(
             cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years
@@ -4819,79 +4692,61 @@ def main() -> None:
         if cmp_series is not None
         else None
     )
-
     with summary_col1:
-
         if stats_opt is not None:
-
             st.metric("Optimised - total spend", format_currency(stats_opt["total_spend"]))
-
-            st.metric(f"Optimised total NPV benefit ({npv_summary_label})", format_currency(stats_opt["total_pv"]))
-
+            st.metric(
+                f"Optimised total NPV benefit ({npv_summary_label})",
+                format_currency(stats_opt["total_pv"]),
+            )
         else:
-
             st.warning("No optimised scenario data available for the current selection.")
-
     with summary_col2:
-
         if stats_cmp is not None:
-
             st.metric("Comparison - total spend", format_currency(stats_cmp["total_spend"]))
-
-            st.metric(f"Comparison total NPV benefit ({npv_summary_label})", format_currency(stats_cmp["total_pv"]))
-
+            st.metric(
+                f"Comparison total NPV benefit ({npv_summary_label})",
+                format_currency(stats_cmp["total_pv"]),
+            )
         else:
-
             st.info("Select a comparison scenario to enable side-by-side charts.")
-
     with summary_col3:
-
         if stats_opt is not None and stats_cmp is not None:
-
-            st.metric("Delta - total spend", format_currency(stats_opt["total_spend"] - stats_cmp["total_spend"]))
-
-            st.metric(f"Delta total NPV benefit ({npv_summary_label})", format_currency(stats_opt["total_pv"] - stats_cmp["total_pv"]))
-
+            st.metric(
+                "Delta - total spend",
+                format_currency(stats_opt["total_spend"] - stats_cmp["total_spend"]),
+            )
+            st.metric(
+                f"Delta total NPV benefit ({npv_summary_label})",
+                format_currency(stats_opt["total_pv"] - stats_cmp["total_pv"]),
+            )
         else:
-
             st.info("Viewing delta requires both scenarios.")
-
-    npv_horizon_options = [50, 35]
-
-    selected_npv_horizon = int(
-        st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-    )
-
+    st.markdown('<div class="pbi-section-title">Efficiency & net present value</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
-
-    st.plotly_chart(eff_fig, use_container_width=True)
-
-    efficiency_export = prepare_efficiency_export(
-        data,
-        opt_series,
-        cmp_series,
-        opt_selection,
-        comp_selection,
-    )
-    if efficiency_export is not None:
-        export_tables["Cumulative spend vs benefit"] = efficiency_export
-
-    horizon_index = (
-        npv_horizon_options.index(selected_npv_horizon)
-        if selected_npv_horizon in npv_horizon_options
-        else 0
-    )
-
+    if eff_fig is not None:
+        st.plotly_chart(eff_fig, use_container_width=True)
+        efficiency_export = prepare_efficiency_export(
+            data,
+            opt_series,
+            cmp_series,
+            opt_selection,
+            comp_selection,
+        )
+        if efficiency_export is not None:
+            export_tables["Cumulative spend vs benefit"] = efficiency_export
+    npv_horizon_options = [50, 35]
     selected_npv_horizon = int(
         st.radio(
             "NPV horizon (years)",
             npv_horizon_options,
-            index=horizon_index,
+            index=npv_horizon_options.index(
+                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            ),
             horizontal=True,
             key="npv_horizon_selection",
         )
     )
-
     pv_opt_horizon = (
         pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
         if opt_selection and opt_selection.code
@@ -4902,17 +4757,13 @@ def main() -> None:
         if comp_selection and comp_selection.code
         else None
     )
-
     pv_col1, pv_col2 = st.columns(2)
-
     with pv_col1:
-        st.plotly_chart(
-            benefit_waterfall_chart(
-                data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-            ),
-            use_container_width=True,
+        waterfall_fig = benefit_waterfall_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
         )
-
+        if waterfall_fig is not None:
+            st.plotly_chart(waterfall_fig, use_container_width=True)
         waterfall_export = prepare_waterfall_export(
             data,
             opt_selection,
@@ -4923,15 +4774,12 @@ def main() -> None:
         )
         if waterfall_export is not None:
             export_tables["NPV Waterfall"] = waterfall_export
-
     with pv_col2:
-        st.plotly_chart(
-            benefit_bridge_chart(
-                data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-            ),
-            use_container_width=True,
+        bridge_fig = benefit_bridge_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
         )
-
+        if bridge_fig is not None:
+            st.plotly_chart(bridge_fig, use_container_width=True)
         bridge_export = prepare_bridge_export(
             data,
             opt_selection,
@@ -4942,10 +4790,9 @@ def main() -> None:
         )
         if bridge_export is not None:
             export_tables["NPV Bridge"] = bridge_export
-
+    st.markdown('<div class="pbi-section-title">Benefit dimensions</div>', unsafe_allow_html=True)
     opt_dim_pivot = dimension_timeseries(data, opt_selection)
     cmp_dim_pivot = dimension_timeseries(data, comp_selection)
-
     available_dimension_labels = [
         str(dim)
         for dim in getattr(data, "dims", [])
@@ -4956,33 +4803,29 @@ def main() -> None:
         )
     ]
     toggle_col1, toggle_col2 = st.columns(2)
-
     with toggle_col1:
         show_cumulative_benefits = st.checkbox(
             "Show cumulative dimension benefits",
             value=st.session_state.get("show_cumulative_dimension_benefits", False),
             key="show_cumulative_dimension_benefits",
         )
-
     with toggle_col2:
         compare_dimension_overlays = st.checkbox(
             "Compare dimension overlays",
             value=st.session_state.get("compare_dimension_overlays", False),
             key="compare_dimension_overlays",
         )
-
     if compare_dimension_overlays:
         if not available_dimension_labels:
             st.info("No dimension data available for comparison.")
         else:
-            default_dims = available_dimension_labels[:1]
+            default_dims = available_dimension_labels[:1] or ["Total"]
             selected_dims = st.multiselect(
                 "Dimensions to display",
                 available_dimension_labels,
                 default=default_dims,
                 key="dimension_overlay_selection",
             )
-
             if not selected_dims:
                 st.info("Select at least one dimension to compare.")
             else:
@@ -4995,10 +4838,8 @@ def main() -> None:
                     opt_pivot=opt_dim_pivot,
                     cmp_pivot=cmp_dim_pivot,
                 )
-
                 if comparison_fig is not None:
                     st.plotly_chart(comparison_fig, use_container_width=True)
-
                     overlay_export = prepare_dimension_overlay_export(
                         data.years,
                         opt_dim_pivot,
@@ -5012,7 +4853,6 @@ def main() -> None:
                     st.info("No overlapping dimension data available for comparison.")
     else:
         dim_col1, dim_col2 = st.columns(2)
-
         with dim_col1:
             opt_dim_fig = benefit_dimension_chart(
                 data,
@@ -5021,14 +4861,14 @@ def main() -> None:
                 cumulative=show_cumulative_benefits,
                 pivot=opt_dim_pivot,
             )
-
             if opt_dim_fig is not None:
                 st.plotly_chart(opt_dim_fig, use_container_width=True)
-
-                opt_dim_export = prepare_dimension_chart_export(opt_dim_pivot, show_cumulative_benefits)
+                opt_dim_export = prepare_dimension_chart_export(
+                    opt_dim_pivot,
+                    show_cumulative_benefits,
+                )
                 if opt_dim_export is not None:
                     export_tables["Dimension mix - optimised"] = opt_dim_export
-
         with dim_col2:
             cmp_dim_fig = benefit_dimension_chart(
                 data,
@@ -5037,220 +4877,31 @@ def main() -> None:
                 cumulative=show_cumulative_benefits,
                 pivot=cmp_dim_pivot,
             )
-
             if cmp_dim_fig is not None:
                 st.plotly_chart(cmp_dim_fig, use_container_width=True)
-
-                cmp_dim_export = prepare_dimension_chart_export(cmp_dim_pivot, show_cumulative_benefits)
+                cmp_dim_export = prepare_dimension_chart_export(
+                    cmp_dim_pivot,
+                    show_cumulative_benefits,
+                )
                 if cmp_dim_export is not None:
                     export_tables["Dimension mix - comparison"] = cmp_dim_export
-
-    st.markdown("### Project delivery schedule")
-
-    controls_col1, controls_col2 = st.columns([3, 1])
-
-    with controls_col1:
-
-        gantt_option = st.radio(
-
-            "Gantt display",
-
-            ["Optimised", "Comparison"],
-
-            horizontal=True,
-
-            key="gantt_choice",
-
-        )
-
-    with controls_col2:
-
-        show_outline = st.checkbox(
-
-            "Show comparison schedule outline",
-
-            value=True,
-
-            key="gantt_outline",
-
-        )
-
-    gantt_selection = opt_selection if gantt_option == "Optimised" else comp_selection
-
-    comparison_selection = comp_selection if gantt_option == "Optimised" else opt_selection
-
-    _inject_gantt_hotkey_listener()
-
-    gantt_fig = spend_gantt_chart(
-
-        data,
-
-        gantt_selection,
-
-        comparison_selection=comparison_selection,
-
-        show_outline=show_outline,
-
-        title=f"Project delivery schedule - {gantt_option.lower()}",
-
-    )
-
-    if gantt_fig is not None:
-
-        st.plotly_chart(gantt_fig, use_container_width=True)
-
-        gantt_export = prepare_gantt_export(
+    st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
+    benefit_cols = st.columns(2)
+    with benefit_cols[0]:
+        benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
+        if benefit_fig is not None:
+            st.plotly_chart(benefit_fig, use_container_width=True)
+    with benefit_cols[1]:
+        delta_fig = benefit_delta_chart(
             data,
-            gantt_selection,
-            comparison_selection,
+            opt_series,
+            cmp_series,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
         )
-        if gantt_export is not None:
-            export_tables[f"Gantt - {gantt_option}"] = gantt_export
-
-    else:
-
-        st.info("No spend matrix found for the selected scenario.")
-
-    capacity_fig = market_capacity_indicator(data, gantt_selection)
-
-    if capacity_fig is not None:
-
-        st.plotly_chart(capacity_fig, use_container_width=True)
-
-        capacity_export = prepare_capacity_export(
-            opt_series if gantt_option == "Optimised" else cmp_series
-        )
-        if capacity_export is not None:
-            export_tables[f"Market capacity - {gantt_option}"] = capacity_export
-
-    schedule_col1, schedule_col2 = st.columns(2)
-
-    with schedule_col1:
-
-        if schedule_opt_fig is not None:
-
-            st.plotly_chart(schedule_opt_fig, use_container_width=True)
-
-            schedule_export = prepare_schedule_export(data, opt_selection)
-            if schedule_export is not None:
-                export_tables["Project schedule - optimised"] = schedule_export
-
-        elif opt_selection.code:
-
-            st.warning("No project schedule data found for the optimised selection.")
-
-        else:
-
-            st.info("Select an optimised scenario to view the project schedule.")
-
-    with schedule_col2:
-
-        if schedule_cmp_fig is not None:
-
-            st.plotly_chart(schedule_cmp_fig, use_container_width=True)
-
-            schedule_export = prepare_schedule_export(data, comp_selection)
-            if schedule_export is not None:
-                export_tables["Project schedule - comparison"] = schedule_export
-
-        elif comp_selection.code:
-
-            st.warning("No project schedule data found for the comparison selection.")
-
-        else:
-
-            st.info("Select a comparison scenario to view the project schedule.")
-
-    chart_row1_col1, chart_row1_col2 = st.columns(2)
-
-    with chart_row1_col1:
-
-        if opt_series is not None:
-
-            st.plotly_chart(
-
-                cash_chart(
-                    opt_series,
-                    "Cash flow - optimised",
-                    color=PRIMARY_COLOR,
-                    data=data,
-                    selection=opt_selection,
-                    comparison_selection=comp_selection,
-                ),
-
-                use_container_width=True,
-
-            )
-
-            cash_export = prepare_cash_export(
-                opt_series,
-                label_prefix=opt_label,
-            )
-            if cash_export is not None:
-                export_tables[f"Cash flow - {opt_label}"] = cash_export
-
-    with chart_row1_col2:
-
-        if cmp_series is not None:
-
-            st.plotly_chart(
-
-                cash_chart(
-                    cmp_series,
-                    "Cash flow - comparison",
-                    color=COMPARISON_COLOR,
-                    data=data,
-                    selection=comp_selection,
-                    comparison_selection=opt_selection,
-                ),
-
-                use_container_width=True,
-
-            )
-
-            cash_export = prepare_cash_export(
-                cmp_series,
-                label_prefix=cmp_label,
-            )
-            if cash_export is not None:
-                export_tables[f"Cash flow - {cmp_label}"] = cash_export
-
-    benefit_col1, benefit_col2 = st.columns(2)
-
-    with benefit_col1:
-
-        st.plotly_chart(
-
-            benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension),
-
-            use_container_width=True,
-
-        )
-
-    with benefit_col2:
-
-        st.plotly_chart(
-
-            benefit_delta_chart(
-
-                data,
-
-                opt_series,
-
-                cmp_series,
-
-                opt_selection,
-
-                comp_selection,
-
-                horizon_years=selected_npv_horizon,
-
-            ),
-
-            use_container_width=True,
-
-        )
-
+        if delta_fig is not None:
+            st.plotly_chart(delta_fig, use_container_width=True)
     benefit_export = prepare_benefit_export(
         opt_series,
         cmp_series,
@@ -5259,267 +4910,732 @@ def main() -> None:
     )
     if benefit_export is not None:
         export_tables["Benefit trend (real)"] = benefit_export
-
     benefit_delta_export = prepare_benefit_delta_export(opt_series, cmp_series)
     if benefit_delta_export is not None:
         export_tables["Benefit delta (real)"] = benefit_delta_export
-
     radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
-
     if radar_fig is not None:
-
         st.plotly_chart(radar_fig, use_container_width=True, theme=None)
-
-        radar_export = prepare_radar_export(
-            data,
-            opt_selection,
-            comp_selection,
-        )
+        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
         if radar_export is not None:
             export_tables["Benefit mix radar"] = radar_export
+    return export_tables
 
-    if export_tables:
-        export_filename = f"capital_programme_charts_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-        export_bytes = build_export_workbook(export_tables)
-        st.download_button(
-            "Export charts to XLSX",
-            data=export_bytes,
-            file_name=export_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="charts_export_download",
+
+def render_delivery_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+    project_colors = project_color_map(data)
+    st.markdown('<div class="pbi-section-title">Delivery schedule</div>', unsafe_allow_html=True)
+    schedule_opt_fig = project_schedule_area_chart(
+        data,
+        opt_selection,
+        title="Project schedule - optimised",
+        color_map=project_colors,
+    )
+    schedule_cmp_fig = project_schedule_area_chart(
+        data,
+        comp_selection,
+        title="Project schedule - comparison",
+        color_map=project_colors,
+    )
+    schedule_col1, schedule_col2 = st.columns(2)
+    with schedule_col1:
+        if schedule_opt_fig is not None:
+            st.plotly_chart(schedule_opt_fig, use_container_width=True)
+            schedule_export = prepare_schedule_export(data, opt_selection)
+            if schedule_export is not None:
+                export_tables["Project schedule - optimised"] = schedule_export
+        elif opt_selection.code:
+            st.warning("No project schedule data found for the optimised selection.")
+        else:
+            st.info("Select an optimised scenario to view the project schedule.")
+    with schedule_col2:
+        if schedule_cmp_fig is not None:
+            st.plotly_chart(schedule_cmp_fig, use_container_width=True)
+            schedule_export = prepare_schedule_export(data, comp_selection)
+            if schedule_export is not None:
+                export_tables["Project schedule - comparison"] = schedule_export
+        elif comp_selection.code:
+            st.warning("No project schedule data found for the comparison selection.")
+        else:
+            st.info("Select a comparison scenario to view the project schedule.")
+    st.markdown('<div class="pbi-section-title">Market capacity</div>', unsafe_allow_html=True)
+    cap_cols = st.columns(2)
+    with cap_cols[0]:
+        cap_fig_opt = market_capacity_indicator(data, opt_selection)
+        if cap_fig_opt is not None:
+            st.plotly_chart(cap_fig_opt, use_container_width=True)
+            cap_export = prepare_capacity_export(opt_series)
+            if cap_export is not None:
+                export_tables[f"Market capacity - {opt_label}"] = cap_export
+        elif opt_selection.code:
+            st.warning("No spend data found for the optimised selection.")
+        else:
+            st.info("Select an optimised scenario to view the capacity profile.")
+    with cap_cols[1]:
+        cap_fig_cmp = market_capacity_indicator(data, comp_selection)
+        if cap_fig_cmp is not None:
+            st.plotly_chart(cap_fig_cmp, use_container_width=True)
+            cap_export = prepare_capacity_export(cmp_series)
+            if cap_export is not None:
+                export_tables[f"Market capacity - {cmp_label}"] = cap_export
+        elif comp_selection.code:
+            st.warning("No spend data found for the comparison selection.")
+        else:
+            st.info("Select a comparison scenario to view the capacity profile.")
+    return export_tables
+
+
+
+def render_cash_flow_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+    st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
+    cash_cols = st.columns(2)
+    with cash_cols[0]:
+        if opt_series is not None:
+            st.plotly_chart(
+                cash_chart(
+                    opt_series,
+                    "Cash flow - optimised",
+                    color=PRIMARY_COLOR,
+                    data=data,
+                    selection=opt_selection,
+                    comparison_selection=comp_selection,
+                ),
+                use_container_width=True,
+            )
+            cash_export = prepare_cash_export(opt_series, label_prefix=opt_label)
+            if cash_export is not None:
+                export_tables[f"Cash flow - {opt_label}"] = cash_export
+        elif opt_selection.code:
+            st.warning("Cash flow data unavailable for the optimised selection.")
+        else:
+            st.info("Select an optimised scenario to view the cash flow profile.")
+    with cash_cols[1]:
+        if cmp_series is not None:
+            st.plotly_chart(
+                cash_chart(
+                    cmp_series,
+                    "Cash flow - comparison",
+                    color=COMPARISON_COLOR,
+                    data=data,
+                    selection=comp_selection,
+                    comparison_selection=opt_selection,
+                ),
+                use_container_width=True,
+            )
+            cash_export = prepare_cash_export(cmp_series, label_prefix=cmp_label)
+            if cash_export is not None:
+                export_tables[f"Cash flow - {cmp_label}"] = cash_export
+        elif comp_selection.code:
+            st.warning("Cash flow data unavailable for the comparison selection.")
+        else:
+            st.info("Select a comparison scenario to view the cash flow profile.")
+    return export_tables
+
+
+
+def render_gantt_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+
+    st.markdown('<div class="pbi-section-title">Delivery schedule (Gantt)</div>', unsafe_allow_html=True)
+
+    # Work out which scenarios are available for display
+    scenario_tokens = []
+    token_to_selection: Dict[str, ScenarioSelection] = {}
+    token_to_label: Dict[str, str] = {}
+
+    if opt_selection.code:
+        scenario_tokens.append("Optimised")
+        token_to_selection["Optimised"] = opt_selection
+        token_to_label["Optimised"] = opt_label
+
+    if comp_selection.code:
+        scenario_tokens.append("Comparison")
+        token_to_selection["Comparison"] = comp_selection
+        token_to_label["Comparison"] = cmp_label
+
+    if not scenario_tokens:
+        st.info("Select at least one scenario to display the Gantt chart.")
+        return export_tables
+
+    # Keep radio selection stable across reruns
+    current_token = st.session_state.get("gantt_choice")
+    if current_token not in scenario_tokens:
+        st.session_state["gantt_choice"] = scenario_tokens[0]
+
+    control_cols = st.columns([3, 1])
+    with control_cols[0]:
+        gantt_token = st.radio(
+            "Gantt display",
+            scenario_tokens,
+            horizontal=True,
+            key="gantt_choice",
+            format_func=lambda token: token_to_label[token],
         )
 
-    st.markdown("---")
+    with control_cols[1]:
+        show_outline = st.checkbox(
+            "Show comparison schedule outline",
+            value=True,
+            key="gantt_outline",
+        )
+        # Fallback manual toggle (works on all Streamlit versions)
+        if st.button("Swap outline colour", key="gantt_swap_outline"):
+            current = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
+            st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "alt" if current == "base" else "base"
+            st.rerun()
 
-    with st.expander("Scenario manager", expanded=False):
-    
-        st.header("Scenario manager")
-    
-        st.write("Use this workspace to create scenario folders and run new optimisation batches.")
-        st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
-    
-        table_placeholder = st.empty()
-    
-        def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
-            if not folders:
-                table_placeholder.info("No scenario folders available yet.")
-                return
-            rows = []
-            for folder in folders:
-                meta = folder.metadata or scenario_utils.load_manifest(folder.path)
-                last_run = (meta or {}).get("last_run") if meta else None
-                rows.append(
-                    {
-                        "Folder": f"{folder.kind.title()} / {folder.name}",
-                        "Default": "Yes" if folder.is_default else "",
-                        "Path": str(folder.path),
-                        "Last run": last_run.get("finished_at", "") if last_run else "",
-                        "Files": len(last_run.get("output_files", [])) if last_run else 0,
-                    }
-                )
-            table_placeholder.dataframe(pd.DataFrame(rows), use_container_width=True)
-    
-        render_folder_table(scenario_folders)
-    
-        with st.expander("Create new scenario folder", expanded=False):
-            new_name = st.text_input("Scenario name", key="scenario_new_name")
-            new_kind = st.radio("Folder type", ("saved", "preset"), index=0, format_func=str.title, horizontal=True, key="scenario_new_kind")
-            if st.button("Create folder", key="scenario_create_folder"):
-                if new_name.strip():
-                    new_folder = scenario_utils.create_scenario_folder(settings, new_name.strip(), new_kind)
-                    st.session_state["last_created_folder_name"] = new_folder.name
-                    st.session_state["selected_cache_label"] = f"{new_folder.kind.title()} / {new_folder.name}"
-                    load_dashboard_data.clear()
-                    st.experimental_rerun()
-                else:
-                    st.warning("Please provide a scenario name before creating a folder.")
-    
-        st.subheader("Run optimiser")
-    
-        if not scenario_folders:
-            st.info("Create a scenario folder before running the optimiser.")
+    primary_selection = token_to_selection[gantt_token]
+    primary_label = token_to_label[gantt_token]
+    opposite_token = "Comparison" if gantt_token == "Optimised" else "Optimised"
+    comparison_selection = token_to_selection.get(
+        opposite_token,
+        comp_selection if gantt_token == "Optimised" else opt_selection,
+    )
+
+    # Mount hotkey shim (safe across Streamlit versions)
+    _inject_gantt_hotkey_listener()
+
+    if st.session_state.get("_gantt_hotkey_supported", False):
+        st.caption("Press **Z** to toggle the outline colour between comparison and baseline styling.")
+    else:
+        st.caption("Hotkey not available in this Streamlit version — use **Swap outline colour**.")
+
+    gantt_fig = spend_gantt_chart(
+        data,
+        primary_selection,
+        comparison_selection=comparison_selection,
+        show_outline=show_outline,
+        title=f"Project delivery schedule - {primary_label}",
+    )
+    if gantt_fig is not None:
+        st.plotly_chart(gantt_fig, use_container_width=True)
+        gantt_export = prepare_gantt_export(
+            data,
+            primary_selection,
+            comparison_selection,
+        )
+        if gantt_export is not None:
+            export_tables[f"Gantt - {primary_label}"] = gantt_export
+    else:
+        st.info("No spend matrix found for the selected scenario.")
+
+    return export_tables
+
+
+
+
+def render_scenarios_tab(
+    settings: Settings,
+    preset_root: Path,
+    saved_root: Path,
+    scenario_folders: List[scenario_utils.ScenarioFolder],
+    data: DashboardData,
+) -> None:
+    st.markdown('<div class="pbi-section-title">Scenario workspace</div>', unsafe_allow_html=True)
+    st.write("Use this workspace to create scenario folders and run new optimisation batches.")
+    st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
+    table_placeholder = st.empty()
+
+    def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
+        if not folders:
+            table_placeholder.info("No scenario folders available yet.")
+            return
+        rows = []
+        for folder in folders:
+            meta = folder.metadata or scenario_utils.load_manifest(folder.path)
+            last_run = (meta or {}).get("last_run") if meta else None
+            rows.append(
+                {
+                    "Folder": f"{folder.kind.title()} / {folder.name}",
+                    "Default": "Yes" if folder.is_default else "",
+                    "Path": str(folder.path),
+                    "Last run": last_run.get("finished_at", "") if last_run else "",
+                    "Files": len(last_run.get("output_files", [])) if last_run else 0,
+                }
+            )
+        table_placeholder.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    render_folder_table(scenario_folders)
+
+    st.markdown('<div class="pbi-section-title">Create new scenario folder</div>', unsafe_allow_html=True)
+    new_name = st.text_input("Scenario name", key="scenario_new_name")
+    new_kind = st.radio(
+        "Folder type",
+        ("saved", "preset"),
+        index=0,
+        format_func=str.title,
+        horizontal=True,
+        key="scenario_new_kind",
+    )
+    if st.button("Create folder", key="scenario_create_folder"):
+        if new_name.strip():
+            new_folder = scenario_utils.create_scenario_folder(settings, new_name.strip(), new_kind)
+            st.session_state["last_created_folder_name"] = new_folder.name
+            st.session_state["selected_cache_label"] = f"{new_folder.kind.title()} / {new_folder.name}"
+            load_dashboard_data.clear()
+            st.rerun()
         else:
-            folder_labels = [f"{folder.kind.title()} / {folder.name}" for folder in scenario_folders]
-            folder_lookup = {label: folder for label, folder in zip(folder_labels, scenario_folders)}
-            default_folder_label = st.session_state.get("selected_cache_label")
-            if default_folder_label not in folder_lookup:
-                default_folder_label = folder_labels[0]
-            with st.form("scenario_run_form"):
-                target_label = st.selectbox(
-                    "Target scenario folder",
-                    folder_labels,
-                    index=folder_labels.index(default_folder_label),
-                    key="run_target_folder",
+            st.warning("Please provide a scenario name before creating a folder.")
+
+
+    st.markdown('<div class="pbi-section-title">Run optimiser</div>', unsafe_allow_html=True)
+    if not scenario_folders:
+        st.info("Create a scenario folder before running the optimiser.")
+        return
+
+    folder_labels = [f"{folder.kind.title()} / {folder.name}" for folder in scenario_folders]
+    folder_lookup = {label: folder for label, folder in zip(folder_labels, scenario_folders)}
+    default_folder_label = st.session_state.get("selected_cache_label")
+    if default_folder_label not in folder_lookup:
+        default_folder_label = folder_labels[0]
+
+    with st.form("scenario_run_form"):
+        target_label = st.selectbox(
+            "Target scenario folder",
+            folder_labels,
+            index=folder_labels.index(default_folder_label),
+            key="run_target_folder",
+        )
+        cost_type_options = list(settings.optimisation.cost_types)
+        cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
+        scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
+        scenario_keys = st.multiselect("Benefit scenarios", scenario_key_options, default=scenario_key_options)
+        dims_options = [str(dim) for dim in getattr(data, "dims", [])] or ["Total"]
+        objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
+        col_cfg1, col_cfg2 = st.columns(2)
+        start_fy = col_cfg1.number_input(
+            "Start financial year",
+            value=int(settings.optimisation.start_fy),
+            step=1,
+        )
+        years = col_cfg2.number_input(
+            "Planning horizon (years)",
+            value=int(settings.optimisation.years),
+            min_value=1,
+            step=1,
+        )
+        run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
+        st.markdown("Baseline annual envelopes ($m p.a.)")
+        envelope_defaults = pd.DataFrame(
+            [
+                {"Code": code, "AnnualMillions": value}
+                for code, value in settings.optimisation.surplus_options_m.items()
+            ]
+        )
+        envelopes_editor = st.data_editor(
+            envelope_defaults,
+            num_rows="dynamic",
+            hide_index=True,
+            key="envelope_editor",
+            column_config={
+                "Code": st.column_config.TextColumn("Code", required=True),
+                "AnnualMillions": st.column_config.NumberColumn("Annual $ (millions)", min_value=0.0),
+            },
+        )
+        st.markdown("+/- levels ($m)")
+        plus_defaults = pd.DataFrame({"LevelMillions": settings.optimisation.plusminus_levels_m})
+        plus_editor = st.data_editor(
+            plus_defaults,
+            num_rows="dynamic",
+            hide_index=True,
+            key="plus_editor",
+            column_config={
+                "LevelMillions": st.column_config.NumberColumn("Level (+/- $m)", min_value=0.0),
+            },
+        )
+        st.markdown("Forced start rules")
+        forced_rows = []
+        for name, rule in settings.forced_start.items():
+            if rule.include is True:
+                include_state = "Include"
+            elif rule.include is False:
+                include_state = "Exclude"
+            else:
+                include_state = "Default"
+            forced_rows.append({"Project": name, "Include": include_state, "StartFY": rule.start})
+        forced_defaults = pd.DataFrame(forced_rows)
+        forced_editor = st.data_editor(
+            forced_defaults,
+            num_rows="dynamic",
+            hide_index=True,
+            disabled=["Project"],
+            key="forced_editor",
+            column_config={
+                "Include": st.column_config.SelectboxColumn("Include", options=["Default", "Include", "Exclude"]),
+                "StartFY": st.column_config.NumberColumn("Forced start (FY)", help="Leave blank to let the optimiser decide."),
+            },
+        )
+        run_button = st.form_submit_button("Run optimiser", type="primary")
+
+    if run_button:
+        proceed = True
+        if not cost_types:
+            st.warning("Select at least one cost type.")
+            proceed = False
+        if not scenario_keys:
+            st.warning("Select at least one benefit scenario.")
+            proceed = False
+        envelopes = {}
+        for row in envelopes_editor.to_dict("records"):
+            code = str(row.get("Code", "")).strip()
+            value = row.get("AnnualMillions")
+            if not code or pd.isna(value):
+                continue
+            envelopes[code] = float(value)
+        if not envelopes:
+            st.warning("Provide at least one envelope value.")
+            proceed = False
+        plus_levels = []
+        if isinstance(plus_editor, pd.DataFrame) and "LevelMillions" in plus_editor.columns:
+            for val in plus_editor["LevelMillions"].tolist():
+                if pd.isna(val):
+                    continue
+                plus_levels.append(float(val))
+        plus_levels = sorted({round(val, 6) for val in plus_levels})
+        if run_plusminus and not plus_levels:
+            st.info("No +/- levels supplied; defaulting to [0.0].")
+            plus_levels = [0.0]
+        if not objective_dims:
+            objective_dims = dims_options
+        forced_inputs = {}
+        for row in forced_editor.to_dict("records"):
+            include_state = row.get("Include", "Default")
+            include_val = None
+            if include_state == "Include":
+                include_val = True
+            elif include_state == "Exclude":
+                include_val = False
+            start_val = row.get("StartFY")
+            if pd.isna(start_val):
+                start_val = None
+            else:
+                start_val = int(start_val)
+            forced_inputs[row["Project"]] = scenario_utils.ForcedStartInput(
+                include=include_val,
+                start=start_val,
+            )
+        if proceed:
+            progress_bar = st.progress(0)
+            status_placeholder = st.empty()
+            eta_placeholder = st.empty()
+            log_placeholder = st.empty()
+            progress_messages: List[str] = []
+
+            def handle_progress(snapshot: scenario_utils.ProgressSnapshot) -> None:
+                total = max(snapshot.total, 1)
+                percent = int(min(snapshot.percent, 1.0) * 100)
+                progress_bar.progress(percent)
+                payload = snapshot.payload
+                if snapshot.stage == "solve_start":
+                    message = (
+                        f"Solving {payload.get('cost_type')} / {payload.get('scenario_key')} "
+                        f"| {payload.get('primary_dim')} | {payload.get('surplus_key')} +/-{payload.get('plus_level')}"
+                    )
+                elif snapshot.stage == "solve_complete":
+                    message = f"{payload.get('status', 'ok').upper()} - {payload.get('cache_file', '')}"
+                elif snapshot.stage == "run_complete":
+                    message = "Run complete."
+                elif snapshot.stage == "run_error":
+                    message = "Run aborted."
+                else:
+                    message = snapshot.stage.replace('_', ' ').title()
+                status_placeholder.write(f"{snapshot.completed}/{total} - {message}")
+                eta_placeholder.write(format_eta(snapshot.eta_seconds))
+                if snapshot.stage in {"solve_start", "solve_complete"}:
+                    progress_messages.append(message)
+                    log_placeholder.write("\n".join(progress_messages[-6:]))
+
+            try:
+                run_config = scenario_utils.OptimiserRunConfig(
+                    cost_types=cost_types,
+                    scenario_keys=scenario_keys,
+                    objective_dims=objective_dims,
+                    surplus_options_m=envelopes,
+                    plusminus_levels_m=plus_levels or [0.0],
+                    start_fy=int(start_fy),
+                    years=int(years),
+                    run_plusminus=run_plusminus,
+                    forced_start=forced_inputs,
+                    time_limit=int(settings.optimisation.solve_seconds),
                 )
-                cost_type_options = list(settings.optimisation.cost_types)
-                cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
-                scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
-                scenario_keys = st.multiselect("Benefit scenarios", scenario_key_options, default=scenario_key_options)
-                dims_options = [str(dim) for dim in getattr(data, "dims", [])]
-                if not dims_options:
-                    dims_options = ["Total"]
-                objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
-                col_cfg1, col_cfg2 = st.columns(2)
-                start_fy = col_cfg1.number_input("Start financial year", value=int(settings.optimisation.start_fy), step=1)
-                years = col_cfg2.number_input("Planning horizon (years)", value=int(settings.optimisation.years), min_value=1, step=1)
-                run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
-                st.markdown("Baseline annual envelopes ($m p.a.)")
-                envelope_defaults = pd.DataFrame([
-                    {"Code": code, "AnnualMillions": value} for code, value in settings.optimisation.surplus_options_m.items()
-                ])
-                envelopes_editor = st.data_editor(
-                    envelope_defaults,
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="envelope_editor",
-                    column_config={
-                        "Code": st.column_config.TextColumn("Code", required=True),
-                        "AnnualMillions": st.column_config.NumberColumn("Annual $ (millions)", min_value=0.0),
-                    },
+                summary = scenario_utils.run_optimiser_for_scenario(
+                    settings,
+                    folder_lookup[target_label],
+                    run_config,
+                    progress_callback=handle_progress,
+                    clean=True,
                 )
-                st.markdown("+/- levels ($m)")
-                plus_defaults = pd.DataFrame({"LevelMillions": settings.optimisation.plusminus_levels_m})
-                plus_editor = st.data_editor(
-                    plus_defaults,
-                    num_rows="dynamic",
-                    hide_index=True,
-                    key="plus_editor",
-                    column_config={
-                        "LevelMillions": st.column_config.NumberColumn("Level (+/- $m)", min_value=0.0),
-                    },
+            except Exception as exc:
+                progress_bar.empty()
+                status_placeholder.error(f"Optimiser failed: {exc}")
+            else:
+                st.session_state["last_run_summary"] = summary.serializable()
+                st.session_state["selected_cache_label"] = target_label
+                load_dashboard_data.clear()
+                st.experimental_rerun()
+
+
+
+
+def main() -> None:
+    st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
+    inject_powerbi_theme()
+    st.markdown('<div class="pbi-header">Capital Programme Optimiser</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pbi-header-underline"></div>', unsafe_allow_html=True)
+
+    if "last_run_summary" in st.session_state:
+        info = st.session_state.pop("last_run_summary")
+        folder_info = info.get("folder", {})
+        elapsed = info.get("elapsed_seconds", 0.0)
+        st.success(
+            f"Optimiser finished for {folder_info.get('name', 'scenario')} in {elapsed:.1f}s "
+            f"({len(info.get('output_files', []))} files saved)."
+        )
+    if "last_created_folder_name" in st.session_state:
+        created_name = st.session_state.pop("last_created_folder_name")
+        st.success(f"Scenario folder {created_name} created.")
+
+    settings = load_settings()
+    preset_root, saved_root = scenario_utils.ensure_scenario_roots(settings)
+    scenario_folders = scenario_utils.list_scenario_folders(settings)
+
+    cache_options = [
+        {
+            "label": "Configured cache (settings.yaml)",
+            "path": settings.cache_dir(),
+            "folder": None,
+        }
+    ]
+    for folder in scenario_folders:
+        label = f"{folder.kind.title()} / {folder.name}"
+        if folder.is_default:
+            label += " (default)"
+        cache_options.append(
+            {
+                "label": label,
+                "path": folder.path,
+                "folder": folder,
+            }
+        )
+    # ---- Scenario cache (single instance) ----
+    labels = [opt["label"] for opt in cache_options]
+    default_index = 0
+    if st.session_state.get("selected_cache_label") in labels:
+        default_index = labels.index(st.session_state["selected_cache_label"])
+
+    st.sidebar.header("Scenario cache")
+    selected_label = st.sidebar.selectbox(
+        "Choose scenario bundle",
+        labels,
+        index=default_index,
+        key="cache_bundle_select_sidebar",   # unique key – used only here
+    )
+    st.session_state["selected_cache_label"] = selected_label
+
+    selected_option = cache_options[labels.index(selected_label)]
+    selected_path = Path(selected_option["path"])
+    st.sidebar.caption(f"Active cache: {selected_path}")
+
+    manifest = None
+    folder_meta = selected_option.get("folder")
+    if folder_meta is not None:
+        manifest = folder_meta.metadata or scenario_utils.load_manifest(folder_meta.path)
+
+    if manifest and manifest.get("last_run"):
+        last_run = manifest["last_run"]
+        st.sidebar.write(f"Last run finished: {last_run.get('finished_at', 'unknown')}")
+        if last_run.get("output_files"):
+            st.sidebar.write(f"Files: {len(last_run['output_files'])}")
+    else:
+        st.sidebar.caption("No recorded manifest details yet for this folder.")
+
+    st.sidebar.divider()
+    st.sidebar.header("Configuration")
+    st.sidebar.write(f"Dashboard output folder: {settings.dashboard_output_dir()}")
+    if st.sidebar.button("Reload cache data"):
+        load_dashboard_data.clear()
+        st.rerun()
+    # ---- end Scenario cache ----
+
+
+    cache_sig = _cache_signature(selected_path)
+    with st.spinner(f"Loading dashboard cache from {selected_path}..."):
+        try:
+            data = load_dashboard_data(
+                str(selected_path), cache_sig, LOAD_DATA_SCHEMA_VERSION
+            )
+        except Exception as exc:
+            st.error(f"Unable to load scenario cache from {selected_path}: {exc}")
+            st.stop()
+
+    with st.expander("Scenario filters", expanded=True):
+        opt_col, cmp_col = st.columns(2)
+        with opt_col:
+            st.subheader("Optimised scenario")
+            opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
+            opt_default_index = (
+                opt_profiles.index(DEFAULT_PROFILE_LABEL)
+                if DEFAULT_PROFILE_LABEL in opt_profiles
+                else 0
+            )
+            selected_opt_profile = st.selectbox(
+                "Optimised profile",
+                opt_profiles,
+                index=opt_default_index,
+                key="opt_profile_select",
+            )
+            opt_selection = scenario_selector(
+                name="Optimised",
+                data=data,
+                settings=settings,
+                prefer_comparison=False,
+                key_prefix="opt",
+                profile_name=selected_opt_profile,
+            )
+        with cmp_col:
+            st.subheader("Comparison scenario")
+            cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
+            cmp_default_index = next(
+                (i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"),
+                None,
+            )
+            if cmp_default_index is None:
+                cmp_default_index = (
+                    cmp_profiles.index(DEFAULT_PROFILE_LABEL)
+                    if DEFAULT_PROFILE_LABEL in cmp_profiles
+                    else 0
                 )
-                st.markdown("Forced start rules")
-                forced_rows = []
-                for name, rule in settings.forced_start.items():
-                    if rule.include is True:
-                        include_state = "Include"
-                    elif rule.include is False:
-                        include_state = "Exclude"
-                    else:
-                        include_state = "Default"
-                    forced_rows.append({"Project": name, "Include": include_state, "StartFY": rule.start})
-                forced_defaults = pd.DataFrame(forced_rows)
-                forced_editor = st.data_editor(
-                    forced_defaults,
-                    num_rows="dynamic",
-                    hide_index=True,
-                    disabled=["Project"],
-                    key="forced_editor",
-                    column_config={
-                        "Include": st.column_config.SelectboxColumn("Include", options=["Default", "Include", "Exclude"]),
-                        "StartFY": st.column_config.NumberColumn("Forced start (FY)", help="Leave blank to let the optimiser decide."),
-                    },
-                )
-                run_button = st.form_submit_button("Run optimiser", type="primary")
-    
-            if run_button:
-                proceed = True
-                if not cost_types:
-                    st.warning("Select at least one cost type.")
-                    proceed = False
-                if not scenario_keys:
-                    st.warning("Select at least one benefit scenario.")
-                    proceed = False
-                envelopes = {}
-                for row in envelopes_editor.to_dict("records"):
-                    code = str(row.get("Code", "")).strip()
-                    value = row.get("AnnualMillions")
-                    if not code or pd.isna(value):
-                        continue
-                    envelopes[code] = float(value)
-                if not envelopes:
-                    st.warning("Provide at least one envelope value.")
-                    proceed = False
-                plus_levels = []
-                if isinstance(plus_editor, pd.DataFrame) and "LevelMillions" in plus_editor.columns:
-                    for val in plus_editor["LevelMillions"].tolist():
-                        if pd.isna(val):
-                            continue
-                        plus_levels.append(float(val))
-                plus_levels = sorted({round(val, 6) for val in plus_levels})
-                if run_plusminus and not plus_levels:
-                    st.info("No +/- levels supplied; defaulting to [0.0].")
-                    plus_levels = [0.0]
-                if not objective_dims:
-                    objective_dims = dims_options
-                forced_inputs = {}
-                for row in forced_editor.to_dict("records"):
-                    include_state = row.get("Include", "Default")
-                    include_val = None
-                    if include_state == "Include":
-                        include_val = True
-                    elif include_state == "Exclude":
-                        include_val = False
-                    start_val = row.get("StartFY")
-                    if pd.isna(start_val):
-                        start_val = None
-                    else:
-                        start_val = int(start_val)
-                    forced_inputs[row["Project"]] = scenario_utils.ForcedStartInput(include=include_val, start=start_val)
-                if proceed:
-                    progress_bar = st.progress(0)
-                    status_placeholder = st.empty()
-                    eta_placeholder = st.empty()
-                    log_placeholder = st.empty()
-                    progress_messages: List[str] = []
-    
-                    def handle_progress(snapshot: scenario_utils.ProgressSnapshot) -> None:
-                        total = max(snapshot.total, 1)
-                        percent = int(min(snapshot.percent, 1.0) * 100)
-                        progress_bar.progress(percent)
-                        payload = snapshot.payload
-                        if snapshot.stage == "solve_start":
-                            message = (
-                                f"Solving {payload.get('cost_type')} / {payload.get('scenario_key')} "
-                                f"| {payload.get('primary_dim')} | {payload.get('surplus_key')} +/-{payload.get('plus_level')}"
-                            )
-                        elif snapshot.stage == "solve_complete":
-                            message = f"{payload.get('status', 'ok').upper()} - {payload.get('cache_file', '')}"
-                        elif snapshot.stage == "run_complete":
-                            message = "Run complete."
-                        elif snapshot.stage == "run_error":
-                            message = "Run aborted."
-                        else:
-                            message = snapshot.stage.replace('_', ' ').title()
-                        status_placeholder.write(f"{snapshot.completed}/{total} - {message}")
-                        eta_placeholder.write(format_eta(snapshot.eta_seconds))
-                        if snapshot.stage in {"solve_start", "solve_complete"}:
-                            progress_messages.append(message)
-                            log_placeholder.write("\n".join(progress_messages[-6:]))
-    
-                    try:
-                        run_config = scenario_utils.OptimiserRunConfig(
-                            cost_types=cost_types,
-                            scenario_keys=scenario_keys,
-                            objective_dims=objective_dims,
-                            surplus_options_m=envelopes,
-                            plusminus_levels_m=plus_levels or [0.0],
-                            start_fy=int(start_fy),
-                            years=int(years),
-                            run_plusminus=run_plusminus,
-                            forced_start=forced_inputs,
-                            time_limit=int(settings.optimisation.solve_seconds),
-                        )
-                        summary = scenario_utils.run_optimiser_for_scenario(
-                            settings,
-                            folder_lookup[target_label],
-                            run_config,
-                            progress_callback=handle_progress,
-                            clean=True,
-                        )
-                    except Exception as exc:
-                        progress_bar.empty()
-                        status_placeholder.error(f"Optimiser failed: {exc}")
-                    else:
-                        st.session_state["last_run_summary"] = summary.serializable()
-                        st.session_state["selected_cache_label"] = target_label
-                        load_dashboard_data.clear()
-                        st.experimental_rerun()
-    
+            selected_cmp_profile = st.selectbox(
+                "Comparison profile",
+                cmp_profiles,
+                index=cmp_default_index,
+                key="cmp_profile_select",
+            )
+            comp_selection = scenario_selector(
+                name="Comparison",
+                data=data,
+                settings=settings,
+                prefer_comparison=True,
+                key_prefix="cmp",
+                profile_name=selected_cmp_profile,
+            )
+
+    opt_series = build_timeseries(data, opt_selection)
+    cmp_series = build_timeseries(data, comp_selection)
+    opt_label = opt_selection.name or "Optimised"
+    cmp_label = comp_selection.name or "Comparison"
+
+    st.session_state.setdefault("active_tab", NAV_TABS[0])
+    active_tab = render_powerbi_navigation(st.session_state["active_tab"], key="pbi_nav_top")
+    st.session_state["active_tab"] = active_tab
+
+    download_tables: Dict[str, pd.DataFrame] = {}
+
+    if active_tab == "Overview":
+        download_tables.update(
+            render_overview_tab(
+                data,
+                opt_selection,
+                comp_selection,
+                opt_series,
+                cmp_series,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+            )
+        )
+    elif active_tab == "Regions":
+        download_tables.update(
+            render_region_tab(
+                data,
+                opt_selection=opt_selection,
+                comp_selection=comp_selection,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+                cache_signature=cache_sig,
+            )
+        )
+    elif active_tab == "Delivery":
+        download_tables.update(
+            render_delivery_tab(
+                data,
+                opt_selection,
+                comp_selection,
+                opt_series,
+                cmp_series,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+            )
+        )
+    elif active_tab == "Cash Flow":
+        download_tables.update(
+            render_cash_flow_tab(
+                data,
+                opt_selection,
+                comp_selection,
+                opt_series,
+                cmp_series,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+            )
+        )
+    elif active_tab == "Gantt":
+        download_tables.update(
+            render_gantt_tab(
+                data,
+                opt_selection,
+                comp_selection,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+            )
+        )
+    elif active_tab == "Scenarios":
+        render_scenarios_tab(
+            settings,
+            preset_root,
+            saved_root,
+            scenario_folders,
+            data,
+        )
+
+    if download_tables:
+        render_export_download(download_tables)
+
+    bottom_selection = render_powerbi_navigation(active_tab, key="pbi_nav_bottom")
+    if bottom_selection != active_tab:
+        st.session_state["active_tab"] = bottom_selection
+        st.rerun()
+
+
+
 if __name__ == "__main__":
-
     main()
-
 
 
 
