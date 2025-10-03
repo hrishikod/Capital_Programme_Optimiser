@@ -13,7 +13,7 @@ import requests
 import pandas as pd
 
 from .data import DashboardData
-from ..config import load_project_region_mapping
+from ..config import load_project_region_mapping, load_settings
 
 
 # -----------------------------
@@ -39,6 +39,10 @@ class RegionGeometrySource:
 
 
 GEOMETRY_LOCAL_PATH = Path(__file__).with_name("nz_regional_councils_2025.geojson")
+
+SETTINGS = load_settings()
+BENEFIT_SCENARIOS = dict(SETTINGS.data.benefit_scenarios)
+SCORING_WORKBOOK = SETTINGS.scoring_workbook()
 
 # Prefer 2025 fields first; keep legacy fallbacks as distant backups
 NAME_FIELD_PRIORITY: Tuple[str, ...] = (
@@ -476,16 +480,147 @@ def _normalise_project(series: pd.Series) -> pd.Series:
     )
 
 
+
+def _benefit_scenario_sheet(meta: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not meta:
+        return None
+    steep = str(meta.get("BenSteep", "" )).strip()
+    horizon = meta.get("BenHorizon")
+    if not steep or horizon in (None, ""):
+        return None
+    try:
+        horizon_int = int(horizon)
+    except (TypeError, ValueError):
+        return None
+    key = f"{steep.upper()}{horizon_int}"
+    return BENEFIT_SCENARIOS.get(key)
+
+
+@lru_cache(maxsize=16)
+def _load_benefit_table(sheet_name: str) -> pd.DataFrame:
+    if not sheet_name:
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(SCORING_WORKBOOK, sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        return pd.DataFrame()
+
+
+def _extract_total_benefit_map(benefit_df: pd.DataFrame) -> Dict[str, List[float]]:
+    if benefit_df is None or benefit_df.empty or "Project" not in benefit_df.columns:
+        return {}
+    df = benefit_df.copy()
+    df["project_norm"] = _normalise_project(df["Project"])
+    if "Dimension" in df.columns:
+        df["_dim_norm"] = df["Dimension"].astype(str).str.strip().str.lower()
+    else:
+        df["_dim_norm"] = "total"
+    tcols = [
+        c
+        for c in df.columns
+        if re.fullmatch(r"[tT]\s*\+\s*(\d+)", str(c).strip())
+    ]
+    if not tcols:
+        return {}
+    for c in tcols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    total_mask = df["_dim_norm"] == "total"
+    if total_mask.any():
+        total_df = df[total_mask].groupby("project_norm", as_index=False)[tcols].sum()
+    else:
+        total_df = df.groupby("project_norm", as_index=False)[tcols].sum()
+    benefit_map: Dict[str, List[float]] = {}
+    for row in total_df.itertuples(index=False):
+        proj = getattr(row, "project_norm", "")
+        if not proj:
+            continue
+        benefit_map[proj] = [float(getattr(row, c, 0.0)) for c in tcols]
+    return benefit_map
+
+
+def _compute_region_benefit_metrics(
+    data: DashboardData,
+    scenario_code: str,
+    mapping_df: pd.DataFrame,
+    years: List[int],
+    regions: List[str],
+) -> Optional[pd.DataFrame]:
+    meta = getattr(data, "scenario_meta_by_code", {}).get(scenario_code)
+    sheet_name = _benefit_scenario_sheet(meta)
+    if not sheet_name:
+        return None
+    benefit_source = _load_benefit_table(sheet_name)
+    benefit_map = _extract_total_benefit_map(benefit_source)
+    if not benefit_map:
+        return None
+    schedule_df = data.schedule[data.schedule["Code"] == scenario_code]
+    if schedule_df.empty or "StartFY" not in schedule_df.columns:
+        return None
+    schedule_df = schedule_df.copy()
+    schedule_df["project_norm"] = _normalise_project(schedule_df["Project"])
+    schedule_df["StartFY"] = pd.to_numeric(schedule_df["StartFY"], errors="coerce").astype("Int64")
+    schedule_df = schedule_df[schedule_df["StartFY"].notna()].copy()
+    if schedule_df.empty:
+        return None
+    schedule_df["StartFY"] = schedule_df["StartFY"].astype(int)
+    year_set = {int(y) for y in years}
+    records: List[Tuple[int, str, float]] = []
+    for row in schedule_df.itertuples(index=False):
+        proj = getattr(row, "project_norm", "")
+        flows = benefit_map.get(proj)
+        if not flows:
+            continue
+        start_fy = int(getattr(row, "StartFY"))
+        for offset, value in enumerate(flows):
+            if not value:
+                continue
+            year = start_fy + offset
+            if year not in year_set:
+                continue
+            records.append((year, proj, float(value)))
+    if not records:
+        return None
+    benefit_proj = pd.DataFrame(records, columns=["Year", "project_norm", "Benefit_Year"])
+    if "project_norm" not in mapping_df.columns:
+        mapping_df = mapping_df.copy()
+        mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
+    region_lookup = mapping_df[["project_norm", "region"]].drop_duplicates()
+    benefit_proj = benefit_proj.merge(region_lookup, on="project_norm", how="left")
+    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+    region_list = list(regions)
+    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
+        region_list.append("Unmapped")
+    benefit_region = (
+        benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
+    )
+    full_index = pd.MultiIndex.from_product([years, region_list], names=["Year", "region"])
+    benefit_region = (
+        benefit_region
+        .set_index(["Year", "region"])
+        .reindex(full_index, fill_value=0.0)
+        .reset_index()
+        .sort_values(["region", "Year"])
+    )
+    total_by_year = (
+        benefit_region.groupby("Year")["Benefit_Year"].sum().sort_index().rename("Benefit_National")
+    )
+    benefit_region = benefit_region.merge(total_by_year, on="Year", how="left")
+    benefit_region["BenefitShare_Year"] = _safe_divide(
+        benefit_region["Benefit_Year"], benefit_region["Benefit_National"]
+    ).fillna(0.0)
+    benefit_region["Benefit_Cum_Region"] = benefit_region.groupby("region")["Benefit_Year"].cumsum()
+    benefit_region["Benefit_Cum_National"] = benefit_region["Year"].map(total_by_year.cumsum())
+    benefit_region["BenefitShare_Cum"] = _safe_divide(
+        benefit_region["Benefit_Cum_Region"], benefit_region["Benefit_Cum_National"]
+    ).fillna(0.0)
+    return benefit_region
 def compute_region_metrics(
     data: DashboardData,
     scenario_code: str,
     *,
     mapping: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """
-    Compute annual and cumulative region vs national spend metrics with fairness lenses.
-    Expects data.spend_matrix with columns: ['Code','Project', <year1>, <year2>, ...]
-    """
+    """Compute annual spend/benefit metrics per region for a scenario."""
     if scenario_code is None:
         raise ValueError("scenario_code must be provided")
 
@@ -497,14 +632,11 @@ def compute_region_metrics(
     pop_total = region_info["population"].sum(skipna=True)
     gdp_total = (region_info["gdp_per_capita"] * region_info["population"]).sum(skipna=True)
 
-    # Filter the scenario's spend matrix
     spend_df = data.spend_matrix[data.spend_matrix["Code"] == scenario_code]
     if spend_df.empty:
         raise ValueError(f"No spend matrix data for scenario code {scenario_code}")
 
-    # Years to melt — use the actual intersection of provided years/columns
     candidate_years = list(data.years)
-    # Keep only columns that exist
     value_vars = [y for y in candidate_years if y in spend_df.columns]
 
     long_df = spend_df.melt(
@@ -513,16 +645,13 @@ def compute_region_metrics(
         var_name="Year",
         value_name="Spend_M",
     )
-    # Robust year typing
     long_df["Year"] = pd.to_numeric(long_df["Year"], errors="coerce").astype("Int64")
     long_df = long_df[long_df["Year"].notna()].copy()
     long_df["Year"] = long_df["Year"].astype(int)
 
     long_df["Spend_M"] = pd.to_numeric(long_df["Spend_M"], errors="coerce").fillna(0.0)
 
-    # Project normalisation (both sides)
     long_df["project_norm"] = _normalise_project(long_df["Project"])
-    # Ensure mapping has project_norm
     if "project_norm" not in mapping_df.columns:
         mapping_df = mapping_df.copy()
         mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
@@ -534,26 +663,24 @@ def compute_region_metrics(
         suffixes=("", "_map"),
     )
 
-    # Handle unmapped projects explicitly
     merged["region"] = merged["region"].fillna("Unmapped")
     merged.loc[merged["region"] == "Unmapped", ["join_key", "join_key_norm"]] = ""
     merged.loc[merged["region"] == "Unmapped", ["population", "gdp_per_capita"]] = np.nan
 
-    region_spend = (
-        merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
-    )
+    region_spend = merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
 
     if (merged["region"] == "Unmapped").any() and "Unmapped" not in region_info["region"].values:
-        extra = pd.DataFrame({
-            "region": ["Unmapped"],
-            "join_key": [""],
-            "join_key_norm": [""],
-            "gdp_per_capita": [0.0],
-            "population": [0.0],
-        })
+        extra = pd.DataFrame(
+            {
+                "region": ["Unmapped"],
+                "join_key": [""],
+                "join_key_norm": [""],
+                "gdp_per_capita": [0.0],
+                "population": [0.0],
+            }
+        )
         region_info = pd.concat([region_info, extra], ignore_index=True)
 
-    # Construct a complete grid over observed years and all known regions
     years_present = sorted(region_spend["Year"].unique().tolist())
     all_regions = region_info["region"].unique().tolist()
     full_index = pd.MultiIndex.from_product([years_present, all_regions], names=["Year", "region"])
@@ -564,7 +691,6 @@ def compute_region_metrics(
         .reset_index()
     )
 
-    # Attach static attributes
     region_spend = region_spend.merge(
         region_info,
         how="left",
@@ -572,14 +698,14 @@ def compute_region_metrics(
         suffixes=("", "_info"),
     )
 
-    # National totals and shares
     total_by_year = region_spend.groupby("Year")["Spend_M"].sum().rename("Spend_National")
     total_cum = total_by_year.sort_index().cumsum()
 
     region_spend = region_spend.merge(total_by_year, on="Year", how="left")
-    region_spend["Share_Year"] = _safe_divide(region_spend["Spend_M"], region_spend["Spend_National"]).fillna(0.0)
+    region_spend["Share_Year"] = _safe_divide(
+        region_spend["Spend_M"], region_spend["Spend_National"]
+    ).fillna(0.0)
 
-    # Cumulative shares
     region_spend = region_spend.sort_values(["region", "Year"])
     region_spend["Spend_Cum_Region"] = region_spend.groupby("region")["Spend_M"].cumsum()
     region_spend["Spend_Cum_National"] = region_spend["Year"].map(total_cum)
@@ -587,11 +713,13 @@ def compute_region_metrics(
         region_spend["Spend_Cum_Region"], region_spend["Spend_Cum_National"]
     ).fillna(0.0)
 
-    # Per-capita metrics
-    region_spend["PerCap_Year"] = _safe_divide(region_spend["Spend_M"], region_spend["population"])
-    region_spend["PerCap_Cum"] = _safe_divide(region_spend["Spend_Cum_Region"], region_spend["population"])
+    region_spend["PerCap_Year"] = _safe_divide(
+        region_spend["Spend_M"], region_spend["population"]
+    )
+    region_spend["PerCap_Cum"] = _safe_divide(
+        region_spend["Spend_Cum_Region"], region_spend["population"]
+    )
 
-    # Fairness benchmarks
     pop_share_series = region_info.set_index("region")["population"]
     pop_share_series = pop_share_series / pop_total if pop_total > 0 else pd.Series(dtype=float)
 
@@ -607,11 +735,36 @@ def compute_region_metrics(
     region_spend["OU_vs_Pop"] = region_spend["Share_Cum"] - region_spend["Pop_Share_Benchmark"]
     region_spend["OU_vs_GDP"] = region_spend["Share_Cum"] - region_spend["GDP_Share_Benchmark"]
 
-    # Acceleration (change in cumulative share)
     region_spend["Ramp_Rate"] = region_spend.groupby("region")["Share_Cum"].diff()
     region_spend["Ramp_Rate"] = region_spend["Ramp_Rate"].fillna(region_spend["Share_Cum"])
 
-    # Final tidy / rename for output
+    benefit_cols = [
+        "Benefit_Year",
+        "Benefit_National",
+        "Benefit_Cum_Region",
+        "Benefit_Cum_National",
+        "BenefitShare_Year",
+        "BenefitShare_Cum",
+    ]
+    benefit_frame = _compute_region_benefit_metrics(
+        data,
+        scenario_code,
+        mapping_df,
+        years_present,
+        all_regions,
+    )
+    if benefit_frame is not None:
+        region_spend = region_spend.merge(
+            benefit_frame[["Year", "region"] + benefit_cols],
+            on=["Year", "region"],
+            how="left",
+        )
+    else:
+        for col in benefit_cols:
+            region_spend[col] = 0.0
+    for col in benefit_cols:
+        region_spend[col] = pd.to_numeric(region_spend[col], errors="coerce").fillna(0.0)
+
     region_spend.rename(
         columns={
             "Spend_M": "Spend_Year",
@@ -637,6 +790,12 @@ def compute_region_metrics(
             "OU_vs_Pop",
             "OU_vs_GDP",
             "Ramp_Rate",
+            "Benefit_Year",
+            "Benefit_National",
+            "Benefit_Cum_Region",
+            "Benefit_Cum_National",
+            "BenefitShare_Year",
+            "BenefitShare_Cum",
             "population",
             "gdp_per_capita",
         ]

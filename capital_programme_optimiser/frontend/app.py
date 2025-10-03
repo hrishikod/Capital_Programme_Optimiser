@@ -93,30 +93,44 @@ from capital_programme_optimiser.optimisation import solver_core
 
 POWERBI_BLUE = "#19456B"
 POWERBI_GREEN = "#AFBD22"
+POWERBI_TERTIARY = "#908070"
 
 PRIMARY_COLOR = POWERBI_BLUE
 
-COMPARISON_COLOR = "#C75643"
+COMPARISON_COLOR = POWERBI_GREEN
 
 BAR_OPACITY = 0.75
 
-GANTT_COLOR = "#3A7CA5"
+GANTT_COLOR = POWERBI_BLUE
 
-GANTT_OUTLINE_COLOR_BASE = "#98C2DC"
-GANTT_OUTLINE_COLOR_ALT = COMPARISON_COLOR
+GANTT_OUTLINE_COLOR_BASE = POWERBI_TERTIARY
+GANTT_OUTLINE_COLOR_ALT = POWERBI_GREEN
 GANTT_OUTLINE_VARIANT_KEY = "gantt_outline_variant"
 
-CLOSING_NET_COLOR = "#F9C80E"
+CLOSING_NET_COLOR = POWERBI_GREEN
 
-ENVELOPE_COLOR = "#2EC4B6"
+ENVELOPE_COLOR = POWERBI_TERTIARY
 
-CAPACITY_GREEN = "#2E7D32"
+CAPACITY_GREEN = POWERBI_GREEN
 
-CAPACITY_AMBER = "#D18F35"
+CAPACITY_AMBER = POWERBI_TERTIARY
 
-CAPACITY_RED = "#C44536"
+CAPACITY_RED = POWERBI_BLUE
 
-CAPACITY_ZERO = "#94A3B8"
+CAPACITY_ZERO = POWERBI_TERTIARY
+
+PBI_SEQUENTIAL_SCALE = [
+    [0.0, POWERBI_TERTIARY],
+    [0.5, POWERBI_GREEN],
+    [1.0, POWERBI_BLUE],
+]
+
+PBI_DIVERGING_SCALE = [
+    [0.0, POWERBI_GREEN],
+    [0.5, POWERBI_TERTIARY],
+    [1.0, POWERBI_BLUE],
+]
+
 
 PROJECT_COLOR_POOL = (
 
@@ -267,77 +281,227 @@ NAV_TABS = ["Overview", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"
 
 
 def inject_powerbi_theme() -> None:
-    css = """
+    css = f"""
         <style>
-            :root {
-                --pbi-blue: __BLUE__;
-                --pbi-green: __GREEN__;
-            }
-            body {
-                background-color: #f8fafc;
-            }
-            .pbi-header {
+            :root {{
+                --pbi-blue: {POWERBI_BLUE};
+                --pbi-green: {POWERBI_GREEN};
+                --pbi-tertiary: {POWERBI_TERTIARY};
+            }}
+            body {{
+                background-color: #ffffff;
+                color: var(--pbi-tertiary);
                 font-family: 'Segoe UI', 'Inter', sans-serif;
+            }}
+            a, .stMarkdown a {{
+                color: var(--pbi-green);
+            }}
+            .pbi-header {{
                 color: var(--pbi-blue);
                 font-size: 2.2rem;
                 font-weight: 600;
                 margin-bottom: 0.2rem;
-            }
-            .pbi-header-underline {
+            }}
+            .pbi-header-underline {{
                 width: 180px;
                 height: 6px;
                 border-radius: 999px;
                 background: var(--pbi-green);
                 margin-bottom: 1.2rem;
-            }
-            .pbi-section-title {
-                font-family: 'Segoe UI', 'Inter', sans-serif;
+            }}
+            .pbi-section-title {{
                 color: var(--pbi-blue);
                 font-size: 1.35rem;
                 font-weight: 600;
                 margin: 1.0rem 0 0.5rem;
-            }
-            .pbi-card {
+            }}
+            .pbi-card {{
                 background: #ffffff;
                 border-radius: 16px;
                 padding: 1.1rem 1.3rem;
-                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-                border: 1px solid rgba(15, 23, 42, 0.06);
+                box-shadow: 0 10px 24px rgba(25, 69, 107, 0.08);
+                border: 1px solid var(--pbi-tertiary);
                 margin-bottom: 1.1rem;
-            }
-            .pbi-table .stDataFrame {
+            }}
+            .pbi-table .stDataFrame {{
                 border-radius: 12px;
-                border: 1px solid rgba(15, 23, 42, 0.08);
+                border: 1px solid var(--pbi-tertiary);
                 overflow: hidden;
-            }
-            div[data-testid='stDataFrame'] table thead tr th {
-                background: rgba(25, 69, 107, 0.06) !important;
-                color: #0f172a !important;
+            }}
+            div[data-testid='stDataFrame'] table thead tr th {{
+                background: rgba(25, 69, 107, 0.08) !important;
+                color: var(--pbi-blue) !important;
                 font-weight: 600;
-            }
-            div[data-testid='stDataFrame'] table tbody tr:hover td {
-                background-color: rgba(25, 69, 107, 0.08) !important;
-            }
-            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link {
+            }}
+            div[data-testid='stDataFrame'] table tbody tr:hover td {{
+                background-color: rgba(144, 128, 112, 0.15) !important;
+            }}
+            div.stButton > button,
+            div.stDownloadButton > button {{
+                background: var(--pbi-blue) !important;
+                color: #ffffff !important;
+                border: 1px solid var(--pbi-blue) !important;
+                border-radius: 999px;
+                font-weight: 600;
+            }}
+            div.stButton > button:hover,
+            div.stDownloadButton > button:hover {{
+                background: var(--pbi-green) !important;
+                border-color: var(--pbi-green) !important;
+            }}
+            div.stButton > button:focus,
+            div.stButton > button:active,
+            div.stDownloadButton > button:focus,
+            div.stDownloadButton > button:active,
+            button[aria-pressed='true'],
+            button:active,
+            button:focus {{
+                color: #ffffff !important;
+            }}
+            div[data-baseweb='segmented-control'] button {{
+                background: rgba(144, 128, 112, 0.12);
+                border: 1px solid rgba(25, 69, 107, 0.2);
+                color: var(--pbi-blue);
+                border-radius: 999px;
+                transition: all 0.18s ease-in-out;
+            }}
+            div[data-baseweb='segmented-control'] button:hover {{
+                border-color: var(--pbi-blue);
+            }}
+            div[data-baseweb='segmented-control'] button[aria-pressed='true'] {{
+                background: var(--pbi-blue) !important;
+                color: #ffffff !important;
+                border-color: var(--pbi-blue) !important;
+                box-shadow: 0 8px 18px rgba(25, 69, 107, 0.22);
+            }}
+            div[data-baseweb='segmented-control'] button[aria-pressed='true']:hover {{
+                background: var(--pbi-green) !important;
+                border-color: var(--pbi-green) !important;
+            }}
+            div[data-baseweb='segmented-control'] span[data-baseweb='radio-mark'] {{
+                display: none !important;
+            }}
+            div[data-baseweb='segmented-control'] svg {{
+                display: none !important;
+            }}
+            div[data-baseweb='segmented-control'] [data-baseweb='radio-mark'],
+            div[data-baseweb='segmented-control'] [data-baseweb='radio-mark']::before,
+            div[data-baseweb='segmented-control'] [data-baseweb='radio-mark']::after {{
+                display: none !important;
+                background: transparent !important;
+                box-shadow: none !important;
+            }}
+            div.stButton > button *,
+            div.stDownloadButton > button * {{
+                color: inherit !important;
+            }}
+            div.stButton > button:focus *,
+            div.stButton > button:active *,
+            div.stDownloadButton > button:focus *,
+            div.stDownloadButton > button:active *,
+            button[aria-pressed='true'] *,
+            button:active *,
+            button:focus * {{
+                color: #ffffff !important;
+            }}
+            div[data-baseweb='segmented-control'] button[aria-pressed='true'] *,
+            div[data-baseweb='segmented-control'] button:focus *,
+            div[data-baseweb='segmented-control'] button:active * {{
+                color: #ffffff !important;
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio'] input:checked ~ * {{
+                color: #ffffff !important;
+            }}
+            [data-baseweb='input'] input,
+            [data-testid='stTextInput'] input,
+            [data-testid='stTextArea'] textarea,
+            [data-testid='stSelectbox'] select {{
+                border: 1px solid var(--pbi-tertiary) !important;
+                border-radius: 8px;
                 color: var(--pbi-blue) !important;
+            }}
+            [data-baseweb='input'] input:focus,
+            [data-testid='stTextInput'] input:focus,
+            [data-testid='stTextArea'] textarea:focus,
+            [data-testid='stSelectbox'] select:focus {{
+                border-color: var(--pbi-green) !important;
+                box-shadow: 0 0 0 1px var(--pbi-green) !important;
+            }}
+            div[data-testid='stCheckbox'] label div[role='checkbox'] {{
+                border: 1px solid var(--pbi-tertiary) !important;
+            }}
+            div[data-testid='stCheckbox'] label div[role='checkbox'][aria-checked='true'] {{
+                background-color: var(--pbi-green) !important;
+                border-color: var(--pbi-green) !important;
+            }}
+            div[data-testid='stRadio'] > div {{
                 display: flex;
+                gap: 0.45rem;
+                flex-wrap: wrap;
                 align-items: center;
-                gap: 0.55rem;
-            }
-            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link .icon {
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio'] {{
+                background: rgba(144, 128, 112, 0.12);
+                border: 1px solid rgba(25, 69, 107, 0.18);
+                border-radius: 999px;
+                padding: 0.35rem 0.9rem;
+                transition: all 0.18s ease-in-out;
+                cursor: pointer;
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio']:hover {{
+                border-color: var(--pbi-blue);
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio']:has(input:checked) {{
+                background: var(--pbi-blue);
+                border-color: var(--pbi-blue);
+                box-shadow: 0 8px 18px rgba(25, 69, 107, 0.22);
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio'] span {{
+                color: var(--pbi-blue);
+                font-weight: 600;
+            }}
+            div[data-testid='stRadio'] label[data-baseweb='radio']:has(input:checked) span {{
+                color: #ffffff !important;
+            }}
+            div[data-baseweb='tag'] {{
+                background: var(--pbi-blue) !important;
+                color: #ffffff !important;
+                border: 1px solid var(--pbi-blue) !important;
+                border-radius: 12px;
+            }}
+            div[data-baseweb='tag'] svg {{
+                fill: #ffffff !important;
+            }}
+            div[data-baseweb='tag']:hover {{
+                background: var(--pbi-green) !important;
+                border-color: var(--pbi-green) !important;
+            }}
+            div[data-testid='stMultiSelect'] label {{
+                color: var(--pbi-blue);
+                font-weight: 600;
+            }}
+            [data-testid='stSidebar'] *,
+            [data-testid='stSidebar'] label {{
+                color: var(--pbi-blue);
+            }}
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link {{
                 color: var(--pbi-blue) !important;
-            }
-            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active {
+            }}
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link .icon {{
+                color: var(--pbi-blue) !important;
+            }}
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active {{
                 color: #ffffff !important;
-            }
-            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active .icon {
+                background: var(--pbi-blue) !important;
+            }}
+            div[data-testid="stVerticalBlock"] ul.nav-pills li a.nav-link.active .icon {{
                 color: #ffffff !important;
-            }
+            }}
         </style>
     """
-    css = css.replace("{", "{{").replace("}", "}}")
-    css = css.replace("__BLUE__", "{blue}").replace("__GREEN__", "{green}")
-    st.markdown(css.format(blue=POWERBI_BLUE, green=POWERBI_GREEN), unsafe_allow_html=True)
+    st.markdown(css, unsafe_allow_html=True)
+
+
 
 
 def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "vertical") -> str:
@@ -458,12 +622,10 @@ def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
         key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
     )
 
-BRIGHT_PRIMARY_COLOR = "#1976D2"
-BRIGHT_PRIMARY_COLOR = "#1976D2"
+BRIGHT_PRIMARY_COLOR = POWERBI_BLUE
+BRIGHT_COMPARISON_COLOR = POWERBI_GREEN
 
-BRIGHT_COMPARISON_COLOR = "#D81B60"
-
-BENEFIT_SHADE_COLOR = "rgba(25, 118, 210, 0.18)"
+BENEFIT_SHADE_COLOR = "rgba(25, 69, 107, 0.18)"
 
 WATERFALL_CHART_HEIGHT = 420
 
@@ -475,8 +637,8 @@ div[data-testid="stPlotlyChart"] > div {
 </style>
 """
 
-CUMULATIVE_OPT_LINE_COLOR = "#2E7D32"
-CUMULATIVE_CMP_LINE_COLOR = "#66BB6A"
+CUMULATIVE_OPT_LINE_COLOR = POWERBI_BLUE
+CUMULATIVE_CMP_LINE_COLOR = POWERBI_GREEN
 
 
 
@@ -4255,7 +4417,7 @@ def _color_to_rgb_tuple(color: str) -> tuple[float, float, float]:
         parts = [p.strip() for p in color[start:end].split(',')]
         if len(parts) >= 3:
             return float(parts[0]), float(parts[1]), float(parts[2])
-    # Fallback – let Plotly help normalise then strip labels
+    # Fallback - let Plotly help normalise then strip labels
     try:
         converted = plc.unlabel_rgb(plc.label_rgb(color))
         return tuple(float(c) for c in converted[:3])
@@ -4303,7 +4465,7 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "label": "Cumulative share vs national",
         "description": "Share of cumulative spend allocated to each region compared with the national total.",
         "type": "sequential",
-        "colorscale": "YlOrRd",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
         "multiplier": 100.0,
         "colorbar": "Share (%)",
         "ticksuffix": "%",
@@ -4311,12 +4473,13 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "force_zero_min": True,
         "formatter": lambda v: _format_percentage(v, 1),
         "sort": "desc",
+        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
     },
     "Share_Year": {
         "label": "Annual share vs national",
         "description": "Share of annual spend in the selected year compared with the national total.",
         "type": "sequential",
-        "colorscale": "OrRd",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
         "multiplier": 100.0,
         "colorbar": "Share (%)",
         "ticksuffix": "%",
@@ -4324,12 +4487,13 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "force_zero_min": True,
         "formatter": lambda v: _format_percentage(v, 1),
         "sort": "desc",
+        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
     },
     "PerCap_Cum": {
         "label": "Cumulative spend per capita",
         "description": "Cumulative spend per resident since the start of the programme.",
         "type": "sequential",
-        "colorscale": "Purples",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
         "multiplier": 1_000_000.0,
         "colorbar": "$ per person",
         "tickformat": ",.0f",
@@ -4342,7 +4506,7 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "label": "Annual spend per capita",
         "description": "Annual spend in the selected year per resident.",
         "type": "sequential",
-        "colorscale": "Blues",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
         "multiplier": 1_000_000.0,
         "colorbar": "$ per person",
         "tickformat": ",.0f",
@@ -4355,41 +4519,96 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "label": "Over / under vs population share",
         "description": "Difference between cumulative spend share and population share (percentage points).",
         "type": "diverging",
-        "colorscale": "RdBu_r",
+        "colorscale": PBI_DIVERGING_SCALE,
         "multiplier": 100.0,
-        "colorbar": "Δ vs pop (pp)",
+        "colorbar": "Delta vs pop (pp)",
         "ticksuffix": " pp",
         "tickformat": ".1f",
         "formatter": lambda v: _format_percentage(v, 1, signed=True),
         "sort": "abs_desc",
+        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
     },
     "OU_vs_GDP": {
         "label": "Over / under vs GDP share",
         "description": "Difference between cumulative spend share and GDP share (percentage points).",
         "type": "diverging",
-        "colorscale": "RdBu_r",
+        "colorscale": PBI_DIVERGING_SCALE,
         "multiplier": 100.0,
-        "colorbar": "Δ vs GDP (pp)",
+        "colorbar": "Delta vs GDP (pp)",
         "ticksuffix": " pp",
         "tickformat": ".1f",
         "formatter": lambda v: _format_percentage(v, 1, signed=True),
         "sort": "abs_desc",
+        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
     },
     "Ramp_Rate": {
         "label": "Ramp rate (Δ cumulative share)",
         "description": "Year-on-year change in cumulative share (percentage points).",
         "type": "diverging",
-        "colorscale": "PuOr",
+        "colorscale": PBI_DIVERGING_SCALE,
         "multiplier": 100.0,
-        "colorbar": "Δ share (pp)",
+        "colorbar": "Delta share (pp)",
         "ticksuffix": " pp",
         "tickformat": ".1f",
         "formatter": lambda v: _format_percentage(v, 1, signed=True),
         "sort": "abs_desc",
+        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
+    },
+    "BenefitShare_Cum": {
+        "label": "Cumulative benefit share vs national",
+        "description": "Share of cumulative benefit allocated to each region compared with the national total.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 100.0,
+        "colorbar": "Benefit share (%)",
+        "ticksuffix": "%",
+        "tickformat": ".1f",
+        "force_zero_min": True,
+        "formatter": lambda v: _format_percentage(v, 1),
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+        "table_label": "Benefit share (cum)",
+    },
+    "BenefitShare_Year": {
+        "label": "Annual benefit share vs national",
+        "description": "Share of annual benefit in the selected year compared with the national total.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 100.0,
+        "colorbar": "Benefit share (%)",
+        "ticksuffix": "%",
+        "tickformat": ".1f",
+        "force_zero_min": True,
+        "formatter": lambda v: _format_percentage(v, 1),
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+        "table_label": "Benefit share (annual)",
     },
 }
 
+
 REGION_METRIC_ORDER = list(REGION_METRIC_CONFIG.keys())
+REGION_METRIC_GROUPS = {
+    "Spend share": [
+        "Share_Cum",
+        "Share_Year",
+        "PerCap_Cum",
+        "PerCap_Year",
+        "OU_vs_Pop",
+        "OU_vs_GDP",
+        "Ramp_Rate",
+    ],
+    "Benefit share": [
+        "BenefitShare_Cum",
+        "BenefitShare_Year",
+    ],
+}
+
+REGION_METRIC_DEFAULT = {
+    "Spend share": "Share_Cum",
+    "Benefit share": "BenefitShare_Cum",
+}
+
 
 def _scaled_region_metric(df: pd.DataFrame, metric_key: str) -> pd.Series:
     if metric_key not in df.columns:
@@ -4444,15 +4663,28 @@ def build_region_map_figure(
     land_color = "rgba(148, 163, 184, 0.32)" if dark_mode else "rgba(148, 163, 184, 0.18)"
     marker_line_width = 1.2 if show_borders else 0.3
     opacity = float(np.clip(fill_opacity, 0.05, 1.0))
-    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", "YlOrRd"), opacity)
+    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", PBI_SEQUENTIAL_SCALE), opacity)
     map_df = map_df.copy()
     map_df["_metric_display"] = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
-    map_df["_share_cum_fmt"] = (map_df["Share_Cum"] * 100).map(lambda v: _format_percentage(v, 1))
-    map_df["_share_year_fmt"] = (map_df["Share_Year"] * 100).map(lambda v: _format_percentage(v, 1))
-    map_df["_percap_cum_fmt"] = (map_df["PerCap_Cum"] * 1_000_000).map(_format_currency_compact)
-    map_df["_percap_year_fmt"] = (map_df["PerCap_Year"] * 1_000_000).map(_format_currency_compact)
+
+    share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
+    cum_share_col = share_cfg.get("cum")
+    year_share_col = share_cfg.get("year")
+
+    def _share_series(column: Optional[str]) -> pd.Series:
+        if column and column in map_df.columns:
+            return pd.to_numeric(map_df[column], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=map_df.index)
+
+    map_df["_share_cum_fmt"] = (_share_series(cum_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+    map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
     map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
     map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
+
+    share_prefix = "Benefit share" if (cum_share_col and cum_share_col.startswith("Benefit")) or (year_share_col and year_share_col.startswith("Benefit")) else "Share"
+
     customdata = map_df[
         [
             "region",
@@ -4469,8 +4701,8 @@ def build_region_map_figure(
         "<b>%{customdata[0]}</b><br>"
         "Year: %{customdata[1]}<br>"
         f"{config['label']}: %{customdata[2]}<br>"
-        "Cumulative share: %{customdata[3]}<br>"
-        "Annual share: %{customdata[4]}<br>"
+        f"{share_prefix} (cum): %{customdata[3]}<br>"
+        f"{share_prefix} (annual): %{customdata[4]}<br>"
         "Per-capita cumulative: %{customdata[5]}<br>"
         "Per-capita annual: %{customdata[6]}<br>"
         "Population: %{customdata[7]}<extra></extra>"
@@ -4533,33 +4765,7 @@ def build_region_map_figure(
     )
     return fig
 
-def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFrame:
-    config = REGION_METRIC_CONFIG[metric_key]
-    table = df.copy()
-    table["_metric_value"] = _scaled_region_metric(table, metric_key)
-    table["_metric_display"] = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
-    table["_share_cum_fmt"] = (table["Share_Cum"] * 100).map(lambda v: _format_percentage(v, 1))
-    table["_share_year_fmt"] = (table["Share_Year"] * 100).map(lambda v: _format_percentage(v, 1))
-    table["_percap_cum_fmt"] = (table["PerCap_Cum"] * 1_000_000).map(_format_currency_compact)
-    table["_percap_year_fmt"] = (table["PerCap_Year"] * 1_000_000).map(_format_currency_compact)
-    sort_mode = config.get("sort", "desc")
-    if sort_mode == "asc":
-        table = table.sort_values("_metric_value", ascending=True)
-    elif sort_mode == "abs_desc":
-        table = table.assign(_abs=table["_metric_value"].abs()).sort_values("_abs", ascending=False).drop(columns="_abs")
-    else:
-        table = table.sort_values("_metric_value", ascending=False)
-    columns = {
-        "region": "Region",
-        "_metric_display": config.get("table_label", config["label"]),
-        "_share_cum_fmt": "Share (cum)",
-        "_share_year_fmt": "Share (annual)",
-        "_percap_cum_fmt": "Per-cap cum",
-        "_percap_year_fmt": "Per-cap annual",
-    }
-    formatted = table[list(columns.keys())].rename(columns=columns)
-    formatted.reset_index(drop=True, inplace=True)
-    return formatted.head(10)
+
 
 def render_region_map(
     df_year: pd.DataFrame,
@@ -4634,14 +4840,100 @@ def render_region_map(
             st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
         return summary
 
+def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFrame:
+    config = REGION_METRIC_CONFIG[metric_key]
+    table = df.copy()
+    table["_metric_value"] = _scaled_region_metric(table, metric_key)
+    table["_metric_display"] = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+
+    share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
+    cum_share_col = share_cfg.get("cum")
+    year_share_col = share_cfg.get("year")
+
+    def _share_series(column: Optional[str]) -> pd.Series:
+        if column and column in table.columns:
+            return pd.to_numeric(table[column], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=table.index)
+
+    table["_share_cum_fmt"] = (_share_series(cum_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    table["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    table["_percap_cum_fmt"] = (pd.to_numeric(table.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+    table["_percap_year_fmt"] = (pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+
+    sort_mode = config.get("sort", "desc")
+    if sort_mode == "asc":
+        table = table.sort_values("_metric_value", ascending=True)
+    elif sort_mode == "abs_desc":
+        table = table.assign(_abs=table["_metric_value"].abs()).sort_values("_abs", ascending=False).drop(columns="_abs")
+    else:
+        table = table.sort_values("_metric_value", ascending=False)
+
+    share_prefix = "Benefit share" if (cum_share_col and cum_share_col.startswith("Benefit")) or (year_share_col and year_share_col.startswith("Benefit")) else "Share"
+
+    metric_label = config.get("table_label", config["label"])
+
+    share_labels = {
+        "_share_cum_fmt": "Share vs national (cum)",
+        "_share_year_fmt": "Share vs national (annual)",
+    }
+    if share_prefix == "Benefit share":
+        share_labels = {
+            "_share_cum_fmt": "Benefit share vs national (cum)",
+            "_share_year_fmt": "Benefit share vs national (annual)",
+        }
+
+    if metric_label in share_labels.values():
+        metric_label = f"{metric_label} value"
+
+    columns = {
+        "region": "Region",
+        "_metric_display": metric_label,
+    }
+    columns.update(share_labels)
+
+    if "PerCap_Cum" in df.columns:
+        columns["_percap_cum_fmt"] = "Per-cap cum"
+    if "PerCap_Year" in df.columns:
+        columns["_percap_year_fmt"] = "Per-cap annual"
+
+    present_keys = [col for col in columns if col in table.columns]
+    table = table[present_keys]
+    columns = {key: value for key, value in columns.items() if key in table.columns}
+
+    formatted = table.rename(columns=columns)
+    formatted.reset_index(drop=True, inplace=True)
+    return formatted.head(10)
+
 def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> pd.DataFrame | None:
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
         return None
+
+    mode_options = list(REGION_METRIC_GROUPS.keys())
+    default_mode = st.session_state.get("region_heatmap_mode", mode_options[0])
+    if default_mode not in mode_options:
+        default_mode = mode_options[0]
+    st.session_state.setdefault("region_heatmap_mode", default_mode)
+    selected_mode = st.radio(
+        "Heatmap focus",
+        mode_options,
+        index=mode_options.index(st.session_state["region_heatmap_mode"]),
+        horizontal=True,
+        key="region_heatmap_mode",
+        label_visibility="collapsed",
+    )
+
+    metric_options = REGION_METRIC_GROUPS[selected_mode]
+    metric_state_key = f"region_metric_key_{selected_mode.replace(' ', '_').lower()}"
+    default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
+    if default_metric not in metric_options:
+        default_metric = metric_options[0]
+
     default_year = st.session_state.get("region_metric_year", available_years[0])
     if default_year not in available_years:
         default_year = available_years[0]
+
     col_year, col_metric, col_opts = st.columns([2, 1, 1])
     with col_year:
         selected_year = st.slider(
@@ -4652,17 +4944,14 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
             step=1,
             key="region_metric_year_slider",
         )
-    metric_options = REGION_METRIC_ORDER
-    default_metric = st.session_state.get("region_metric_key", metric_options[0])
-    if default_metric not in metric_options:
-        default_metric = metric_options[0]
+    metric_select_key = f"region_metric_select_{selected_mode.replace(' ', '_').lower()}"
     with col_metric:
         metric_key = st.selectbox(
             "Metric",
             metric_options,
             index=metric_options.index(default_metric),
             format_func=lambda key: REGION_METRIC_CONFIG[key]["label"],
-            key="region_metric_select",
+            key=metric_select_key,
         )
     with col_opts:
         show_borders = st.checkbox(
@@ -4678,10 +4967,13 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
             step=0.05,
             key="region_metric_opacity_slider",
         )
+
     st.session_state["region_metric_year"] = int(selected_year)
+    st.session_state[metric_state_key] = metric_key
     st.session_state["region_metric_key"] = metric_key
     st.session_state["region_metric_show_borders"] = bool(show_borders)
     st.session_state["region_metric_opacity"] = float(fill_opacity)
+
     config = REGION_METRIC_CONFIG[metric_key]
     st.caption(config.get("description", ""))
     year_df = metrics_df[metrics_df["Year"] == int(selected_year)].copy()
@@ -4696,6 +4988,8 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         show_borders=bool(show_borders),
         fill_opacity=float(fill_opacity),
     )
+
+
 
 def render_region_tab(
     data: DashboardData,
@@ -5218,7 +5512,7 @@ def render_gantt_tab(
     if st.session_state.get("_gantt_hotkey_supported", False):
         st.caption("Press **Z** to toggle the outline colour between comparison and baseline styling.")
     else:
-        st.caption("Hotkey not available in this Streamlit version — use **Swap outline colour**.")
+        st.caption("Hotkey not available in this Streamlit version - use **Swap outline colour**.")
 
     gantt_fig = spend_gantt_chart(
         data,
@@ -5548,7 +5842,7 @@ def main() -> None:
         "Choose scenario bundle",
         labels,
         index=default_index,
-        key="cache_bundle_select_sidebar",   # unique key – used only here
+        key="cache_bundle_select_sidebar",   # unique key - used only here
     )
     st.session_state["selected_cache_label"] = selected_label
 
