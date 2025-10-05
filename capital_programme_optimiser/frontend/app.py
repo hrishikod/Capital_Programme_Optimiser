@@ -119,6 +119,15 @@ CAPACITY_RED = POWERBI_BLUE
 
 CAPACITY_ZERO = POWERBI_TERTIARY
 
+
+# ---- Market capacity heatmap palette (R–Y–O) ----
+# Grey is used only for "no spend recorded".
+CAPACITY_HEAT_ZERO   = "#D1D5DB"  # neutral grey
+CAPACITY_HEAT_YELLOW = "#FACC15"  # Comfortable  (<= $2.0B)
+CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B–$3.0B)
+CAPACITY_HEAT_RED    = "#DC2626"  # High pressure (>= $3.0B)
+
+
 PBI_SEQUENTIAL_SCALE = [
     [0.0, POWERBI_TERTIARY],
     [0.5, POWERBI_GREEN],
@@ -277,7 +286,7 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Overview", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"]
+NAV_TABS = ["Overview", "Benefits", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"]
 
 
 def inject_powerbi_theme() -> None:
@@ -589,7 +598,7 @@ def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "
             selection = option_menu(
                 "Bookmarks",
                 options=NAV_TABS,
-                icons=["speedometer", "geo-alt", "truck", "cash", "diagram-3", "gear"],
+                icons=["speedometer", "pie-chart", "geo-alt", "truck", "cash", "diagram-3", "gear"],
                 menu_icon="",
                 default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
                 orientation=orientation,
@@ -601,7 +610,7 @@ def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "
         return option_menu(
             "",
             options=NAV_TABS,
-            icons=["speedometer", "geo-alt", "truck", "cash", "diagram-3", "gear"],
+            icons=["speedometer", "pie-chart", "geo-alt", "truck", "cash", "diagram-3", "gear"],
             menu_icon="",
             default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
             orientation=orientation,
@@ -4198,160 +4207,131 @@ def project_schedule_area_chart(
     return fig
 
 def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection) -> Optional[go.Figure]:
+    """
+    Compact market-capacity heat-strip aligned to the schedule chart above.
 
+    - Discrete R–Y–O categories with hard cut-offs:
+        0: No spend           -> grey
+        1: Comfortable (<=2B) -> yellow
+        2: Watch (2–3B)       -> orange
+        3: High (>=3B)        -> red
+    - Hover shows FY, spend in billions, and band label.
+    - Left/right margins mirror the schedule chart (l=40, r=220) so the colored strip
+      spans the exact same plot width (ignoring the legend).
+    - Height is ~ two-thirds of the old chart with a small adaptive tweak.
+    """
+    # Build annual totals for the chosen scenario
     series = build_timeseries(data, selection)
-
-    if series is None:
-
+    if series is None or series.empty:
         return None
 
-    totals = series[["Year", "Spend"]].copy()
+    df = series[["Year", "Spend"]].copy()
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df = df.dropna(subset=["Year"]).sort_values("Year")
+    if df.empty:
+        return None
 
-    totals["SpendB"] = totals["Spend"] / 1000.0
+    # Convert spend from $m to $B for the band logic + hover display
+    df["SpendB"] = pd.to_numeric(df["Spend"], errors="coerce").fillna(0.0) / 1000.0
 
-    runs = extract_project_runs(data, selection.code) if selection.code else []
+    years: List[int] = df["Year"].astype(int).tolist()
+    spend_b: List[float] = df["SpendB"].astype(float).tolist()
 
-    max_label_len = max((len(run.project) for run in runs), default=0)
+    # Encode discrete band levels and per-cell customdata for hover
+    # z: 0=NoSpend, 1=Comfortable(<=2), 2=Watch(2-3), 3=High(>=3)
+    z_levels: List[int] = []
+    row_custom: List[List[Any]] = []  # one list per cell: [year, spend_b, label]
 
-    left_margin = max(48, min(320, 60 + int(max_label_len * 5.5)))
-
-    years = totals["Year"].tolist()
-
-    colors: List[str] = []
-
-    text_values: List[str] = []
-
-    text_colors: List[str] = []
-
-    hover_labels: List[str] = []
-
-    for year, value in totals[["Year", "SpendB"]].itertuples(index=False):
-
-        if value <= 0.0:
-
-            color = CAPACITY_ZERO
-
-            descriptor = "No spend recorded"
-
-            display_value = ""
-
-            text_color = color
-
-        elif value >= 3.0:
-
-            color = CAPACITY_RED
-
-            descriptor = "High pressure (>= $3.0B)"
-
-            display_value = f"{value:.1f}"
-
-            text_color = "#F9FAFB"
-
-        elif value <= 2.0:
-
-            color = CAPACITY_GREEN
-
-            descriptor = "Comfortable (<= $2.0B)"
-
-            display_value = f"{value:.1f}"
-
-            text_color = "#0F172A"
-
+    for y, val_b in zip(years, spend_b):
+        if val_b <= 0.0:
+            lvl, label = 0, "No spend recorded"
+        elif val_b >= 3.0:
+            lvl, label = 3, "High pressure (≥ $3.0B)"
+        elif val_b > 2.0:
+            lvl, label = 2, "Watch zone ($2.0B–$3.0B)"
         else:
+            lvl, label = 1, "Comfortable (≤ $2.0B)"
+        z_levels.append(lvl)
+        row_custom.append([int(y), float(val_b), label])
 
-            color = CAPACITY_AMBER
+    # A crisp stepped colorscale (no gradients between categories)
+    step_eps = 1e-6
+    colorscale = [
+        [0.00,                CAPACITY_HEAT_ZERO],   # 0
+        [1.0/3.0 - step_eps,  CAPACITY_HEAT_ZERO],
+        [1.0/3.0,             CAPACITY_HEAT_YELLOW], # 1
+        [2.0/3.0 - step_eps,  CAPACITY_HEAT_YELLOW],
+        [2.0/3.0,             CAPACITY_HEAT_ORANGE], # 2
+        [1.0 - step_eps,      CAPACITY_HEAT_ORANGE],
+        [1.0,                 CAPACITY_HEAT_RED],    # 3
+    ]
 
-            descriptor = "Watch zone ($2.0B-$3.0B)"
-
-            display_value = f"{value:.1f}"
-
-            text_color = "#0F172A"
-
-        colors.append(color)
-
-        hover_labels.append(f"Year: {year}<br>Total spend: {value:.1f} $B<br>Status: {descriptor}")
-
-        text_values.append(display_value)
-
-        text_colors.append(text_color)
-
-    gap_ratio = 0.05
-
-    bar_width = max(0.0, 1.0 - gap_ratio)
-
-    fig = go.Figure(
-
-        data=go.Bar(
-
-            x=years,
-
-            y=[1.0] * len(years),
-
-            width=bar_width if years else None,
-
-            marker=dict(color=colors, line=dict(color="#0F172A", width=1.0)),
-
-            hovertext=hover_labels,
-
-            hovertemplate="%{hovertext}<extra></extra>",
-
-            text=text_values,
-
-            textposition="inside",
-
-            texttemplate="%{text}",
-
-        )
-
+    # Heat-strip: one row; customdata must match z's shape: (rows, cols, ...)
+    trace = go.Heatmap(
+        x=years,
+        y=[0],                     # single row
+        z=[z_levels],              # shape (1, N)
+        zmin=0,
+        zmax=3,
+        colorscale=colorscale,
+        showscale=False,
+        xgap=0,                    # keep a flush strip so edges align exactly
+        ygap=0,
+        hoverinfo="text",
+        customdata=[row_custom],   # shape (1, N, 3)
+        # IMPORTANT: with customdata per point = [year, spendB, label],
+        # you reference them as %{customdata[0]}, %{customdata[1]}, %{customdata[2]}
+        hovertemplate=(
+            "<b>FY %{customdata[0]}</b><br>"
+            "Total spend: %{customdata[1]:.1f} B<br>"
+            "Status: %{customdata[2]}<extra></extra>"
+        ),
     )
 
-    fig.update_traces(textfont=dict(size=14), hoverlabel=_hoverlabel_style())
-    if fig.data:
-        fig.data[0].textfont.color = text_colors
+    fig = go.Figure(data=[trace])
+    fig.update_traces(hoverlabel=_hoverlabel_style())
 
-    fig.update_layout(bargap=gap_ratio, bargroupgap=0.0)
+    # Align plot width with the project schedule chart:
+    # The schedule chart uses margin(l=40, r=220, t=60, b=80) and legend outside on the right.
+    # We mirror its left/right margins so both plot areas start/end at the same x-pixels.
+    SCHEDULE_LEFT_MARGIN = 40
+    SCHEDULE_RIGHT_MARGIN = 220
 
-    tick0 = float(totals["Year"].min()) if not totals.empty else 0.0
+    # Use the same x-range logic (min/max year with a 0.5 pad) for consistent edges
+    x0 = float(min(years))
+    x1 = float(max(years))
 
-    last_year = float(totals["Year"].max()) if not totals.empty else tick0
+    # Height ~ 2/3 of the old bar, with a tiny adaptive tweak by number of years
+    # (keeps it slender on narrow/few-year layouts; still capped).
+    n_years = max(1, len(years))
+    base_h = 74  # ~ two-thirds of the earlier ~110px
+    adaptive = int(max(44, min(80, base_h - 0.15 * (n_years - 20))))  # soft clamp [44..80]
 
     fig.update_layout(
-
         title="Market capacity indicator - total spend by year",
-
-        height=110,
-
-        margin=dict(l=left_margin, r=18, t=28, b=4),
-
+        height=adaptive,
+        margin=dict(l=SCHEDULE_LEFT_MARGIN, r=SCHEDULE_RIGHT_MARGIN, t=26, b=4),
         autosize=False,
-
         xaxis=dict(
-
             tickmode="linear",
-
             dtick=1,
-
-            tick0=tick0,
-
-            range=[tick0 - 0.5, last_year + 0.5],
-
+            tick0=x0,
+            range=[x0 - 0.5, x1 + 0.5],
             showticklabels=False,
-
             showgrid=False,
-
             zeroline=False,
-
+            constrain="range",
         ),
-
-        yaxis=dict(visible=False, range=[0, 1], fixedrange=True),
-
+        yaxis=dict(visible=False, range=[-0.5, 0.5], fixedrange=True),
         template=plotly_template(),
-
         showlegend=False,
-
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
 
     return fig
+
+
 
 
 
@@ -4934,7 +4914,7 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
     if default_year not in available_years:
         default_year = available_years[0]
 
-    col_year, col_metric, col_opts = st.columns([2, 1, 1])
+    col_year, col_metric = st.columns([2, 1])
     with col_year:
         selected_year = st.slider(
             "Financial year",
@@ -4953,26 +4933,12 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
             format_func=lambda key: REGION_METRIC_CONFIG[key]["label"],
             key=metric_select_key,
         )
-    with col_opts:
-        show_borders = st.checkbox(
-            "Show borders",
-            value=st.session_state.get("region_metric_show_borders", True),
-            key="region_metric_borders_checkbox",
-        )
-        fill_opacity = st.slider(
-            "Fill opacity",
-            min_value=0.2,
-            max_value=1.0,
-            value=float(st.session_state.get("region_metric_opacity", 0.85)),
-            step=0.05,
-            key="region_metric_opacity_slider",
-        )
 
     st.session_state["region_metric_year"] = int(selected_year)
     st.session_state[metric_state_key] = metric_key
     st.session_state["region_metric_key"] = metric_key
-    st.session_state["region_metric_show_borders"] = bool(show_borders)
-    st.session_state["region_metric_opacity"] = float(fill_opacity)
+    st.session_state["region_metric_show_borders"] = False
+    st.session_state["region_metric_opacity"] = 1.0
 
     config = REGION_METRIC_CONFIG[metric_key]
     st.caption(config.get("description", ""))
@@ -4985,8 +4951,8 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         metric_key,
         scenario_label=scenario_label,
         year=int(selected_year),
-        show_borders=bool(show_borders),
-        fill_opacity=float(fill_opacity),
+        show_borders=False,
+        fill_opacity=1.0,
     )
 
 
@@ -5177,6 +5143,26 @@ def render_overview_tab(
         )
         if bridge_export is not None:
             export_tables["NPV Bridge"] = bridge_export
+    radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
+    if radar_fig is not None:
+        st.plotly_chart(radar_fig, use_container_width=True, theme=None)
+        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
+        if radar_export is not None:
+            export_tables["Benefit mix radar"] = radar_export
+    return export_tables
+
+
+def render_benefits_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
     st.markdown('<div class="pbi-section-title">Benefit dimensions</div>', unsafe_allow_html=True)
     opt_dim_pivot = dimension_timeseries(data, opt_selection)
     cmp_dim_pivot = dimension_timeseries(data, comp_selection)
@@ -5185,8 +5171,8 @@ def render_overview_tab(
         for dim in getattr(data, "dims", [])
         if str(dim).strip().lower() != "total"
         and (
-            (opt_dim_pivot is not None and dim in opt_dim_pivot.columns)
-            or (cmp_dim_pivot is not None and dim in cmp_dim_pivot.columns)
+            (opt_dim_pivot is not None and dim in getattr(opt_dim_pivot, "columns", []))
+            or (cmp_dim_pivot is not None and dim in getattr(cmp_dim_pivot, "columns", []))
         )
     ]
     toggle_col1, toggle_col2 = st.columns(2)
@@ -5273,6 +5259,7 @@ def render_overview_tab(
                 if cmp_dim_export is not None:
                     export_tables["Dimension mix - comparison"] = cmp_dim_export
     st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
+    horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
     benefit_cols = st.columns(2)
     with benefit_cols[0]:
         benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
@@ -5285,7 +5272,7 @@ def render_overview_tab(
             cmp_series,
             opt_selection,
             comp_selection,
-            horizon_years=selected_npv_horizon,
+            horizon_years=horizon_years,
         )
         if delta_fig is not None:
             st.plotly_chart(delta_fig, use_container_width=True)
@@ -5300,12 +5287,6 @@ def render_overview_tab(
     benefit_delta_export = prepare_benefit_delta_export(opt_series, cmp_series)
     if benefit_delta_export is not None:
         export_tables["Benefit delta (real)"] = benefit_delta_export
-    radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
-    if radar_fig is not None:
-        st.plotly_chart(radar_fig, use_container_width=True, theme=None)
-        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
-        if radar_export is not None:
-            export_tables["Benefit mix radar"] = radar_export
     return export_tables
 
 
@@ -5422,7 +5403,7 @@ def render_cash_flow_tab(
                 cash_chart(
                     cmp_series,
                     "Cash flow - comparison",
-                    color=COMPARISON_COLOR,
+                    color=PRIMARY_COLOR,
                     data=data,
                     selection=comp_selection,
                     comparison_selection=opt_selection,
@@ -5966,6 +5947,18 @@ def main() -> None:
                     cmp_label=cmp_label,
                 )
             )
+        elif active_tab == "Benefits":
+            download_tables.update(
+                render_benefits_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
+            )
         elif active_tab == "Regions":
             download_tables.update(
                 render_region_tab(
@@ -6027,4 +6020,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
