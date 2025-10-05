@@ -103,8 +103,8 @@ BAR_OPACITY = 0.75
 
 GANTT_COLOR = POWERBI_BLUE
 
-GANTT_OUTLINE_COLOR_BASE = POWERBI_TERTIARY
-GANTT_OUTLINE_COLOR_ALT = POWERBI_GREEN
+GANTT_OUTLINE_COLOR_BASE = "#DC2626"
+GANTT_OUTLINE_COLOR_ALT = "#B91C1C"
 GANTT_OUTLINE_VARIANT_KEY = "gantt_outline_variant"
 
 CLOSING_NET_COLOR = POWERBI_GREEN
@@ -554,8 +554,8 @@ def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "
             "text-align": "left",
         },
         "nav-link-selected": {
-            "background": "var(--pbi-blue)",
-            "color": "#ffffff",
+            "background": "rgba(25, 69, 107, 0.16)",
+            "color": "#0F172A",
             "box-shadow": "0 14px 28px rgba(25, 69, 107, 0.28)",
             "border": "1px solid rgba(25, 69, 107, 0.32)",
             "opacity": "1",
@@ -585,8 +585,8 @@ def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "
             "border": "1px solid rgba(25, 69, 107, 0.16)",
         },
         "nav-link-selected": {
-            "background": "var(--pbi-blue)",
-            "color": "#ffffff",
+            "background": "rgba(25, 69, 107, 0.16)",
+            "color": "#0F172A",
             "box-shadow": "0 8px 18px rgba(25, 69, 107, 0.24)",
             "border": "1px solid rgba(25, 69, 107, 0.26)",
         },
@@ -4208,19 +4208,18 @@ def project_schedule_area_chart(
 
 def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection) -> Optional[go.Figure]:
     """
-    Compact market-capacity heat-strip aligned to the schedule chart above.
+    Compact market-capacity heat-strip aligned to the schedule chart's *plot area*.
 
-    - Discrete R–Y–O categories with hard cut-offs:
+    - Discrete categories (grey / yellow / orange / red) with hard cut-offs:
         0: No spend           -> grey
         1: Comfortable (<=2B) -> yellow
         2: Watch (2–3B)       -> orange
         3: High (>=3B)        -> red
-    - Hover shows FY, spend in billions, and band label.
-    - Left/right margins mirror the schedule chart (l=40, r=220) so the colored strip
-      spans the exact same plot width (ignoring the legend).
-    - Height is ~ two-thirds of the old chart with a small adaptive tweak.
+    - Hover shows FY, spend (billions), and band label.
+    - Left/right edges match the Project schedule chart by mirroring its margins
+      AND reserving the same left auto-margin (tick labels + title) via a
+      transparent Y-axis.
     """
-    # Build annual totals for the chosen scenario
     series = build_timeseries(data, selection)
     if series is None or series.empty:
         return None
@@ -4231,16 +4230,15 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
     if df.empty:
         return None
 
-    # Convert spend from $m to $B for the band logic + hover display
+    # Spend in billions for banding + hover
     df["SpendB"] = pd.to_numeric(df["Spend"], errors="coerce").fillna(0.0) / 1000.0
 
     years: List[int] = df["Year"].astype(int).tolist()
     spend_b: List[float] = df["SpendB"].astype(float).tolist()
 
-    # Encode discrete band levels and per-cell customdata for hover
-    # z: 0=NoSpend, 1=Comfortable(<=2), 2=Watch(2-3), 3=High(>=3)
+    # Encode discrete levels and per-cell custom data for hover
     z_levels: List[int] = []
-    row_custom: List[List[Any]] = []  # one list per cell: [year, spend_b, label]
+    per_point_custom: List[List[Any]] = []  # [year, spendB, label] per cell
 
     for y, val_b in zip(years, spend_b):
         if val_b <= 0.0:
@@ -4252,9 +4250,9 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
         else:
             lvl, label = 1, "Comfortable (≤ $2.0B)"
         z_levels.append(lvl)
-        row_custom.append([int(y), float(val_b), label])
+        per_point_custom.append([int(y), float(val_b), label])
 
-    # A crisp stepped colorscale (no gradients between categories)
+    # Crisp stepped colors (no gradient between categories)
     step_eps = 1e-6
     colorscale = [
         [0.00,                CAPACITY_HEAT_ZERO],   # 0
@@ -4266,21 +4264,17 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
         [1.0,                 CAPACITY_HEAT_RED],    # 3
     ]
 
-    # Heat-strip: one row; customdata must match z's shape: (rows, cols, ...)
-    trace = go.Heatmap(
+    # Single-row heatmap; customdata must be (rows, cols, ...)
+    heat = go.Heatmap(
         x=years,
-        y=[0],                     # single row
-        z=[z_levels],              # shape (1, N)
-        zmin=0,
-        zmax=3,
+        y=[0],
+        z=[z_levels],
+        zmin=0, zmax=3,
         colorscale=colorscale,
         showscale=False,
-        xgap=0,                    # keep a flush strip so edges align exactly
-        ygap=0,
+        xgap=0, ygap=0,
+        customdata=[per_point_custom],  # shape (1, N, 3)
         hoverinfo="text",
-        customdata=[row_custom],   # shape (1, N, 3)
-        # IMPORTANT: with customdata per point = [year, spendB, label],
-        # you reference them as %{customdata[0]}, %{customdata[1]}, %{customdata[2]}
         hovertemplate=(
             "<b>FY %{customdata[0]}</b><br>"
             "Total spend: %{customdata[1]:.1f} B<br>"
@@ -4288,41 +4282,61 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
         ),
     )
 
-    fig = go.Figure(data=[trace])
+    fig = go.Figure(data=[heat])
     fig.update_traces(hoverlabel=_hoverlabel_style())
 
-    # Align plot width with the project schedule chart:
-    # The schedule chart uses margin(l=40, r=220, t=60, b=80) and legend outside on the right.
-    # We mirror its left/right margins so both plot areas start/end at the same x-pixels.
+    # --- Make the left plot edge match the schedule chart's *plot area* edge ---
+    # The schedule chart uses margins similar to:
+    #   margin=dict(l=40, r=220, t=60, b=80)
+    # Plotly auto-expands the left margin to fit Y tick labels + the axis title.
+    # We mirror that behaviour here by enabling a transparent Y axis with the
+    # same widest tick label + the same title text. This reserves identical
+    # auto-margin without showing anything.
     SCHEDULE_LEFT_MARGIN = 40
     SCHEDULE_RIGHT_MARGIN = 220
 
-    # Use the same x-range logic (min/max year with a 0.5 pad) for consistent edges
+    # Use widest tick label that the schedule would show (e.g., "3,600")
+    max_spend_m = float(pd.to_numeric(series["Spend"], errors="coerce").fillna(0.0).max())
+    # Round up to a "nice" hundred for width parity with the schedule axis
+    if max_spend_m <= 0:
+        widest_tick = "0"
+    else:
+        nice = int(math.ceil(max_spend_m / 100.0) * 100)
+        widest_tick = f"{nice:,}"
+
     x0 = float(min(years))
     x1 = float(max(years))
 
-    # Height ~ 2/3 of the old bar, with a tiny adaptive tweak by number of years
-    # (keeps it slender on narrow/few-year layouts; still capped).
+    # Height ~ 2/3 of the old height, softly adapted to year count
     n_years = max(1, len(years))
-    base_h = 74  # ~ two-thirds of the earlier ~110px
-    adaptive = int(max(44, min(80, base_h - 0.15 * (n_years - 20))))  # soft clamp [44..80]
+    base_h = 74
+    adaptive_h = int(max(44, min(80, base_h - 0.15 * (n_years - 20))))
 
     fig.update_layout(
         title="Market capacity indicator - total spend by year",
-        height=adaptive,
+        height=adaptive_h,
         margin=dict(l=SCHEDULE_LEFT_MARGIN, r=SCHEDULE_RIGHT_MARGIN, t=26, b=4),
         autosize=False,
         xaxis=dict(
-            tickmode="linear",
-            dtick=1,
-            tick0=x0,
+            tickmode="linear", dtick=1, tick0=x0,
             range=[x0 - 0.5, x1 + 0.5],
-            showticklabels=False,
-            showgrid=False,
-            zeroline=False,
-            constrain="range",
+            showticklabels=False, showgrid=False, zeroline=False, constrain="range",
         ),
-        yaxis=dict(visible=False, range=[-0.5, 0.5], fixedrange=True),
+        # Transparent Y axis that *forces* the same auto left margin as the schedule chart.
+        yaxis=dict(
+            automargin=True,
+            showgrid=False, zeroline=False, showline=False, ticks="",
+            tickmode="array", tickvals=[0], ticktext=[widest_tick],
+            tickfont=dict(color="rgba(0,0,0,0)", size=12),  # invisible labels, keep width
+            title=dict(
+                text="Annual spend ($m)",
+                font=dict(color="rgba(0,0,0,0)", size=12),
+                standoff=4,  # same feel as schedule default
+            ),
+            visible=True,  # must be True so automargin engages
+            range=[-0.5, 0.5],
+            fixedrange=True,
+        ),
         template=plotly_template(),
         showlegend=False,
         paper_bgcolor="rgba(0,0,0,0)",
@@ -4330,8 +4344,6 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
     )
 
     return fig
-
-
 
 
 
@@ -6020,5 +6032,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
