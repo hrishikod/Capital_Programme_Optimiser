@@ -357,6 +357,16 @@ def inject_powerbi_theme() -> None:
                 color: var(--pbi-blue) !important;
                 font-weight: 600;
             }}
+            .region-summary-table div[data-testid='stDataFrame'] * {{
+                font-family: 'Segoe UI', 'Inter', sans-serif !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table thead tr th {{
+                background: #ffffff !important;
+                color: var(--pbi-blue) !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table tbody tr td {{
+                background: #ffffff !important;
+            }}
             div[data-testid='stDataFrame'] table tbody tr:hover td {{
                 background-color: rgba(144, 128, 112, 0.15) !important;
             }}
@@ -4840,7 +4850,9 @@ def render_region_map(
     if map_df.empty or map_df[metric_key].dropna().empty:
         st.info("No mapped regional spend for the selected inputs.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
-        st.dataframe(summary, hide_index=True, use_container_width=True)
+        st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
+        st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
+        st.markdown("</div>", unsafe_allow_html=True)
         return summary
     map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
     if map_df["_metric_value"].dropna().empty:
@@ -4864,7 +4876,9 @@ def render_region_map(
     with table_col:
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
+        st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
         st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
+        st.markdown("</div>", unsafe_allow_html=True)
         if (df_year["region"] == "Unmapped").any():
             st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
         return summary
