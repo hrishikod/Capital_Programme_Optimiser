@@ -6,6 +6,8 @@ import io
 import math
 import re
 import sys
+import json
+
 
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -309,14 +311,23 @@ def inject_powerbi_theme() -> None:
                 color: var(--pbi-blue);
                 font-size: 2.2rem;
                 font-weight: 600;
-                margin-bottom: 0.2rem;
+                display: inline-block;
+                position: relative;
+                padding-bottom: 0.45rem;
+                margin-bottom: 1.4rem;
             }}
-            .pbi-header-underline {{
-                width: 180px;
+            .pbi-header::after {{
+                content: '';
+                position: absolute;
+                left: 0;
+                bottom: 0;
+                width: 100%;
                 height: 6px;
                 border-radius: 999px;
                 background: var(--pbi-green);
-                margin-bottom: 1.2rem;
+            }}
+            .pbi-header-underline {{
+                display: none;
             }}
             .pbi-section-title {{
                 color: var(--pbi-blue);
@@ -4692,9 +4703,9 @@ def build_region_map_figure(
     hovertemplate = (
         "<b>%{customdata[0]}</b><br>"
         "Year: %{customdata[1]}<br>"
-        f"{config['label']}: %{customdata[2]}<br>"
-        f"{share_prefix} (cum): %{customdata[3]}<br>"
-        f"{share_prefix} (annual): %{customdata[4]}<br>"
+        f"{config['label']}: %{{customdata[2]}}<br>"
+        f"{share_prefix} (cum): %{{customdata[3]}}<br>"
+        f"{share_prefix} (annual): %{{customdata[4]}}<br>"
         "Per-capita cumulative: %{customdata[5]}<br>"
         "Per-capita annual: %{customdata[6]}<br>"
         "Population: %{customdata[7]}<extra></extra>"
@@ -4802,13 +4813,13 @@ def render_region_map(
     map_df["join_key"] = map_df["join_key"].astype(str).str.strip()
     if map_df.empty or map_df[metric_key].dropna().empty:
         st.info("No mapped regional spend for the selected inputs.")
-        summary = build_region_summary_table(df_year, metric_key)
+        summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.dataframe(summary, hide_index=True, use_container_width=True)
         return summary
     map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
     if map_df["_metric_value"].dropna().empty:
         st.info("Selected metric has no values for this year.")
-        summary = build_region_summary_table(df_year, metric_key)
+        summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.dataframe(summary, hide_index=True, use_container_width=True)
         return summary
     map_col, table_col = st.columns([2, 1])
@@ -4825,14 +4836,14 @@ def render_region_map(
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"})
     with table_col:
-        summary = build_region_summary_table(df_year, metric_key)
+        summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
         st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
         if (df_year["region"] == "Unmapped").any():
             st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
         return summary
 
-def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFrame:
+def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) -> pd.DataFrame:
     config = REGION_METRIC_CONFIG[metric_key]
     table = df.copy()
     table["_metric_value"] = _scaled_region_metric(table, metric_key)
@@ -4851,6 +4862,18 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFram
     table["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
     table["_percap_cum_fmt"] = (pd.to_numeric(table.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
     table["_percap_year_fmt"] = (pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+
+    if "Spend_M" in table.columns:
+        table["_spend_year_fmt"] = pd.to_numeric(table["Spend_M"], errors="coerce").fillna(0.0).map(format_currency)
+    if "Spend_Cum_Region" in table.columns:
+        table["_spend_cum_fmt"] = pd.to_numeric(table["Spend_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
+
+    show_benefit_columns = metric_key in REGION_METRIC_GROUPS.get("Benefit share", [])
+    if show_benefit_columns:
+        if "Benefit_Year" in table.columns:
+            table["_benefit_year_fmt"] = pd.to_numeric(table["Benefit_Year"], errors="coerce").fillna(0.0).map(format_currency)
+        if "Benefit_Cum_Region" in table.columns:
+            table["_benefit_cum_fmt"] = pd.to_numeric(table["Benefit_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
 
     sort_mode = config.get("sort", "desc")
     if sort_mode == "asc":
@@ -4883,6 +4906,16 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFram
     }
     columns.update(share_labels)
 
+    fy_label = f"FY {int(year)}"
+    if "_spend_year_fmt" in table.columns:
+        columns["_spend_year_fmt"] = f"Spend in {fy_label}"
+    if "_spend_cum_fmt" in table.columns:
+        columns["_spend_cum_fmt"] = f"Cumulative spend to {fy_label}"
+    if show_benefit_columns and "_benefit_year_fmt" in table.columns:
+        columns["_benefit_year_fmt"] = f"Benefit in {fy_label}"
+    if show_benefit_columns and "_benefit_cum_fmt" in table.columns:
+        columns["_benefit_cum_fmt"] = f"Cumulative benefit to {fy_label}"
+
     if "PerCap_Cum" in df.columns:
         columns["_percap_cum_fmt"] = "Per-cap cum"
     if "PerCap_Year" in df.columns:
@@ -4896,17 +4929,405 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str) -> pd.DataFram
     formatted.reset_index(drop=True, inplace=True)
     return formatted.head(10)
 
+
+_REGION_MAP_REACTIVE_HTML = """
+<div id="reactive-region-map" style="display:flex; gap:14px; align-items:stretch;">
+  <div id="map" style="flex: 2 1 0%; min-height:520px;"></div>
+  <div id="side" style="flex: 1 1 0%; min-width:280px;">
+    <div id="year_label" style="font-weight:600; margin:0 0 8px 0;"></div>
+    <div id="table" style="height: 480px; overflow:auto; border:1px solid rgba(148,163,184,0.35); border-radius:12px;"></div>
+  </div>
+</div>
+<div style="margin-top:8px;">
+  <input id="year_slider" type="range" min="0" max="0" value="0" step="1" style="width:100%;">
+</div>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script id="payload" type="application/json">{DATA_JSON}</script>
+<script>
+(function(){
+  const payload = JSON.parse(document.getElementById('payload').textContent);
+  const years = payload.years;
+  const minY = years[0], maxY = years[years.length - 1];
+  const mapDiv = document.getElementById('map');
+  const slider = document.getElementById('year_slider');
+  const yearLabel = document.getElementById('year_label');
+  const tableDiv = document.getElementById('table');
+
+  slider.min = String(minY);
+  slider.max = String(maxY);
+  slider.value = String(payload.initial_year);
+
+  function renderTable(year){
+    const rows = payload.table_by_year[String(year)] || [];
+    const headers = payload.table_headers || [];
+    let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+    html += '<thead><tr>';
+    for (const h of headers){
+      html += '<th style="position:sticky; top:0; background:rgba(148,163,184,0.12); text-align:left; padding:6px 8px; font-weight:600;">' + h + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of rows){
+      html += '<tr>';
+      for (const c of r){
+        html += '<td style="padding:6px 8px; border-top:1px solid rgba(148,163,184,0.25);">' + c + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    tableDiv.innerHTML = html;
+    yearLabel.textContent = 'FY ' + year + ' — ' + payload.title;
+  }
+
+  const trace = {
+    type: 'choropleth',
+    geojson: payload.geojson,
+    featureidkey: 'properties.' + payload.name_field,
+    locations: payload.locations,
+    z: payload.z_by_year[String(payload.initial_year)],
+    zmin: payload.zmin,
+    zmax: payload.zmax,
+    colorscale: payload.colorscale,
+    reversescale: payload.reversescale,
+    marker: {line: {color: payload.line_color, width: payload.marker_line_width}},
+    colorbar: payload.colorbar,
+    customdata: payload.customdata_by_year[String(payload.initial_year)],
+    hovertemplate: payload.hovertemplate
+  };
+
+  const layout = payload.layout;
+
+  Plotly.newPlot(mapDiv, [trace], layout, {displayModeBar:false, responsive:true}).then(function(){
+    renderTable(payload.initial_year);
+  });
+
+  let raf = null;
+  let lastApplied = payload.initial_year;
+
+  function apply(year){
+    year = Math.max(minY, Math.min(maxY, year|0));
+    if (year === lastApplied) return;
+    lastApplied = year;
+    Plotly.restyle(mapDiv, {
+      z: [payload.z_by_year[String(year)]],
+      customdata: [payload.customdata_by_year[String(year)]]
+    });
+    renderTable(year);
+  }
+
+  function onInput(){
+    if (raf !== null) return;
+    raf = requestAnimationFrame(function(){
+      raf = null;
+      apply(parseInt(slider.value, 10));
+    });
+  }
+
+  slider.addEventListener('input', onInput);
+  slider.addEventListener('change', function(){ apply(parseInt(slider.value, 10)); });
+
+})();
+</script>
+"""
+
+
+def _prepare_region_reactive_payload(
+    metrics_df: pd.DataFrame,
+    metric_key: str,
+    *,
+    scenario_label: str,
+    initial_year: int,
+    show_borders: bool,
+    fill_opacity: float,
+) -> tuple[dict, pd.DataFrame]:
+    """
+    Build a compact, client-ready payload:
+      - ordered region locations aligned to GeoJSON featureidkey
+      - per-year z vectors and per-year customdata for hover
+      - per-year (preformatted) top-10 table
+      - static Plotly layout, colorbar and colorscale
+    Returns (payload_dict, initial_year_table_df).
+    """
+    geojson = fetch_region_geojson()
+    name_field = get_geojson_name_field(geojson)
+
+    # Ordered locations list matching GeoJSON feature order
+    locations: list[str] = []
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        value = props.get(name_field)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            locations.append(text)
+
+    # Region baselines (ensures consistent population/gdp fields)
+    region_mapping = load_region_mapping()
+    catalog, _, _ = region_baselines(region_mapping)
+    baseline_keys = catalog[["region", "join_key", "population", "gdp_per_capita"]].drop_duplicates(subset=["region"]).copy()
+
+    years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
+    if not years:
+        years = [initial_year]
+    if initial_year not in years:
+        initial_year = years[0]
+
+    config = REGION_METRIC_CONFIG[metric_key]
+    opacity = float(np.clip(fill_opacity, 0.05, 1.0))
+    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", PBI_SEQUENTIAL_SCALE), opacity)
+    reversescale = bool(config.get("reversescale", False))
+
+    # Theme-aware styling
+    dark_mode = is_dark_mode()
+    line_color = "#1f2937" if dark_mode else "#0b1120"
+    coastline_color = "#f1f5f9" if dark_mode else "#1f2937"
+    land_color = "rgba(148, 163, 184, 0.32)" if dark_mode else "rgba(148, 163, 184, 0.18)"
+    marker_line_width = 1.2 if show_borders else 0.3
+
+    # Helper to compute display fields used in hover + table
+    share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
+    cum_share_col = share_cfg.get("cum")
+    year_share_col = share_cfg.get("year")
+
+    def _share_series(column: Optional[str], frame: pd.DataFrame) -> pd.Series:
+        if column and column in frame.columns:
+            return pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=frame.index)
+
+    z_by_year: dict[str, list[float]] = {}
+    custom_by_year: dict[str, list[list[str]]] = {}
+    table_by_year: dict[str, list[list[str]]] = {}
+    table_headers: list[str] = []
+    all_values: list[float] = []
+
+    initial_table_df: pd.DataFrame | None = None
+
+    for year in years:
+        df_year = metrics_df[metrics_df["Year"] == int(year)].copy()
+        df_year = baseline_keys.merge(df_year, on=["region", "join_key"], how="left", suffixes=("", "_data"))
+        if "population_data" in df_year.columns:
+            df_year["population"] = df_year["population_data"].fillna(df_year["population"])
+        if "gdp_per_capita_data" in df_year.columns:
+            df_year["gdp_per_capita"] = df_year["gdp_per_capita_data"].fillna(df_year["gdp_per_capita"])
+        drop_cols = [c for c in ("population_data", "gdp_per_capita_data") if c in df_year.columns]
+        if drop_cols:
+            df_year.drop(columns=drop_cols, inplace=True)
+
+        df_year["Year"] = int(year)
+        numeric_cols = df_year.select_dtypes(include=[np.number]).columns
+        df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
+        df_year["join_key"] = df_year["join_key"].astype(str).str.strip()
+
+        # Keep rows present in GeoJSON (by join_key) and compute metric
+        map_df = df_year[df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0].copy()
+        map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
+        map_df["_metric_display"] = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+        map_df["_share_cum_fmt"] = (_share_series(cum_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
+        map_df["_share_year_fmt"] = (_share_series(year_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
+        map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+        map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+        map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
+
+        by_key = map_df.set_index("join_key")
+        z_values: list[float] = []
+        custom_values: list[list[str]] = []
+
+        for loc in locations:
+            if loc in by_key.index:
+                row = by_key.loc[loc]
+                raw_val = row["_metric_value"]
+                if pd.notna(raw_val):
+                    try:
+                        numeric_val = float(raw_val)
+                    except (TypeError, ValueError):
+                        numeric_val = math.nan
+                    if math.isfinite(numeric_val):
+                        zval = numeric_val
+                        all_values.append(numeric_val)
+                    else:
+                        zval = None
+                else:
+                    zval = None
+                z_values.append(zval)
+                custom_values.append([
+                    str(row["region"]),
+                    str(year),
+                    str(row["_metric_display"]),
+                    str(row["_share_cum_fmt"]),
+                    str(row["_share_year_fmt"]),
+                    str(row["_percap_cum_fmt"]),
+                    str(row["_percap_year_fmt"]),
+                    str(row["_population_fmt"]),
+                ])
+            else:
+                z_values.append(None)
+                custom_values.append([loc, str(year), "-", "-", "-", "-", "-", "-"])
+
+        z_by_year[str(year)] = z_values
+        custom_by_year[str(year)] = custom_values
+
+        # Build the small summary table (top 10) for this year
+        summary_df = build_region_summary_table(df_year, metric_key, year=int(year))
+        if not table_headers:
+            table_headers = summary_df.columns.tolist()
+        table_rows = summary_df.astype(str).values.tolist()
+        table_by_year[str(year)] = table_rows
+
+        if year == initial_year:
+            initial_table_df = summary_df
+
+    # Color scale bounds (global, so the map doesn't flicker)
+    if config.get("type") == "diverging":
+        max_abs = max((abs(v) for v in all_values), default=1.0)
+        if not np.isfinite(max_abs) or max_abs <= 0:
+            max_abs = 1.0
+        zmin, zmax = -max_abs, max_abs
+    else:
+        if config.get("force_zero_min", False):
+            zmin = 0.0
+        else:
+            zmin = min(all_values) if all_values else 0.0
+            if not np.isfinite(zmin):
+                zmin = 0.0
+        zmax = max(all_values) if all_values else (zmin + 1.0)
+        if not np.isfinite(zmax) or np.isclose(zmin, zmax):
+            zmax = zmin + max(1.0, abs(zmin) * 0.1 + 1.0)
+
+    colorbar = dict(
+        title=dict(text=config.get("colorbar", config["label"]), side="right"),
+        ticksuffix=config.get("ticksuffix"),
+        tickformat=config.get("tickformat"),
+        len=0.7,
+        thickness=16,
+        x=1.05,
+        y=0.5,
+        xpad=12,
+        outlinewidth=0,
+        bgcolor="rgba(0,0,0,0)",
+    )
+
+    share_prefix = "Benefit share" if (cum_share_col and str(cum_share_col).startswith("Benefit")) or (year_share_col and str(year_share_col).startswith("Benefit")) else "Share"
+    hovertemplate = (
+        "<b>%{customdata[0]}</b><br>"
+        "Year: %{customdata[1]}<br>"
+        f"{config['label']}: %{{customdata[2]}}<br>"
+        f"{share_prefix} (cum): %{{customdata[3]}}<br>"
+        f"{share_prefix} (annual): %{{customdata[4]}}<br>"
+        "Per-capita cumulative: %{customdata[5]}<br>"
+        "Per-capita annual: %{customdata[6]}<br>"
+        "Population: %{customdata[7]}<extra></extra>"
+    )
+
+    layout = dict(
+        margin=dict(l=0, r=140, t=60, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=520,
+        title=dict(
+            text=f"{config['label']} — {scenario_label}",
+            x=0.02, y=0.96, xanchor="left", yanchor="top", font=dict(size=16), pad=dict(b=12),
+        ),
+        geo=dict(
+            visible=False,
+            projection=dict(type="mercator", scale=2.0),
+            center=dict(lat=-41.0, lon=173.0),
+            lataxis=dict(range=[-58.0, -24.0]),
+            lonaxis=dict(range=[152.0, 195.0]),
+            showcountries=False,
+            showcoastlines=True,
+            coastlinecolor=coastline_color,
+            coastlinewidth=1.5,
+            showland=True,
+            landcolor=land_color,
+        ),
+    )
+
+    payload = {
+        "title": config["label"],
+        "years": years,
+        "initial_year": int(initial_year),
+        "geojson": geojson,
+        "name_field": name_field,
+        "locations": locations,
+        "z_by_year": z_by_year,
+        "customdata_by_year": custom_by_year,
+        "table_by_year": table_by_year,
+        "table_headers": table_headers,
+        "zmin": float(zmin),
+        "zmax": float(zmax),
+        "colorscale": effective_colorscale,
+        "reversescale": reversescale,
+        "line_color": line_color,
+        "marker_line_width": float(marker_line_width),
+        "colorbar": colorbar,
+        "hovertemplate": hovertemplate,
+        "layout": layout,
+    }
+
+    return payload, (initial_table_df if initial_table_df is not None else pd.DataFrame(columns=table_headers))
+
+def render_region_map_reactive(
+    metrics_df: pd.DataFrame,
+    metric_key: str,
+    *,
+    scenario_label: str,
+    initial_year: int,
+    show_borders: bool,
+    fill_opacity: float,
+    key: Optional[str] = None,
+) -> pd.DataFrame:
+    payload, initial_table = _prepare_region_reactive_payload(
+        metrics_df, metric_key,
+        scenario_label=scenario_label,
+        initial_year=int(initial_year),
+        show_borders=show_borders,
+        fill_opacity=fill_opacity,
+    )
+    def _sanitise_for_json(value):
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        if isinstance(value, dict):
+            return {key: _sanitise_for_json(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [_sanitise_for_json(item) for item in value]
+        return value
+
+    try:
+        payload_json = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        payload_json = json.dumps(_sanitise_for_json(payload), ensure_ascii=False, allow_nan=False)
+    html = _REGION_MAP_REACTIVE_HTML.replace("{DATA_JSON}", payload_json)
+    # Key includes metric to force a rebuild when user switches the dropdown
+    widget_key = key or f"region_map_reactive_{metric_key}"
+    state_key = "_region_map_html_supports_key"
+    allow_key = st.session_state.get(state_key, True)
+    html_kwargs = dict(height=620, scrolling=False)
+    if allow_key:
+        try:
+            components.html(html, key=widget_key, **html_kwargs)
+        except TypeError:
+            # Older Streamlit builds do not accept a widget key for components.html
+            st.session_state[state_key] = False
+            components.html(html, **html_kwargs)
+    else:
+        components.html(html, **html_kwargs)
+    return initial_table
+
+
+
 def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> pd.DataFrame | None:
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
         return None
 
+    # Mode group (Spend share vs Benefit share)
     mode_options = list(REGION_METRIC_GROUPS.keys())
     default_mode = st.session_state.get("region_heatmap_mode", mode_options[0])
     if default_mode not in mode_options:
         default_mode = mode_options[0]
     st.session_state.setdefault("region_heatmap_mode", default_mode)
+
     selected_mode = st.radio(
         "Heatmap focus",
         mode_options,
@@ -4916,56 +5337,53 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         label_visibility="collapsed",
     )
 
+    # Metric dropdown within the chosen group
     metric_options = REGION_METRIC_GROUPS[selected_mode]
     metric_state_key = f"region_metric_key_{selected_mode.replace(' ', '_').lower()}"
     default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
     if default_metric not in metric_options:
         default_metric = metric_options[0]
 
-    default_year = st.session_state.get("region_metric_year", available_years[0])
-    if default_year not in available_years:
-        default_year = available_years[0]
+    col_left, col_right = st.columns([2, 1])
 
-    col_year, col_metric = st.columns([2, 1])
-    with col_year:
-        selected_year = st.slider(
-            "Financial year",
-            min_value=int(available_years[0]),
-            max_value=int(available_years[-1]),
-            value=int(default_year),
-            step=1,
-            key="region_metric_year_slider",
-        )
-    metric_select_key = f"region_metric_select_{selected_mode.replace(' ', '_').lower()}"
-    with col_metric:
+    with col_left:
+        initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
+        if initial_year not in available_years:
+            initial_year = available_years[0]
+        # Just show a label — the *actual* slider lives in the reactive component.
+        st.caption(f"Drag the year slider below the map — updates while dragging (no page rerun). Default FY: {initial_year}")
+
+    with col_right:
         metric_key = st.selectbox(
             "Metric",
             metric_options,
             index=metric_options.index(default_metric),
             format_func=lambda key: REGION_METRIC_CONFIG[key]["label"],
-            key=metric_select_key,
+            key=f"region_metric_select_{selected_mode.replace(' ', '_').lower()}",
         )
 
-    st.session_state["region_metric_year"] = int(selected_year)
     st.session_state[metric_state_key] = metric_key
     st.session_state["region_metric_key"] = metric_key
-    st.session_state["region_metric_show_borders"] = False
-    st.session_state["region_metric_opacity"] = 1.0
 
     config = REGION_METRIC_CONFIG[metric_key]
     st.caption(config.get("description", ""))
-    year_df = metrics_df[metrics_df["Year"] == int(selected_year)].copy()
-    if year_df.empty:
-        st.info(f"No regional spend recorded in {selected_year}.")
-        return None
-    return render_region_map(
-        year_df,
+
+    # Reactive map + table (client-driven)
+    initial_table = render_region_map_reactive(
+        metrics_df,
         metric_key,
         scenario_label=scenario_label,
-        year=int(selected_year),
+        initial_year=initial_year,
         show_borders=False,
         fill_opacity=1.0,
+        key=f"reactive_map_{selected_mode}_{metric_key}",
     )
+
+    # Keep the server-side notion of the "current" year around for exports.
+    st.session_state["region_metric_year"] = int(initial_year)
+
+    return initial_table if initial_table is not None and not initial_table.empty else None
+
 
 
 
@@ -6032,6 +6450,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
