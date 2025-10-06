@@ -118,26 +118,99 @@ OFFICIAL_REGION_ASCII: Dict[str, str] = {
     key: _ascii_region_name(value) for key, value in OFFICIAL_REGION_NAMES.items()
 }
 
+# --- NEW: detect English tails in bilingual/council labels ---
+_ENGLISH_REGION_RE = re.compile(
+    r"([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s'\-]*\bRegion)\b"
+)
+_COUNCIL_RE = re.compile(
+    r"([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s'\-]*)\bRegional Council\b",
+    flags=re.IGNORECASE,
+)
+
 
 def _canonical_region_name(value: Any) -> Optional[str]:
-    """Map arbitrary input to official 'X Region' label if possible."""
-    norm = _normalise_region_label(value)
-    if not norm:
+    """
+    Map arbitrary input to official 'X Region' label if possible.
+
+    Handles:
+      - plain English ('Northland Region')
+      - bilingual ('Te Tai Tokerau / Northland Region')
+      - council form ('Northland Regional Council')
+      - minor punctuation/diacritics differences
+    """
+    if value is None:
         return None
-    canonical = OFFICIAL_REGION_NAMES.get(norm)
-    if canonical:
-        return canonical
-    # Common case: caller forgot the 'Region' suffix
-    if value is not None:
-        fallback_norm = _normalise_region_label(f"{value} Region")
-        if fallback_norm and fallback_norm != norm:
-            return OFFICIAL_REGION_NAMES.get(fallback_norm)
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    # Direct try with our normaliser
+    norm = _normalise_region_label(raw)
+    if norm:
+        hit = OFFICIAL_REGION_NAMES.get(norm)
+        if hit:
+            return hit
+
+    # Common oversight: caller forgot the 'Region' suffix
+    fallback_norm = _normalise_region_label(f"{raw} Region")
+    if fallback_norm and fallback_norm != norm:
+        hit = OFFICIAL_REGION_NAMES.get(fallback_norm)
+        if hit:
+            return hit
+
+    # NEW: bilingual names that contain an English tail ending with 'Region'
+    # e.g. 'Te Tai Tokerau / Northland Region' -> 'Northland Region'
+    m = _ENGLISH_REGION_RE.search(raw)
+    if m:
+        english_tail = m.group(1).strip()
+        hit = OFFICIAL_REGION_NAMES.get(_normalise_region_label(english_tail))
+        if hit:
+            return hit
+
+    # NEW: council form e.g. 'Northland Regional Council' -> 'Northland Region'
+    m2 = _COUNCIL_RE.search(raw)
+    if m2:
+        guess = f"{m2.group(1).strip()} Region"
+        hit = OFFICIAL_REGION_NAMES.get(_normalise_region_label(guess))
+        if hit:
+            return hit
+
     return None
+
 
 
 # -----------------------------
 # GeoJSON helpers
 # -----------------------------
+
+# --- Lightweight coordinate rounding to shrink GeoJSON payload size ---
+
+def _round_coords_inplace(coords: Any, decimals: int) -> Any:
+    if isinstance(coords, (list, tuple)):
+        out = []
+        for item in coords:
+            if isinstance(item, (list, tuple)):
+                out.append(_round_coords_inplace(item, decimals))
+            elif isinstance(item, (int, float)):
+                out.append(round(float(item), decimals))
+            else:
+                out.append(item)
+        return out
+    return coords
+
+def simplify_geojson_precision_inplace(geojson: Dict[str, Any], *, decimals: int = 5) -> None:
+    """
+    Round coordinate precision in-place to reduce payload size for client render.
+    Keeps topology identical for visualization purposes.
+    """
+    if not isinstance(geojson, dict):
+        return
+    for feature in geojson.get("features", []):
+        geom = feature.get("geometry")
+        if isinstance(geom, dict) and "coordinates" in geom:
+            geom["coordinates"] = _round_coords_inplace(geom["coordinates"], decimals)
+
 
 def _resolve_geojson_name_fields(geojson: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """Pick the best available name fields present in the payload."""
@@ -254,17 +327,32 @@ def _geojson_name_lookup(geojson: Dict[str, Any]) -> Dict[str, str]:
         if not canonical_text:
             continue
 
+        # Always index the canonical and its ASCII variant
         ascii_alias = _ascii_region_name(canonical_text)
         lookup.setdefault(_normalise_region_label(canonical_text), canonical_text)
         if ascii_alias:
             lookup.setdefault(_normalise_region_label(ascii_alias), canonical_text)
 
+        # Index all candidate labels (bilingual etc) to the canonical
         for label in candidates:
             norm = _normalise_region_label(label)
             if norm:
                 lookup.setdefault(norm, canonical_text)
 
+        # NEW: also index the plain-English tail '... Region' if present
+        m_tail = _ENGLISH_REGION_RE.search(canonical_text)
+        if m_tail:
+            tail = m_tail.group(1).strip()
+            lookup.setdefault(_normalise_region_label(tail), canonical_text)
+
+        # NEW: and the 'Regional Council' variant as 'X Region'
+        m_council = _COUNCIL_RE.search(canonical_text)
+        if m_council:
+            guess = f"{m_council.group(1).strip()} Region"
+            lookup.setdefault(_normalise_region_label(guess), canonical_text)
+
     return lookup
+
 
 
 def get_geojson_name_field(geojson: Dict[str, Any]) -> str:
@@ -292,6 +380,8 @@ def fetch_region_geojson(
         r.raise_for_status()
         data = r.json()
         _ensure_official_geojson_fields(data)
+        # ↓ New: shrink payload written to disk + sent to browser
+        simplify_geojson_precision_inplace(data, decimals=5)
         return data
 
     geojson: Optional[Dict[str, Any]] = None
@@ -302,14 +392,10 @@ def fetch_region_geojson(
             geojson = json.load(fh)
         if geojson:
             changed = _ensure_official_geojson_fields(geojson)
+            # ↓ New: ensure the cached file also uses simplified precision
+            simplify_geojson_precision_inplace(geojson, decimals=5)
             if not _geojson_has_official_field(geojson):
-                try:
-                    remote = _download()
-                except Exception:
-                    remote = None
-                if remote is not None:
-                    geojson = remote
-                    changed = True
+                ...
             if changed:
                 try:
                     lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
@@ -506,6 +592,81 @@ def _load_benefit_table(sheet_name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _benefit_region_from_raw_result(
+    raw_result: Dict[str, Any],
+    mapping_df: pd.DataFrame,
+    years: List[int],
+    regions: List[str],
+) -> Optional[pd.DataFrame]:
+    benefit_matrix = raw_result.get("benefit_by_project_total")
+    if not isinstance(benefit_matrix, pd.DataFrame) or benefit_matrix.empty:
+        return None
+
+    df = benefit_matrix.copy()
+    df.index = df.index.map(lambda x: str(x).strip())
+    drop_mask = df.index.str.lower().isin({"total", "total benefit"})
+    df = df[~drop_mask]
+    if df.empty:
+        return None
+
+    column_years: Dict[Any, int] = {}
+    for col in df.columns:
+        try:
+            column_years[col] = int(str(col))
+        except (TypeError, ValueError):
+            continue
+    if not column_years:
+        return None
+
+    df = df[list(column_years.keys())]
+    df = df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    df.rename(columns=column_years, inplace=True)
+
+    df = df.reset_index().rename(columns={"index": "Project"})
+    df["project_norm"] = _normalise_project(df["Project"])
+    year_cols = sorted(column_years.values())
+    long = df.melt(id_vars=["project_norm"], value_vars=year_cols, var_name="Year", value_name="Benefit_Year")
+    long["Year"] = pd.to_numeric(long["Year"], errors="coerce").astype("Int64")
+    long = long[long["Year"].notna()].copy()
+    if long.empty:
+        return None
+    long["Year"] = long["Year"].astype(int)
+
+    valid_years = {int(y) for y in years}
+    long = long[long["Year"].isin(valid_years)]
+    if long.empty:
+        return None
+
+    mapping_norm = mapping_df[["project_norm", "region"]].drop_duplicates()
+    benefit_proj = long.merge(mapping_norm, on="project_norm", how="left")
+    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+
+    region_list = list(regions)
+    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
+        region_list.append("Unmapped")
+
+    benefit_region = benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
+    full_index = pd.MultiIndex.from_product([sorted(valid_years), region_list], names=["Year", "region"])
+    benefit_region = (
+        benefit_region
+        .set_index(["Year", "region"])
+        .reindex(full_index, fill_value=0.0)
+        .reset_index()
+        .sort_values(["region", "Year"])
+    )
+
+    total_by_year = benefit_region.groupby("Year")["Benefit_Year"].sum().sort_index().rename("Benefit_National")
+    benefit_region = benefit_region.merge(total_by_year, on="Year", how="left")
+    benefit_region["BenefitShare_Year"] = _safe_divide(
+        benefit_region["Benefit_Year"], benefit_region["Benefit_National"]
+    ).fillna(0.0)
+    benefit_region["Benefit_Cum_Region"] = benefit_region.groupby("region")["Benefit_Year"].cumsum()
+    benefit_region["Benefit_Cum_National"] = benefit_region["Year"].map(total_by_year.cumsum())
+    benefit_region["BenefitShare_Cum"] = _safe_divide(
+        benefit_region["Benefit_Cum_Region"], benefit_region["Benefit_Cum_National"]
+    ).fillna(0.0)
+    return benefit_region
+
 def _extract_total_benefit_map(benefit_df: pd.DataFrame) -> Dict[str, List[float]]:
     if benefit_df is None or benefit_df.empty or "Project" not in benefit_df.columns:
         return {}
@@ -628,6 +789,10 @@ def compute_region_metrics(
     if mapping_df is None or mapping_df.empty:
         raise ValueError("Project-region mapping is empty")
 
+    mapping_df = mapping_df.copy()
+    if "project_norm" not in mapping_df.columns:
+        mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
+
     region_info = _prepare_region_info(mapping_df)
     pop_total = region_info["population"].sum(skipna=True)
     gdp_total = (region_info["gdp_per_capita"] * region_info["population"]).sum(skipna=True)
@@ -746,13 +911,29 @@ def compute_region_metrics(
         "BenefitShare_Year",
         "BenefitShare_Cum",
     ]
-    benefit_frame = _compute_region_benefit_metrics(
-        data,
-        scenario_code,
-        mapping_df,
-        years_present,
-        all_regions,
-    )
+    benefit_frame = None
+    scenario_meta_lookup = getattr(data, "scenario_meta_by_code", {})
+    meta = scenario_meta_lookup.get(scenario_code)
+    raw_results = getattr(data, "raw_results", {})
+    if meta:
+        stem = meta.get("_stem")
+        if stem:
+            raw_result = raw_results.get(stem)
+            if raw_result is not None:
+                benefit_frame = _benefit_region_from_raw_result(
+                    raw_result,
+                    mapping_df,
+                    years_present,
+                    all_regions,
+                )
+    if benefit_frame is None:
+        benefit_frame = _compute_region_benefit_metrics(
+            data,
+            scenario_code,
+            mapping_df,
+            years_present,
+            all_regions,
+        )
     if benefit_frame is not None:
         region_spend = region_spend.merge(
             benefit_frame[["Year", "region"] + benefit_cols],
@@ -800,3 +981,6 @@ def compute_region_metrics(
             "gdp_per_capita",
         ]
     ]
+
+
+
