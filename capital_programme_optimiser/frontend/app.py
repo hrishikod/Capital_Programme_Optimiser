@@ -3371,11 +3371,11 @@ def benefit_bridge_chart(
 
             y=values,
 
-            increasing=dict(marker=dict(color=WATERFALL_GAIN_COLOR)),
+            increasing=dict(marker=dict(color=BRIGHT_PRIMARY_COLOR)),
 
             decreasing=dict(marker=dict(color=WATERFALL_LOSS_COLOR)),
 
-            totals=dict(marker=dict(color=COMPARISON_COLOR)),
+            totals=dict(marker=dict(color=WATERFALL_TOTAL_COLOR)),
 
             connector=dict(line=dict(color="#BBBBBB", width=0.5)),
 
