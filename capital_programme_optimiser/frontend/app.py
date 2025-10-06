@@ -357,18 +357,40 @@ def inject_powerbi_theme() -> None:
                 color: var(--pbi-blue) !important;
                 font-weight: 600;
             }}
-            .region-summary-table div[data-testid='stDataFrame'] * {{
-                font-family: 'Segoe UI', 'Inter', sans-serif !important;
+            .region-summary-table div[data-testid='stDataFrame'] table {{
+                font-family: 'Inter', 'Segoe UI', sans-serif !important;
+                font-size: 0.95rem !important;
+                color: #1f2937 !important;
             }}
             .region-summary-table div[data-testid='stDataFrame'] table thead tr th {{
                 background: #ffffff !important;
                 color: var(--pbi-blue) !important;
+                font-weight: 600 !important;
+                position: sticky !important;
+                top: 0 !important;
+                z-index: 2 !important;
+                box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
             }}
             .region-summary-table div[data-testid='stDataFrame'] table tbody tr td {{
                 background: #ffffff !important;
+                color: #475569 !important;
+                font-weight: 500 !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table tbody tr:nth-child(2n) td {{
+                background: rgba(25, 69, 107, 0.04) !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table tbody tr:hover td {{
+                background: rgba(175, 189, 34, 0.16) !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table tbody td:first-child {{
+                font-weight: 600 !important;
+                color: var(--pbi-blue) !important;
             }}
             div[data-testid='stDataFrame'] table tbody tr:hover td {{
                 background-color: rgba(144, 128, 112, 0.15) !important;
+            }}
+            .region-summary-table div[data-testid='stDataFrame'] table tbody tr:hover td {{
+                background: rgba(175, 189, 34, 0.16) !important;
             }}
             div.stButton > button,
             div.stDownloadButton > button {{
@@ -4858,7 +4880,9 @@ def render_region_map(
     if map_df["_metric_value"].dropna().empty:
         st.info("Selected metric has no values for this year.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
+        st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
         st.dataframe(summary, hide_index=True, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return summary
     map_col, table_col = st.columns([2, 1])
     with map_col:
