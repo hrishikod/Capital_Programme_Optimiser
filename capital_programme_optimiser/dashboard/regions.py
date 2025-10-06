@@ -28,13 +28,8 @@ class RegionGeometrySource:
         "nz_regional_councils/FeatureServer/0/query"
     )
     where: str = "1=1"
-    out_fields: Tuple[str, ...] = (
-        # 2025 schema name fields (primary + ascii)
-        "REGC2025_V1_00_NAME",
-        "REGC2025_V1_00_NAME_ASCII",
-        # Useful but optional:
-        "AREA_SQ_KM",
-    )
+    # Ask for all attributes so legacy/regional name fields (REGC_NAME, etc.) are available.
+    out_fields: Tuple[str, ...] = ("*",)
     spatial_ref: int = 4326
 
 
@@ -275,7 +270,6 @@ def _ensure_official_geojson_fields(geojson: Dict[str, Any]) -> bool:
             changed = True
     return changed
 
-
 def _geojson_has_official_field(geojson: Dict[str, Any]) -> bool:
     if not isinstance(geojson, dict):
         return False
@@ -284,7 +278,6 @@ def _geojson_has_official_field(geojson: Dict[str, Any]) -> bool:
         if not props.get("REGC2025_V1_00_NAME"):
             return False
     return True
-
 
 def _geojson_name_lookup(geojson: Dict[str, Any]) -> Dict[str, str]:
     """Build a normalised name → canonical name lookup from the GeoJSON."""
@@ -395,7 +388,13 @@ def fetch_region_geojson(
             # ↓ New: ensure the cached file also uses simplified precision
             simplify_geojson_precision_inplace(geojson, decimals=5)
             if not _geojson_has_official_field(geojson):
-                ...
+                geojson = _download()
+                if lp is not None and geojson:
+                    try:
+                        lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
+                return geojson
             if changed:
                 try:
                     lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")

@@ -2649,6 +2649,83 @@ def cash_chart(
 
     return fig
 
+
+def cumulative_revenue_vs_cost_chart(
+    df: pd.DataFrame,
+    selection: ScenarioSelection,
+    *,
+    title: str,
+    bar_color: str = BRIGHT_PRIMARY_COLOR,
+    line_color: str = COMPARISON_COLOR,
+) -> go.Figure:
+    """
+    Show cumulative cost (stack-like bar per FY) vs cumulative revenue (improvements) as a line.
+    - Uses 'CumSpend' for cumulative costs.
+    - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
+    - Axis tick labels automatically switch between $m / $b.
+    """
+    fig = go.Figure()
+
+    # --- Series (convert to nominal $) ---
+    cum_cost = pd.to_numeric(df.get("CumSpend", 0.0), errors="coerce").fillna(0.0) * 1_000_000.0
+
+    # Re-use existing helper to pick PV vs nominal series from confidence setting.
+    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
+    cum_revenue = pd.to_numeric(revenue_series, errors="coerce").fillna(0.0) * 1_000_000.0
+    is_real = "PV" in (revenue_label or "")
+
+    # --- Axis ticks ($m / $b) ---
+    sample_values = np.concatenate([cum_cost.to_numpy(), cum_revenue.to_numpy()]) if len(df) else np.array([0.0])
+    tick_vals, tick_text, unit_label = compute_cash_axis_ticks(sample_values)
+
+    # --- Traces ---
+    # Bars = cumulative cost
+    fig.add_trace(
+        go.Bar(
+            x=df["Year"],
+            y=cum_cost,
+            name="Cumulative cost",
+            marker_color=bar_color,
+            opacity=BAR_OPACITY,
+            customdata=[format_large_amount(v) for v in cum_cost],
+            hovertemplate="<b>Cumulative cost</b><br>FY %{x}: %{customdata}<extra></extra>",
+        )
+    )
+
+    # Line = cumulative revenue from improvements
+    rev_display_name = "Cumulative revenue (improvements, real $)" if is_real else "Cumulative revenue (improvements)"
+    fig.add_trace(
+        go.Scatter(
+            x=df["Year"],
+            y=cum_revenue,
+            name=rev_display_name,
+            mode="lines",
+            line=dict(color=line_color, width=3.0),
+            customdata=[format_large_amount(v) for v in cum_revenue],
+            hovertemplate=f"<b>{rev_display_name}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+        )
+    )
+
+    fig.add_hline(y=0, line=dict(color="#888888", dash="dot", width=1))
+
+    # --- Layout / styling ---
+    yaxis_title_suffix = f"{unit_label}, real" if is_real else unit_label
+    fig.update_layout(
+        title=title,
+        barmode="overlay",  # bars overlay; we're not stacking categories, just showing cumulative height
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        xaxis_title=None,
+        yaxis_title=f"$ ({yaxis_title_suffix})",
+        template=plotly_template(),
+        yaxis=dict(tickmode="array", tickvals=tick_vals, ticktext=tick_text, rangemode="tozero"),
+        hoverlabel=dict(namelength=-1),
+        margin=dict(l=40, r=40, t=60, b=60),
+    )
+
+    return fig
+
+
+
 def benefit_chart(
 
     opt_df: Optional[pd.DataFrame],
@@ -5125,6 +5202,26 @@ def _prepare_region_reactive_payload(
         if text:
             locations.append(text)
 
+    if not locations:
+        # Clear cached geometry and retry once to self-heal after schema changes.
+        fetch_region_geojson.cache_clear()
+        geojson = fetch_region_geojson()
+        name_field = get_geojson_name_field(geojson)
+        locations = []
+        for feature in geojson.get("features", []):
+            props = feature.get("properties") or {}
+            value = props.get(name_field)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                locations.append(text)
+
+    if not locations:
+        raise ValueError(
+            "GeoJSON has no joinable name field. Check ArcGIS out_fields or normalisation."
+        )
+
     # Region baselines (ensures consistent population/gdp fields)
     region_mapping = load_region_mapping()
     catalog, _, _ = region_baselines(region_mapping)
@@ -5869,7 +5966,10 @@ def render_cash_flow_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
+
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
+
+    # ---- Row 1: Original cash flow charts (unchanged) ----
     cash_cols = st.columns(2)
     with cash_cols[0]:
         if opt_series is not None:
@@ -5891,6 +5991,7 @@ def render_cash_flow_tab(
             st.warning("Cash flow data unavailable for the optimised selection.")
         else:
             st.info("Select an optimised scenario to view the cash flow profile.")
+
     with cash_cols[1]:
         if cmp_series is not None:
             st.plotly_chart(
@@ -5911,7 +6012,43 @@ def render_cash_flow_tab(
             st.warning("Cash flow data unavailable for the comparison selection.")
         else:
             st.info("Select a comparison scenario to view the cash flow profile.")
+
+    # ---- Row 2: NEW charts — cumulative revenue vs cumulative cost ----
+    st.markdown('<div class="pbi-section-title">Cumulative revenue vs cumulative cost</div>', unsafe_allow_html=True)
+    cum_cols = st.columns(2)
+
+    with cum_cols[0]:
+        if opt_series is not None:
+            st.plotly_chart(
+                cumulative_revenue_vs_cost_chart(
+                    opt_series,
+                    opt_selection,
+                    title="Cumulative revenue vs cumulative cost — optimised",
+                ),
+                use_container_width=True,
+            )
+        elif opt_selection.code:
+            st.warning("Cumulative series unavailable for the optimised selection.")
+        else:
+            st.info("Select an optimised scenario to view the cumulative profile.")
+
+    with cum_cols[1]:
+        if cmp_series is not None:
+            st.plotly_chart(
+                cumulative_revenue_vs_cost_chart(
+                    cmp_series,
+                    comp_selection,
+                    title="Cumulative revenue vs cumulative cost — comparison",
+                ),
+                use_container_width=True,
+            )
+        elif comp_selection.code:
+            st.warning("Cumulative series unavailable for the comparison selection.")
+        else:
+            st.info("Select a comparison scenario to view the cumulative profile.")
+
     return export_tables
+
 
 
 
