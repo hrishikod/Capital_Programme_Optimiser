@@ -101,6 +101,10 @@ PRIMARY_COLOR = POWERBI_BLUE
 
 COMPARISON_COLOR = POWERBI_GREEN
 
+WATERFALL_GAIN_COLOR = POWERBI_GREEN
+WATERFALL_LOSS_COLOR = "#CA4142"
+WATERFALL_TOTAL_COLOR = "#4C4C4C"
+
 BAR_OPACITY = 0.75
 
 GANTT_COLOR = POWERBI_BLUE
@@ -1642,6 +1646,8 @@ def available_buffer_levels(
 
     mode: str,
 
+    envelope: Optional[int] = None,
+
     prefer_comparison: Optional[bool] = None,
 
     scenarios_df: Optional[pd.DataFrame] = None,
@@ -1669,6 +1675,14 @@ def available_buffer_levels(
     if prefer_comparison is not None and "IsComp" in df.columns:
 
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
+
+    if envelope is not None and "Envelope" in df.columns:
+
+        env_series = pd.to_numeric(df["Envelope"], errors="coerce")
+
+        env_match = np.isclose(env_series.to_numpy(), float(envelope), atol=1e-6, equal_nan=False)
+
+        mask = mask & pd.Series(env_match, index=df.index)
 
     subset = df.loc[mask]
 
@@ -1879,19 +1893,27 @@ def scenario_selector(
 
     def _collect_values(fetcher, allow_none_pref: bool = True):
 
-        prefs = [prefer_comparison]
+        prefs: List[Optional[bool]] = []
 
-        if allow_none_pref:
+        if prefer_comparison is not None:
 
-            prefs.append(None)
+            prefs.append(prefer_comparison)
 
-        for pref in prefs:
+            prefs.append(not prefer_comparison)
 
-            for src in sources:
+        if allow_none_pref or not prefs:
 
-                if src.empty:
+            if None not in prefs:
 
-                    continue
+                prefs.append(None)
+
+        for src in sources:
+
+            if src.empty:
+
+                continue
+
+            for pref in prefs:
 
                 values = fetcher(pref, src)
 
@@ -1971,6 +1993,8 @@ def scenario_selector(
 
                 mode=mode_key,
 
+                envelope=envelope,
+
                 prefer_comparison=pref,
 
                 scenarios_df=src,
@@ -2022,6 +2046,8 @@ def scenario_selector(
                 horizon=int(benefit_horizon),
 
                 mode=mode_key,
+
+                envelope=envelope,
 
                 prefer_comparison=pref,
 
@@ -3112,11 +3138,11 @@ def benefit_waterfall_chart(
 
             y=values,
 
-            increasing={"marker": {"color": PRIMARY_COLOR}},
+            increasing={"marker": {"color": WATERFALL_GAIN_COLOR}},
 
-            decreasing={"marker": {"color": COMPARISON_COLOR}},
+            decreasing={"marker": {"color": WATERFALL_LOSS_COLOR}},
 
-            totals={"marker": {"color": "#4C4C4C"}},
+            totals={"marker": {"color": WATERFALL_TOTAL_COLOR}},
 
             connector={"line": {"color": "#BBBBBB", "width": 0.5}},
 
@@ -3236,9 +3262,9 @@ def benefit_bridge_chart(
 
             y=values,
 
-            increasing=dict(marker=dict(color=PRIMARY_COLOR)),
+            increasing=dict(marker=dict(color=WATERFALL_GAIN_COLOR)),
 
-            decreasing=dict(marker=dict(color=COMPARISON_COLOR)),
+            decreasing=dict(marker=dict(color=WATERFALL_LOSS_COLOR)),
 
             totals=dict(marker=dict(color=COMPARISON_COLOR)),
 
