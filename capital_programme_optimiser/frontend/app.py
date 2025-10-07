@@ -72,6 +72,7 @@ from capital_programme_optimiser.dashboard.regions import (
     get_geojson_name_field,
     load_region_mapping,
     region_baselines,
+    _canonical_join_key,
 )
 
 from capital_programme_optimiser.dashboard.data import (
@@ -2754,7 +2755,7 @@ def benefit_chart(
 
                 mode="lines",
 
-                line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.2),
+                line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=3.2),
 
                 opacity=0.85,
 
@@ -3462,7 +3463,7 @@ def efficiency_chart(
 
                 marker_color=BRIGHT_PRIMARY_COLOR,
 
-                opacity=0.55,
+                opacity=1.0,
 
                 customdata=np.asarray(opt_df["CumSpend"], dtype=float) / 1000.0,
 
@@ -3512,7 +3513,7 @@ def efficiency_chart(
 
                 fill="tonexty",
 
-                fillcolor=rgba_from_hex(CUMULATIVE_OPT_LINE_COLOR, 0.22),
+                fillcolor=rgba_from_hex(CUMULATIVE_CMP_LINE_COLOR, 0.22),
 
             )
 
@@ -3528,7 +3529,7 @@ def efficiency_chart(
 
                 mode="lines",
 
-                line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.2),
+                line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=3.2),
 
                 customdata=np.asarray(series_opt, dtype=float) / 1000.0,
 
@@ -4942,7 +4943,7 @@ def render_region_map(
         value = props.get(name_field)
         if value is None:
             continue
-        text_value = str(value).strip()
+        text_value = _canonical_join_key(value)
         if text_value:
             valid_regions.add(text_value)
     df_year = df_year.copy()
@@ -4963,9 +4964,9 @@ def render_region_map(
     df_year["Year"] = df_year["Year"].fillna(int(year))
     numeric_cols = df_year.select_dtypes(include=[np.number]).columns
     df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
-    df_year["join_key"] = df_year["join_key"].astype(str).str.strip()
+    df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
+    df_year["region"] = df_year["region"].map(_canonical_join_key)
     map_df = df_year[df_year["join_key"].isin(valid_regions) & df_year["join_key"].str.len() > 0].copy()
-    map_df["join_key"] = map_df["join_key"].astype(str).str.strip()
     if map_df.empty or map_df[metric_key].dropna().empty:
         st.info("No mapped regional spend for the selected inputs.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
@@ -5339,7 +5340,7 @@ def _prepare_region_reactive_payload(
         value = props.get(name_field)
         if value is None:
             continue
-        text = str(value).strip()
+        text = _canonical_join_key(value)
         if text:
             locations.append(text)
 
@@ -5418,7 +5419,8 @@ def _prepare_region_reactive_payload(
         df_year["Year"] = int(year)
         numeric_cols = df_year.select_dtypes(include=[np.number]).columns
         df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
-        df_year["join_key"] = df_year["join_key"].astype(str).str.strip()
+        df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
+        df_year["region"] = df_year["region"].map(_canonical_join_key)
 
         # Keep rows present in GeoJSON (by join_key) and compute metric
         map_df = df_year[df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0].copy()
@@ -6245,12 +6247,6 @@ def render_gantt_tab(
             value=True,
             key="gantt_outline",
         )
-        # Fallback manual toggle (works on all Streamlit versions)
-        if st.button("Swap outline colour", key="gantt_swap_outline"):
-            current = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
-            st.session_state[GANTT_OUTLINE_VARIANT_KEY] = "alt" if current == "base" else "base"
-            st.rerun()
-
     primary_selection = token_to_selection[gantt_token]
     primary_label = token_to_label[gantt_token]
     opposite_token = "Comparison" if gantt_token == "Optimised" else "Optimised"
@@ -6265,7 +6261,7 @@ def render_gantt_tab(
     if st.session_state.get("_gantt_hotkey_supported", False):
         st.caption("Press **Z** to toggle the outline colour between comparison and baseline styling.")
     else:
-        st.caption("Hotkey not available in this Streamlit version - use **Swap outline colour**.")
+        st.caption("Outline uses the comparison styling by default.")
 
     gantt_fig = spend_gantt_chart(
         data,
@@ -6792,8 +6788,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
 

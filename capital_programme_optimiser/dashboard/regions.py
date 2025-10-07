@@ -175,6 +175,16 @@ def _canonical_region_name(value: Any) -> Optional[str]:
 
 
 
+
+
+def _canonical_join_key(value: Any) -> str:
+    canonical = _canonical_region_name(value)
+    if canonical:
+        return canonical
+    text = str(value).strip() if value is not None else ""
+    return text
+
+
 # -----------------------------
 # GeoJSON helpers
 # -----------------------------
@@ -491,6 +501,8 @@ def _harmonise_join_keys(mapping: pd.DataFrame) -> pd.DataFrame:
         return mapping
 
     aligned = _standardise_mapping_columns(mapping)
+    aligned["join_key"] = aligned["join_key"].map(_canonical_join_key)
+    aligned["region"] = aligned["region"].map(_canonical_join_key)
     geojson = fetch_region_geojson()
     lookup = _geojson_name_lookup(geojson) if geojson else {}
 
@@ -980,6 +992,3 @@ def compute_region_metrics(
             "gdp_per_capita",
         ]
     ]
-
-
-
