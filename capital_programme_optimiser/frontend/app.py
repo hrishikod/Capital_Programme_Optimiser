@@ -904,6 +904,25 @@ def _hoverlabel_style() -> dict:
         "namelength": 0,
     }
 
+
+DEFAULT_LEGEND_BOTTOM: Dict[str, Any] = {
+    "orientation": "h",
+    "yanchor": "top",
+    "y": -0.18,
+    "xanchor": "center",
+    "x": 0.5,
+    "title": None,
+}
+
+
+def legend_bottom(**overrides: Any) -> Dict[str, Any]:
+    """Return a legend config anchored below the chart area."""
+    legend = dict(DEFAULT_LEGEND_BOTTOM)
+    if overrides:
+        legend.update(overrides)
+    return legend
+
+
 def _normalise_project_key(name: str) -> str:
     """Return a canonical project key for matching across scenarios."""
     if name is None:
@@ -2803,7 +2822,7 @@ def cash_chart(
 
         barmode="overlay",
 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=legend_bottom(),
 
         xaxis_title=None,
 
@@ -2883,7 +2902,7 @@ def cumulative_revenue_vs_cost_chart(
     fig.update_layout(
         title=title,
         barmode="overlay",  # bars overlay; we're not stacking categories, just showing cumulative height
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=legend_bottom(),
         xaxis_title=None,
         yaxis_title=f"$ ({yaxis_title_suffix})",
         template=plotly_template(),
@@ -2980,7 +2999,7 @@ def benefit_chart(
 
         ),
 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=legend_bottom(),
 
         template=plotly_template(),
 
@@ -3099,7 +3118,7 @@ def benefit_delta_chart(
 
         yaxis_title=yaxis_text,
 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=legend_bottom(),
 
         template=plotly_template(),
 
@@ -3307,19 +3326,11 @@ def benefit_radar_chart(
             ),
         ),
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.08,
-            xanchor="left",
-            x=0.0,
-            font=dict(color=text_color, size=11),
-            bgcolor="rgba(0, 0, 0, 0)",
-        ),
+        legend=legend_bottom(font=dict(color=text_color, size=11), bgcolor="rgba(0, 0, 0, 0)"),
         template=None,
         paper_bgcolor=figure_background,
         plot_bgcolor="rgba(0, 0, 0, 0)",
-        margin=dict(l=40, r=40, t=80, b=50),
+        margin=dict(l=40, r=40, t=80, b=90),
         font=dict(color=text_color, size=12),
     )
 
@@ -3722,7 +3733,7 @@ def efficiency_chart(
 
         hoverlabel=dict(namelength=-1),
 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+        legend=legend_bottom(),
 
     )
 
@@ -3842,14 +3853,7 @@ def benefit_dimension_chart(
 
         yaxis_title=yaxis_label,
 
-        legend=dict(
-            orientation='h',
-            yanchor='top',
-            y=1.12,
-            xanchor='center',
-            x=0.5,
-            title=None,
-        ),
+        legend=legend_bottom(),
 
         margin=dict(l=40, r=40, t=80, b=60),
 
@@ -4030,14 +4034,7 @@ def benefit_dimension_overlay_chart(
 
         yaxis_title=yaxis_label,
 
-        legend=dict(
-            orientation='h',
-            yanchor='top',
-            y=1.12,
-            xanchor='center',
-            x=0.5,
-            title=None,
-        ),
+        legend=legend_bottom(),
 
         margin=dict(l=40, r=40, t=80, b=60),
 
