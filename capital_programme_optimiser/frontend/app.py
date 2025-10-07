@@ -4747,6 +4747,19 @@ REGION_METRIC_DEFAULT = {
     "Benefit share": "BenefitShare_Cum",
 }
 
+_REGION_BOUNDS_EXCLUDE = {"area outside region"}
+
+
+def _normalise_bound_key(value: Any) -> str:
+    return str(value).strip().lower()
+
+
+def _locations_for_bounds(locations: Iterable[str]) -> list[str]:
+    ordered = [str(loc).strip() for loc in locations if str(loc).strip()]
+    filtered = [loc for loc in ordered if _normalise_bound_key(loc) not in _REGION_BOUNDS_EXCLUDE]
+    return filtered if filtered else ordered
+
+
 
 def _scaled_region_metric(df: pd.DataFrame, metric_key: str) -> pd.Series:
     if metric_key not in df.columns:
@@ -4820,6 +4833,13 @@ def build_region_map_figure(
     map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
     map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
     map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
+
+    active_locations = [
+        str(loc)
+        for loc, value in zip(map_df["join_key"], map_df["_metric_value"])
+        if value is not None and np.isfinite(value)
+    ]
+    focus_locations = _locations_for_bounds(active_locations or map_df["join_key"].tolist())
 
     share_prefix = "Benefit share" if (cum_share_col and cum_share_col.startswith("Benefit")) or (year_share_col and year_share_col.startswith("Benefit")) else "Share"
 
@@ -4985,11 +5005,21 @@ def render_region_map(
         return summary
 
 def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) -> pd.DataFrame:
+    """
+    Build the top-10 region summary table backing the small map-side table and the
+    server-rendered dataframe. Keeps labels consistent with the rest of the app
+    and pre-formats numeric values. Styling (font/colours) is done by CSS.
+    """
     config = REGION_METRIC_CONFIG[metric_key]
+
+    # Working copy
     table = df.copy()
+
+    # Metric value + display text
     table["_metric_value"] = _scaled_region_metric(table, metric_key)
     table["_metric_display"] = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
 
+    # Which columns represent "share" so we can show both cumulative + annual
     share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
     cum_share_col = share_cfg.get("cum")
     year_share_col = share_cfg.get("year")
@@ -4999,23 +5029,36 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
             return pd.to_numeric(table[column], errors="coerce").fillna(0.0)
         return pd.Series(0.0, index=table.index)
 
+    # Pre-formatted share and per-cap columns (so they can be shown in a plain HTML table)
     table["_share_cum_fmt"] = (_share_series(cum_share_col) * 100).map(lambda v: _format_percentage(v, 1))
     table["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
-    table["_percap_cum_fmt"] = (pd.to_numeric(table.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
-    table["_percap_year_fmt"] = (pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+    table["_percap_cum_fmt"] = (
+        pd.to_numeric(table.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
+    table["_percap_year_fmt"] = (
+        pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
 
+    # Optional spend / benefit columns (shown when the metric group implies them)
     if "Spend_M" in table.columns:
         table["_spend_year_fmt"] = pd.to_numeric(table["Spend_M"], errors="coerce").fillna(0.0).map(format_currency)
     if "Spend_Cum_Region" in table.columns:
-        table["_spend_cum_fmt"] = pd.to_numeric(table["Spend_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
+        table["_spend_cum_fmt"] = (
+            pd.to_numeric(table["Spend_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
+        )
 
     show_benefit_columns = metric_key in REGION_METRIC_GROUPS.get("Benefit share", [])
     if show_benefit_columns:
         if "Benefit_Year" in table.columns:
-            table["_benefit_year_fmt"] = pd.to_numeric(table["Benefit_Year"], errors="coerce").fillna(0.0).map(format_currency)
+            table["_benefit_year_fmt"] = (
+                pd.to_numeric(table["Benefit_Year"], errors="coerce").fillna(0.0).map(format_currency)
+            )
         if "Benefit_Cum_Region" in table.columns:
-            table["_benefit_cum_fmt"] = pd.to_numeric(table["Benefit_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
+            table["_benefit_cum_fmt"] = (
+                pd.to_numeric(table["Benefit_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
+            )
 
+    # Sorting behaviour per metric
     sort_mode = config.get("sort", "desc")
     if sort_mode == "asc":
         table = table.sort_values("_metric_value", ascending=True)
@@ -5024,28 +5067,25 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     else:
         table = table.sort_values("_metric_value", ascending=False)
 
-    share_prefix = "Benefit share" if (cum_share_col and cum_share_col.startswith("Benefit")) or (year_share_col and year_share_col.startswith("Benefit")) else "Share"
+    # Column labels
+    share_prefix_is_benefit = (
+        (cum_share_col and str(cum_share_col).startswith("Benefit"))
+        or (year_share_col and str(year_share_col).startswith("Benefit"))
+    )
+    share_prefix = "Benefit share" if share_prefix_is_benefit else "Share"
 
     metric_label = config.get("table_label", config["label"])
-
-    share_labels = {
-        "_share_cum_fmt": "Share vs national (cum)",
-        "_share_year_fmt": "Share vs national (annual)",
-    }
-    if share_prefix == "Benefit share":
-        share_labels = {
-            "_share_cum_fmt": "Benefit share vs national (cum)",
-            "_share_year_fmt": "Benefit share vs national (annual)",
-        }
-
-    if metric_label in share_labels.values():
+    # Avoid confusing duplication if the metric *is* a share column already
+    if metric_label in {"Share vs national (cum)", "Share vs national (annual)",
+                        "Benefit share (cum)", "Benefit share (annual)"}:
         metric_label = f"{metric_label} value"
 
     columns = {
         "region": "Region",
         "_metric_display": metric_label,
+        "_share_cum_fmt": f"{share_prefix} vs national (cum)",
+        "_share_year_fmt": f"{share_prefix} vs national (annual)",
     }
-    columns.update(share_labels)
 
     fy_label = f"FY {int(year)}"
     if "_spend_year_fmt" in table.columns:
@@ -5056,34 +5096,114 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
         columns["_benefit_year_fmt"] = f"Benefit in {fy_label}"
     if show_benefit_columns and "_benefit_cum_fmt" in table.columns:
         columns["_benefit_cum_fmt"] = f"Cumulative benefit to {fy_label}"
-
     if "PerCap_Cum" in df.columns:
         columns["_percap_cum_fmt"] = "Per-cap cum"
     if "PerCap_Year" in df.columns:
         columns["_percap_year_fmt"] = "Per-cap annual"
 
-    present_keys = [col for col in columns if col in table.columns]
-    table = table[present_keys]
-    columns = {key: value for key, value in columns.items() if key in table.columns}
+    # Present only columns that actually exist
+    present_keys = [key for key in columns if key in table.columns]
+    result = table[present_keys].rename(columns=columns).reset_index(drop=True)
 
-    formatted = table.rename(columns=columns)
-    formatted.reset_index(drop=True, inplace=True)
-    return formatted.head(10)
+    # Top-10 is enough for the map-side table; the full table is available via export
+    return result.head(10)
+
 
 
 _REGION_MAP_REACTIVE_HTML = """
-<div id="reactive-region-map" style="display:flex; gap:14px; align-items:stretch;">
-  <div id="map" style="flex: 2 1 0%; min-height:520px;"></div>
-  <div id="side" style="flex: 1 1 0%; min-width:280px;">
-    <div id="year_label" style="font-weight:600; margin:0 0 8px 0;"></div>
-    <div id="table" style="height: 480px; overflow:auto; border:1px solid rgba(148,163,184,0.35); border-radius:12px;"></div>
+<style>
+  :root{
+    /* Inline the same palette the app uses so the iframe matches the theme */
+    --pbi-blue: #19456B;
+    --pbi-green: #AFBD22;
+    --pbi-tertiary: #908070;
+    --row-alt: rgba(25,69,107,0.04);
+    --row-hover: rgba(175,189,34,0.16);
+    --border: rgba(148,163,184,0.35);
+    --header-bg: #ffffff;
+    --header-shadow: 0 2px 4px rgba(15,23,42,0.08);
+    --text-1: #0F172A;
+    --text-2: #475569;
+  }
+  /* Make sure the entire iframe uses the same font family as the dashboard */
+  html, body, #reactive-region-map, #map, #side, #table {
+    font-family: 'Segoe UI','Inter',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif !important;
+    color: var(--text-1);
+  }
+  #reactive-region-map { display:flex; gap:14px; align-items:stretch; }
+  #map { flex: 2 1 0%; min-height:520px; }
+  #side { flex: 1 1 0%; min-width:280px; }
+  #year_label {
+    font-weight: 600; margin: 0 0 8px 0; color: var(--pbi-blue);
+  }
+
+  /* Mini table container beside the map */
+  .mini-table {
+    height: 480px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 10px 24px rgba(25,69,107,0.08);
+    background: #fff;
+  }
+  .mini-table table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .mini-table thead th {
+    position: sticky; top: 0; z-index: 2;
+    text-align: left;
+    padding: 8px 10px;
+    background: var(--header-bg);
+    color: var(--pbi-blue);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--header-shadow);
+  }
+  .mini-table tbody td {
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+    background: #ffffff;
+    color: var(--text-2);
+  }
+  .mini-table tbody tr:nth-child(even) td { background: var(--row-alt); }
+  .mini-table tbody tr:hover td { background: var(--row-hover); }
+
+  /* First column (Region) stronger */
+  .mini-table tbody td:first-child {
+    font-weight: 600; color: var(--pbi-blue);
+  }
+  /* Numeric alignment + tabular numerals for tidy columns */
+  .mini-table td.cell--num, .mini-table th.cell--num {
+    text-align: right;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  /* Range slider to match app look a bit better */
+  input[type="range"]{
+    width:100%;
+    accent-color: var(--pbi-blue);
+  }
+</style>
+
+<div id="reactive-region-map">
+  <div id="map"></div>
+  <div id="side">
+    <div id="year_label"></div>
+    <div id="table" class="mini-table" role="region" aria-label="Regional summary table"></div>
   </div>
 </div>
+
 <div style="margin-top:8px;">
-  <input id="year_slider" type="range" min="0" max="0" value="0" step="1" style="width:100%;">
+  <input id="year_slider" type="range" min="0" max="0" value="0" step="1" aria-label="Financial year slider">
 </div>
+
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script id="payload" type="application/json">{DATA_JSON}</script>
+
 <script>
 (function(){
   const payload = JSON.parse(document.getElementById('payload').textContent);
@@ -5098,27 +5218,47 @@ _REGION_MAP_REACTIVE_HTML = """
   slider.max = String(maxY);
   slider.value = String(payload.initial_year);
 
+  // Escape HTML to avoid accidental injection in table cells
+  function esc(s){
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;');
+  }
+
+  // Heuristics to detect numeric-like columns/cells (percentages, $m/$b, raw numbers)
+  const headerNumRegex = /(share|percent|per[- ]?cap|spend|benefit|\$|annual|cum|pp|\(%\))/i;
+  const cellNumRegex = /^\\s*(?:\\$?\\s?-?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?(?:\\s?[mbMB])?|\\$?-?\\d+(?:\\.\\d+)?\\s?(?:m|b)|-?\\d+(?:\\.\\d+)?\\s?%|\\$\\s?\\d[\\d,]*(?:\\.\\d+)?)\\s*$/;
+
   function renderTable(year){
     const rows = payload.table_by_year[String(year)] || [];
     const headers = payload.table_headers || [];
-    let html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
-    html += '<thead><tr>';
-    for (const h of headers){
-      html += '<th style="position:sticky; top:0; background:rgba(148,163,184,0.12); text-align:left; padding:6px 8px; font-weight:600;">' + h + '</th>';
-    }
+
+    // Decide which columns to right-align
+    const numericCol = headers.map(h => headerNumRegex.test(String(h)));
+
+    let html = '<table><thead><tr>';
+    headers.forEach((h, idx) => {
+      html += '<th class="' + (numericCol[idx] ? 'cell--num' : '') + '">' + esc(h) + '</th>';
+    });
     html += '</tr></thead><tbody>';
+
     for (const r of rows){
       html += '<tr>';
-      for (const c of r){
-        html += '<td style="padding:6px 8px; border-top:1px solid rgba(148,163,184,0.25);">' + c + '</td>';
+      for (let cIdx = 0; cIdx < r.length; cIdx++){
+        const val = r[cIdx];
+        const isNum = numericCol[cIdx] || cellNumRegex.test(String(val));
+        html += '<td class="' + (isNum ? 'cell--num' : '') + '">' + esc(val) + '</td>';
       }
       html += '</tr>';
     }
     html += '</tbody></table>';
+
     tableDiv.innerHTML = html;
     yearLabel.textContent = 'FY ' + year + ' — ' + payload.title;
   }
 
+  // ---- Plotly map ----
   const trace = {
     type: 'choropleth',
     geojson: payload.geojson,
@@ -5129,7 +5269,7 @@ _REGION_MAP_REACTIVE_HTML = """
     zmax: payload.zmax,
     colorscale: payload.colorscale,
     reversescale: payload.reversescale,
-    marker: {line: {color: payload.line_color, width: payload.marker_line_width}},
+    marker: { line: { color: payload.line_color, width: payload.marker_line_width } },
     colorbar: payload.colorbar,
     customdata: payload.customdata_by_year[String(payload.initial_year)],
     hovertemplate: payload.hovertemplate
@@ -5141,6 +5281,7 @@ _REGION_MAP_REACTIVE_HTML = """
     renderTable(payload.initial_year);
   });
 
+  // Smooth slider updates with RAF throttling
   let raf = null;
   let lastApplied = payload.initial_year;
 
@@ -5165,10 +5306,10 @@ _REGION_MAP_REACTIVE_HTML = """
 
   slider.addEventListener('input', onInput);
   slider.addEventListener('change', function(){ apply(parseInt(slider.value, 10)); });
-
 })();
 </script>
 """
+
 
 
 def _prepare_region_reactive_payload(
@@ -6651,6 +6792,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
