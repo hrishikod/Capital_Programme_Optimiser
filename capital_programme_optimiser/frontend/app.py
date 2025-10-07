@@ -127,11 +127,62 @@ CAPACITY_RED = POWERBI_BLUE
 CAPACITY_ZERO = POWERBI_TERTIARY
 
 
-# ---- Market capacity heatmap palette (R–Y–O) ----
+# --- Market capacity helpers -------------------------------------------------
+
+SHOW_CAPACITY_COLORBAR = False
+
+def _nice_half_step(value: float, *, min_top: float = 3.25) -> float:
+    """Round up to the nearest 0.5 above the provided value and minimum ceiling."""
+    top = max(float(value), float(min_top))
+    return 0.5 * math.ceil(top / 0.5)
+
+def _capacity_gradient_colorscale(scale_top_b: float) -> list[list[float | str]]:
+    """Smooth gradient anchored on key policy thresholds (0B, 2B, ~2.6B, 3B)."""
+    def pos(billions: float) -> float:
+        return float(np.clip(billions / max(scale_top_b, 1e-6), 0.0, 1.0))
+
+    p0 = 0.0
+    p2 = pos(2.0)
+    p26 = pos(2.6)
+    p3 = pos(3.0)
+    p1 = 1.0
+
+    eps = 1e-6
+    p26 = max(p26, min(p2 + 0.02, p1 - eps))
+    p3 = max(p3, min(p26 + 0.02, p1 - eps))
+
+    return [
+        [p0, CAPACITY_HEAT_ZERO],
+        [p2, CAPACITY_HEAT_YELLOW],
+        [p26, CAPACITY_HEAT_ORANGE],
+        [p3, CAPACITY_HEAT_RED],
+        [p1, CAPACITY_HEAT_RED],
+    ]
+
+def _capacity_step_colorscale() -> list[list[float | str]]:
+    """Discrete banded palette (grey, yellow, orange, red)."""
+    step_eps = 1e-6
+    return [
+        [0.00, CAPACITY_HEAT_ZERO],
+        [1.0 / 3.0 - step_eps, CAPACITY_HEAT_ZERO],
+        [1.0 / 3.0, CAPACITY_HEAT_YELLOW],
+        [2.0 / 3.0 - step_eps, CAPACITY_HEAT_YELLOW],
+        [2.0 / 3.0, CAPACITY_HEAT_ORANGE],
+        [1.0 - step_eps, CAPACITY_HEAT_ORANGE],
+        [1.0, CAPACITY_HEAT_RED],
+    ]
+
+def _format_hover_spend(billions: float) -> tuple[str, str]:
+    """Return (billions text, millions text) for hover readouts."""
+    if not np.isfinite(billions):
+        return "-", "-"
+    return f"{billions:,.1f} B", f"{billions * 1000.0:,.0f} m"
+
+# ---- Market capacity heatmap palette (R-Y-O) ----
 # Grey is used only for "no spend recorded".
 CAPACITY_HEAT_ZERO   = "#D1D5DB"  # neutral grey
 CAPACITY_HEAT_YELLOW = "#FACC15"  # Comfortable  (<= $2.0B)
-CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B–$3.0B)
+CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B-$3.0B)
 CAPACITY_HEAT_RED    = "#DC2626"  # High pressure (>= $3.0B)
 
 
@@ -296,6 +347,124 @@ def _current_gantt_outline_color() -> str:
 NAV_TABS = ["Overview", "Benefits", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"]
 
 
+
+
+def inject_kpi_card_theme() -> None:
+    """Styles for rounded KPI cards and optional metric facelift."""
+    import streamlit as st
+
+    st.markdown(f"""
+    <style>
+      :root {{
+        --pbi-blue: {POWERBI_BLUE};
+        --pbi-green: {POWERBI_GREEN};
+        --kpi-border: rgba(25,69,107,.18);
+        --kpi-shadow: 0 10px 24px rgba(25,69,107,.08);
+        --kpi-text-1: #0F172A;
+        --kpi-text-2: #475569;
+      }}
+
+      div[data-testid="stMetric"] {{
+        position: relative;
+        border: 1px solid var(--kpi-border);
+        border-radius: 16px;
+        padding: 14px 16px;
+        background: #fff;
+        box-shadow: var(--kpi-shadow);
+      }}
+      div[data-testid="stMetric"]::before {{
+        content: "";
+        position: absolute; left: 12px; right: 12px; top: 0;
+        height: 6px; border-radius: 999px;
+        background: linear-gradient(90deg, var(--pbi-blue), rgba(25,69,107,.15) 45%, var(--pbi-green));
+        transform: translateY(-3px);
+      }}
+      div[data-testid="stMetric"] label {{
+        color: var(--pbi-blue);
+        font-weight: 600;
+        margin-bottom: 2px;
+      }}
+      div[data-testid="stMetricValue"] {{
+        color: var(--kpi-text-1);
+        font-weight: 700;
+        font-size: 1.9rem;
+        line-height: 1.1;
+      }}
+      div[data-testid="stMetricDelta"] {{
+        border-radius: 999px;
+        padding: 2px 8px;
+        border: 1px solid rgba(25,69,107,.25);
+        background: rgba(25,69,107,.08);
+        color: var(--pbi-blue);
+        font-weight: 600;
+      }}
+
+      .kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0,1fr));
+        gap: 14px;
+      }}
+      @media (max-width: 1200px) {{ .kpi-grid {{ grid-template-columns: repeat(2, minmax(0,1fr)); }} }}
+      @media (max-width: 800px)  {{ .kpi-grid {{ grid-template-columns: 1fr; }} }}
+
+      .kpi-card {{
+        position: relative;
+        background: #fff;
+        border: 1px solid var(--kpi-border);
+        border-radius: 18px;
+        box-shadow: var(--kpi-shadow);
+        padding: 16px 18px;
+        overflow: hidden;
+      }}
+      .kpi-card::after {{
+        content:"";
+        position:absolute; left:14px; right:14px; top:0;
+        height:6px; border-radius:999px;
+        background: linear-gradient(90deg,var(--pbi-blue), rgba(25,69,107,.15) 45%, var(--pbi-green));
+        transform: translateY(-3px);
+      }}
+      .kpi-title {{
+        color: var(--pbi-blue);
+        font-weight: 600;
+        font-size: .95rem;
+        margin: 0 0 .25rem 0;
+      }}
+      .kpi-value {{
+        color: var(--kpi-text-1);
+        font-weight: 700;
+        font-size: 2rem;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+      }}
+      .kpi-sub {{
+        color: var(--kpi-text-2);
+        font-size: .85rem;
+        margin-top: .35rem;
+      }}
+      .kpi-delta {{
+        display:inline-flex; align-items:center; gap:6px;
+        margin-top:.55rem;
+        font-weight:600; font-size:.85rem;
+        padding:3px 10px; border-radius:999px;
+        border:1px solid transparent;
+      }}
+      .kpi-delta.up {{
+        color: var(--pbi-green);
+        background: rgba(175,189,34,.12);
+        border-color: rgba(175,189,34,.35);
+      }}
+      .kpi-delta.down {{
+        color: #CA4142;
+        background: rgba(202,65,66,.10);
+        border-color: rgba(202,65,66,.30);
+      }}
+      .kpi-delta.neutral {{
+        color: var(--pbi-blue);
+        background: rgba(25,69,107,.10);
+        border-color: rgba(25,69,107,.28);
+      }}
+    </style>
+    """, unsafe_allow_html=True)
 def inject_powerbi_theme() -> None:
     css = f"""
         <style>
@@ -2661,9 +2830,9 @@ def cumulative_revenue_vs_cost_chart(
 ) -> go.Figure:
     """
     Show cumulative cost (stack-like bar per FY) vs cumulative revenue (improvements) as a line.
-    - Uses 'CumSpend' for cumulative costs.
-    - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
-    - Axis tick labels automatically switch between $m / $b.
+   - Uses 'CumSpend' for cumulative costs.
+   - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
+   - Axis tick labels automatically switch between $m / $b.
     """
     fig = go.Figure()
 
@@ -4353,20 +4522,15 @@ def project_schedule_area_chart(
 
     return fig
 
-def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection) -> Optional[go.Figure]:
-    """
-    Compact market-capacity heat-strip aligned to the schedule chart's *plot area*.
-
-    - Discrete categories (grey / yellow / orange / red) with hard cut-offs:
-        0: No spend           -> grey
-        1: Comfortable (<=2B) -> yellow
-        2: Watch (2–3B)       -> orange
-        3: High (>=3B)        -> red
-    - Hover shows FY, spend (billions), and band label.
-    - Left/right edges match the Project schedule chart by mirroring its margins
-      AND reserving the same left auto-margin (tick labels + title) via a
-      transparent Y-axis.
-    """
+def market_capacity_indicator(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    style: str = "gradient",
+    show_colorbar: bool | None = None,
+    height_px: int | None = None,
+) -> Optional[go.Figure]:
+    """Thin, polished heat strip for market capacity."""
     series = build_timeseries(data, selection)
     if series is None or series.empty:
         return None
@@ -4377,110 +4541,133 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
     if df.empty:
         return None
 
-    # Spend in billions for banding + hover
     df["SpendB"] = pd.to_numeric(df["Spend"], errors="coerce").fillna(0.0) / 1000.0
+    years = df["Year"].astype(int).tolist()
+    spend_b = df["SpendB"].astype(float).tolist()
 
-    years: List[int] = df["Year"].astype(int).tolist()
-    spend_b: List[float] = df["SpendB"].astype(float).tolist()
+    max_b = max(spend_b) if spend_b else 0.0
+    scale_top_b = _nice_half_step(max_b, min_top=3.25)
 
-    # Encode discrete levels and per-cell custom data for hover
-    z_levels: List[int] = []
-    per_point_custom: List[List[Any]] = []  # [year, spendB, label] per cell
+    style_key = (style or "gradient").strip().lower()
+    if style_key == "bands":
+        def level(vb: float) -> int:
+            if vb <= 0.0:
+                return 0
+            if vb >= 3.0:
+                return 3
+            if vb > 2.0:
+                return 2
+            return 1
 
-    for y, val_b in zip(years, spend_b):
-        if val_b <= 0.0:
-            lvl, label = 0, "No spend recorded"
-        elif val_b >= 3.0:
-            lvl, label = 3, "High pressure (≥ $3.0B)"
-        elif val_b > 2.0:
-            lvl, label = 2, "Watch zone ($2.0B–$3.0B)"
+        z_values = [level(v) for v in spend_b]
+        zmin, zmax = 0, 3
+        colorscale = _capacity_step_colorscale()
+        status_labels = [
+            "No spend recorded" if v <= 0.0
+            else "High pressure (>= $3.0B)" if v >= 3.0
+            else "Watch zone ($2.0B-$3.0B)" if v > 2.0
+            else "Comfortable (<= $2.0B)"
+            for v in spend_b
+        ]
+    else:
+        z_values = [float(np.clip(v / max(scale_top_b, 1e-6), 0.0, 1.0)) for v in spend_b]
+        zmin, zmax = 0.0, 1.0
+        colorscale = _capacity_gradient_colorscale(scale_top_b)
+        status_labels = [
+            "No spend recorded" if v <= 0.0
+            else "High pressure" if v >= 3.0
+            else "Intensifying" if 2.6 < v < 3.0
+            else "Watch zone" if v > 2.0
+            else "Comfortable"
+            for v in spend_b
+        ]
+
+    custom = []
+    for y, vb, status in zip(years, spend_b, status_labels):
+        if np.isfinite(vb):
+            b_txt = f"{vb:,.1f} B"
+            m_txt = f"{vb * 1000.0:,.0f} m"
         else:
-            lvl, label = 1, "Comfortable (≤ $2.0B)"
-        z_levels.append(lvl)
-        per_point_custom.append([int(y), float(val_b), label])
+            b_txt = m_txt = "-"
+        custom.append([int(y), float(vb), b_txt, m_txt, status])
 
-    # Crisp stepped colors (no gradient between categories)
-    step_eps = 1e-6
-    colorscale = [
-        [0.00,                CAPACITY_HEAT_ZERO],   # 0
-        [1.0/3.0 - step_eps,  CAPACITY_HEAT_ZERO],
-        [1.0/3.0,             CAPACITY_HEAT_YELLOW], # 1
-        [2.0/3.0 - step_eps,  CAPACITY_HEAT_YELLOW],
-        [2.0/3.0,             CAPACITY_HEAT_ORANGE], # 2
-        [1.0 - step_eps,      CAPACITY_HEAT_ORANGE],
-        [1.0,                 CAPACITY_HEAT_RED],    # 3
-    ]
-
-    # Single-row heatmap; customdata must be (rows, cols, ...)
     heat = go.Heatmap(
         x=years,
         y=[0],
-        z=[z_levels],
-        zmin=0, zmax=3,
+        z=[z_values],
+        zmin=zmin,
+        zmax=zmax,
         colorscale=colorscale,
-        showscale=False,
-        xgap=0, ygap=0,
-        customdata=[per_point_custom],  # shape (1, N, 3)
+        showscale=bool(SHOW_CAPACITY_COLORBAR if show_colorbar is None else show_colorbar),
+        xgap=0,
+        ygap=0,
         hoverinfo="text",
         hovertemplate=(
             "<b>FY %{customdata[0]}</b><br>"
-            "Total spend: %{customdata[1]:.1f} B<br>"
-            "Status: %{customdata[2]}<extra></extra>"
+            "Total spend: %{customdata[2]} | %{customdata[3]}<br>"
+            "Status: %{customdata[4]}<extra></extra>"
+        ),
+        customdata=[custom],
+        colorbar=dict(
+            title="Spend scale",
+            len=0.4,
+            thickness=12,
+            x=1.03,
+            y=0.5,
+            ticks="outside",
+            outlinewidth=0,
+            bgcolor="rgba(0,0,0,0)",
         ),
     )
 
     fig = go.Figure(data=[heat])
     fig.update_traces(hoverlabel=_hoverlabel_style())
 
-    # --- Make the left plot edge match the schedule chart's *plot area* edge ---
-    # The schedule chart uses margins similar to:
-    #   margin=dict(l=40, r=220, t=60, b=80)
-    # Plotly auto-expands the left margin to fit Y tick labels + the axis title.
-    # We mirror that behaviour here by enabling a transparent Y axis with the
-    # same widest tick label + the same title text. This reserves identical
-    # auto-margin without showing anything.
-    SCHEDULE_LEFT_MARGIN = 40
-    SCHEDULE_RIGHT_MARGIN = 220
+    schedule_left_margin = 40
+    schedule_right_margin = 220
 
-    # Use widest tick label that the schedule would show (e.g., "3,600")
     max_spend_m = float(pd.to_numeric(series["Spend"], errors="coerce").fillna(0.0).max())
-    # Round up to a "nice" hundred for width parity with the schedule axis
-    if max_spend_m <= 0:
-        widest_tick = "0"
-    else:
+    if max_spend_m > 0:
         nice = int(math.ceil(max_spend_m / 100.0) * 100)
         widest_tick = f"{nice:,}"
+    else:
+        widest_tick = "0"
+
+    n_years = max(1, len(years))
+    if height_px is None:
+        height_px = int(max(28, min(44, 44 - 0.12 * (n_years - 20))))
 
     x0 = float(min(years))
     x1 = float(max(years))
 
-    # Height ~ 2/3 of the old height, softly adapted to year count
-    n_years = max(1, len(years))
-    base_h = 74
-    adaptive_h = int(max(44, min(80, base_h - 0.15 * (n_years - 20))))
-
     fig.update_layout(
         title="Market capacity indicator - total spend by year",
-        height=adaptive_h,
-        margin=dict(l=SCHEDULE_LEFT_MARGIN, r=SCHEDULE_RIGHT_MARGIN, t=26, b=4),
+        height=height_px,
+        margin=dict(l=schedule_left_margin, r=schedule_right_margin, t=20, b=2),
         autosize=False,
         xaxis=dict(
-            tickmode="linear", dtick=1, tick0=x0,
+            tickmode="linear",
+            dtick=1,
+            tick0=x0,
             range=[x0 - 0.5, x1 + 0.5],
-            showticklabels=False, showgrid=False, zeroline=False, constrain="range",
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            constrain="range",
+            fixedrange=True,
         ),
-        # Transparent Y axis that *forces* the same auto left margin as the schedule chart.
         yaxis=dict(
             automargin=True,
-            showgrid=False, zeroline=False, showline=False, ticks="",
-            tickmode="array", tickvals=[0], ticktext=[widest_tick],
-            tickfont=dict(color="rgba(0,0,0,0)", size=12),  # invisible labels, keep width
-            title=dict(
-                text="Annual spend ($m)",
-                font=dict(color="rgba(0,0,0,0)", size=12),
-                standoff=4,  # same feel as schedule default
-            ),
-            visible=True,  # must be True so automargin engages
+            showgrid=False,
+            zeroline=False,
+            showline=False,
+            ticks="",
+            tickmode="array",
+            tickvals=[0],
+            ticktext=[widest_tick],
+            tickfont=dict(color="rgba(0,0,0,0)", size=12),
+            title=dict(text="Annual spend ($m)", font=dict(color="rgba(0,0,0,0)", size=12)),
+            visible=True,
             range=[-0.5, 0.5],
             fixedrange=True,
         ),
@@ -4490,7 +4677,12 @@ def market_capacity_indicator(data: DashboardData, selection: ScenarioSelection)
         plot_bgcolor="rgba(0,0,0,0)",
     )
 
+    fig.add_hrect(y0=-0.5, y1=-0.49, line_width=0, fillcolor="rgba(0,0,0,0.05)")
+    fig.add_hrect(y0=0.49, y1=0.5, line_width=0, fillcolor="rgba(0,0,0,0.05)")
+
     return fig
+
+
 
 
 
@@ -4599,6 +4791,85 @@ def _format_currency_compact(value: float) -> str:
         return f"${value / 1_000:.1f}k"
     return f"${value:,.0f}"
 
+
+def _kpi_card_html(
+    title: str,
+    value: str,
+    *,
+    subtitle: str | None = None,
+    delta_text: str | None = None,
+    delta_state: str = "neutral",
+) -> str:
+    """Return HTML for a single KPI card."""
+    parts = [
+        '<div class="kpi-card">',
+        f'<div class="kpi-title">{title}</div>',
+        f'<div class="kpi-value">{value}</div>',
+    ]
+    if subtitle:
+        parts.append(f'<div class="kpi-sub">{subtitle}</div>')
+    if delta_text:
+        parts.append(f'<div class="kpi-delta {delta_state}">{delta_text}</div>')
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
+def render_programme_kpis(
+    stats_opt: dict | None,
+    stats_cmp: dict | None,
+    *,
+    npv_label: str,
+) -> None:
+    """Render the overview KPI card grid."""
+    import streamlit as st
+
+    def _fmt(value: float | None) -> str:
+        return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
+
+    opt_spend = float(stats_opt.get("total_spend")) if stats_opt and stats_opt.get("total_spend") is not None else None
+    cmp_spend = float(stats_cmp.get("total_spend")) if stats_cmp and stats_cmp.get("total_spend") is not None else None
+    opt_pv = float(stats_opt.get("total_pv")) if stats_opt and stats_opt.get("total_pv") is not None else None
+    cmp_pv = float(stats_cmp.get("total_pv")) if stats_cmp and stats_cmp.get("total_pv") is not None else None
+
+    delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
+    delta_pv = (opt_pv - cmp_pv) if (opt_pv is not None and cmp_pv is not None) else None
+
+    if delta_pv is None:
+        pv_chip_text, pv_chip_state = None, "neutral"
+    else:
+        sign = "▲" if delta_pv >= 0 else "▼"
+        pv_chip_state = "up" if delta_pv >= 0 else "down"
+        pv_chip_text = f"{sign} {_fmt(delta_pv)} vs comparison"
+
+    cards = [
+        '<div class="kpi-grid">',
+        _kpi_card_html("Optimised - total spend", _fmt(opt_spend)),
+        _kpi_card_html("Comparison - total spend", _fmt(cmp_spend)),
+        _kpi_card_html(
+            "Delta - total spend",
+            _fmt(delta_spend),
+            subtitle="Optimised - Comparison",
+        ),
+        _kpi_card_html(
+            f"Optimised total NPV benefit ({npv_label})",
+            _fmt(opt_pv),
+        ),
+        _kpi_card_html(
+            f"Comparison total NPV benefit ({npv_label})",
+            _fmt(cmp_pv),
+        ),
+        _kpi_card_html(
+            f"Delta total NPV benefit ({npv_label})",
+            _fmt(delta_pv),
+            subtitle="Optimised - Comparison",
+            delta_text=pv_chip_text,
+            delta_state=pv_chip_state,
+        ),
+        '</div>',
+    ]
+    st.markdown("".join(cards), unsafe_allow_html=True)
+
+
 REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
     "Share_Cum": {
         "label": "Cumulative share vs national",
@@ -4654,45 +4925,6 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "table_label": "Per-cap annual",
         "sort": "desc",
     },
-    "OU_vs_Pop": {
-        "label": "Over / under vs population share",
-        "description": "Difference between cumulative spend share and population share (percentage points).",
-        "type": "diverging",
-        "colorscale": PBI_DIVERGING_SCALE,
-        "multiplier": 100.0,
-        "colorbar": "Delta vs pop (pp)",
-        "ticksuffix": " pp",
-        "tickformat": ".1f",
-        "formatter": lambda v: _format_percentage(v, 1, signed=True),
-        "sort": "abs_desc",
-        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
-    },
-    "OU_vs_GDP": {
-        "label": "Over / under vs GDP share",
-        "description": "Difference between cumulative spend share and GDP share (percentage points).",
-        "type": "diverging",
-        "colorscale": PBI_DIVERGING_SCALE,
-        "multiplier": 100.0,
-        "colorbar": "Delta vs GDP (pp)",
-        "ticksuffix": " pp",
-        "tickformat": ".1f",
-        "formatter": lambda v: _format_percentage(v, 1, signed=True),
-        "sort": "abs_desc",
-        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
-    },
-    "Ramp_Rate": {
-        "label": "Ramp rate (Δ cumulative share)",
-        "description": "Year-on-year change in cumulative share (percentage points).",
-        "type": "diverging",
-        "colorscale": PBI_DIVERGING_SCALE,
-        "multiplier": 100.0,
-        "colorbar": "Delta share (pp)",
-        "ticksuffix": " pp",
-        "tickformat": ".1f",
-        "formatter": lambda v: _format_percentage(v, 1, signed=True),
-        "sort": "abs_desc",
-        "share_columns": {"cum": "Share_Cum", "year": "Share_Year"},
-    },
     "BenefitShare_Cum": {
         "label": "Cumulative benefit share vs national",
         "description": "Share of cumulative benefit allocated to each region compared with the national total.",
@@ -4733,9 +4965,9 @@ REGION_METRIC_GROUPS = {
         "Share_Year",
         "PerCap_Cum",
         "PerCap_Year",
-        "OU_vs_Pop",
-        "OU_vs_GDP",
-        "Ramp_Rate",
+        # "OU_vs_Pop",
+        # "OU_vs_GDP",
+        # "Ramp_Rate",
     ],
     "Benefit share": [
         "BenefitShare_Cum",
@@ -4913,7 +5145,7 @@ def build_region_map_figure(
         plot_bgcolor="rgba(0,0,0,0)",
         height=520,
         title=dict(
-            text=f"{config['label']} — {scenario_label} ({year})",
+            text=f"{config['label']} - {scenario_label} ({year})",
             x=0.02,
             y=0.96,
             xanchor="left",
@@ -5088,6 +5320,11 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
         "_share_year_fmt": f"{share_prefix} vs national (annual)",
     }
 
+    if share_cfg.get("cum") == metric_key:
+        columns.pop("_share_cum_fmt", None)
+    if share_cfg.get("year") == metric_key:
+        columns.pop("_share_year_fmt", None)
+
     fy_label = f"FY {int(year)}"
     if "_spend_year_fmt" in table.columns:
         columns["_spend_year_fmt"] = f"Spend in {fy_label}"
@@ -5256,7 +5493,7 @@ _REGION_MAP_REACTIVE_HTML = """
     html += '</tbody></table>';
 
     tableDiv.innerHTML = html;
-    yearLabel.textContent = 'FY ' + year + ' — ' + payload.title;
+    yearLabel.textContent = 'FY ' + year + ' - ' + payload.title;
   }
 
   // ---- Plotly map ----
@@ -5324,10 +5561,10 @@ def _prepare_region_reactive_payload(
 ) -> tuple[dict, pd.DataFrame]:
     """
     Build a compact, client-ready payload:
-      - ordered region locations aligned to GeoJSON featureidkey
-      - per-year z vectors and per-year customdata for hover
-      - per-year (preformatted) top-10 table
-      - static Plotly layout, colorbar and colorscale
+     - ordered region locations aligned to GeoJSON featureidkey
+     - per-year z vectors and per-year customdata for hover
+     - per-year (preformatted) top-10 table
+     - static Plotly layout, colorbar and colorscale
     Returns (payload_dict, initial_year_table_df).
     """
     geojson = fetch_region_geojson()
@@ -5528,7 +5765,7 @@ def _prepare_region_reactive_payload(
         plot_bgcolor="rgba(0,0,0,0)",
         height=520,
         title=dict(
-            text=f"{config['label']} — {scenario_label}",
+            text=f"{config['label']} - {scenario_label}",
             x=0.02, y=0.96, xanchor="left", yanchor="top", font=dict(size=16), pad=dict(b=12),
         ),
         geo=dict(
@@ -5641,30 +5878,20 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         label_visibility="collapsed",
     )
 
-    # Metric dropdown within the chosen group
+    # Metric selection UI
     metric_options = REGION_METRIC_GROUPS[selected_mode]
     metric_state_key = f"region_metric_key_{selected_mode.replace(' ', '_').lower()}"
+
+    initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
+    if initial_year not in available_years:
+        initial_year = available_years[0]
+    st.caption(f"Drag the year slider below the map - updates while dragging (no page rerun). Default FY: {initial_year}")
+
     default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
     if default_metric not in metric_options:
         default_metric = metric_options[0]
+    metric_key = default_metric
 
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
-        if initial_year not in available_years:
-            initial_year = available_years[0]
-        # Just show a label — the *actual* slider lives in the reactive component.
-        st.caption(f"Drag the year slider below the map — updates while dragging (no page rerun). Default FY: {initial_year}")
-
-    with col_right:
-        metric_key = st.selectbox(
-            "Metric",
-            metric_options,
-            index=metric_options.index(default_metric),
-            format_func=lambda key: REGION_METRIC_CONFIG[key]["label"],
-            key=f"region_metric_select_{selected_mode.replace(' ', '_').lower()}",
-        )
 
     st.session_state[metric_state_key] = metric_key
     st.session_state["region_metric_key"] = metric_key
@@ -5764,51 +5991,17 @@ def render_overview_tab(
         comp_selection,
         horizon_override=summary_horizon_years,
     )
-    summary_col1, summary_col2, summary_col3 = st.columns(3)
+
     stats_opt = (
-        scenario_metrics(
-            opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years
-        )
-        if opt_series is not None
-        else None
+        scenario_metrics(opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
+        if opt_series is not None else None
     )
     stats_cmp = (
-        scenario_metrics(
-            cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years
-        )
-        if cmp_series is not None
-        else None
+        scenario_metrics(cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
+        if cmp_series is not None else None
     )
-    with summary_col1:
-        if stats_opt is not None:
-            st.metric("Optimised - total spend", format_currency(stats_opt["total_spend"]))
-            st.metric(
-                f"Optimised total NPV benefit ({npv_summary_label})",
-                format_currency(stats_opt["total_pv"]),
-            )
-        else:
-            st.warning("No optimised scenario data available for the current selection.")
-    with summary_col2:
-        if stats_cmp is not None:
-            st.metric("Comparison - total spend", format_currency(stats_cmp["total_spend"]))
-            st.metric(
-                f"Comparison total NPV benefit ({npv_summary_label})",
-                format_currency(stats_cmp["total_pv"]),
-            )
-        else:
-            st.info("Select a comparison scenario to enable side-by-side charts.")
-    with summary_col3:
-        if stats_opt is not None and stats_cmp is not None:
-            st.metric(
-                "Delta - total spend",
-                format_currency(stats_opt["total_spend"] - stats_cmp["total_spend"]),
-            )
-            st.metric(
-                f"Delta total NPV benefit ({npv_summary_label})",
-                format_currency(stats_opt["total_pv"] - stats_cmp["total_pv"]),
-            )
-        else:
-            st.info("Viewing delta requires both scenarios.")
+
+    render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)
     st.markdown('<div class="pbi-section-title">Efficiency & net present value</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
@@ -6075,7 +6268,7 @@ def render_delivery_tab(
     with cap_cols[0]:
         cap_fig_opt = market_capacity_indicator(data, opt_selection)
         if cap_fig_opt is not None:
-            st.plotly_chart(cap_fig_opt, use_container_width=True)
+            st.plotly_chart(cap_fig_opt, use_container_width=True, key="market_capacity_opt")
             cap_export = prepare_capacity_export(opt_series)
             if cap_export is not None:
                 export_tables[f"Market capacity - {opt_label}"] = cap_export
@@ -6086,7 +6279,7 @@ def render_delivery_tab(
     with cap_cols[1]:
         cap_fig_cmp = market_capacity_indicator(data, comp_selection)
         if cap_fig_cmp is not None:
-            st.plotly_chart(cap_fig_cmp, use_container_width=True)
+            st.plotly_chart(cap_fig_cmp, use_container_width=True, key="market_capacity_cmp")
             cap_export = prepare_capacity_export(cmp_series)
             if cap_export is not None:
                 export_tables[f"Market capacity - {cmp_label}"] = cap_export
@@ -6156,7 +6349,7 @@ def render_cash_flow_tab(
         else:
             st.info("Select a comparison scenario to view the cash flow profile.")
 
-    # ---- Row 2: NEW charts — cumulative revenue vs cumulative cost ----
+    # ---- Row 2: NEW charts - cumulative revenue vs cumulative cost ----
     st.markdown('<div class="pbi-section-title">Cumulative revenue vs cumulative cost</div>', unsafe_allow_html=True)
     cum_cols = st.columns(2)
 
@@ -6166,7 +6359,7 @@ def render_cash_flow_tab(
                 cumulative_revenue_vs_cost_chart(
                     opt_series,
                     opt_selection,
-                    title="Cumulative revenue vs cumulative cost — optimised",
+                    title="Cumulative revenue vs cumulative cost - optimised",
                 ),
                 use_container_width=True,
             )
@@ -6181,7 +6374,7 @@ def render_cash_flow_tab(
                 cumulative_revenue_vs_cost_chart(
                     cmp_series,
                     comp_selection,
-                    title="Cumulative revenue vs cumulative cost — comparison",
+                    title="Cumulative revenue vs cumulative cost - comparison",
                 ),
                 use_container_width=True,
             )
@@ -6543,6 +6736,7 @@ def render_scenarios_tab(
 def main() -> None:
     st.set_page_config(page_title="Capital Programme Optimiser", layout="wide")
     inject_powerbi_theme()
+    inject_kpi_card_theme()
     st.markdown('<div class="pbi-header">Capital Programme Optimiser</div>', unsafe_allow_html=True)
     st.markdown('<div class="pbi-header-underline"></div>', unsafe_allow_html=True)
 
