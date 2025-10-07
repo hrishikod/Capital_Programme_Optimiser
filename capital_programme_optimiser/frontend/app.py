@@ -307,7 +307,7 @@ _GANTT_HOTKEY_HTML = """
 def _inject_gantt_hotkey_listener() -> None:
     """
     Mount a tiny HTML shim that listens for the 'Z' key and toggles the
-    Gantt outline colour. Works on modern Streamlit; degrades gracefully
+    Programme Schedule outline colour. Works on modern Streamlit; degrades gracefully
     on older builds that don't support `key=` or returning a value.
     """
     # Session defaults
@@ -344,7 +344,7 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Overview", "Benefits", "Regions", "Delivery", "Cash Flow", "Gantt", "Scenarios"]
+NAV_TABS = ["Programme Schedule", "Overview", "Benefits", "Regions", "Delivery", "Cash Flow", "Scenarios"]
 
 
 
@@ -4641,7 +4641,6 @@ def market_capacity_indicator(
     x1 = float(max(years))
 
     fig.update_layout(
-        title="Market capacity indicator - total spend by year",
         height=height_px,
         margin=dict(l=schedule_left_margin, r=schedule_right_margin, t=20, b=2),
         autosize=False,
@@ -5983,25 +5982,6 @@ def render_overview_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
-    st.markdown('<div class="pbi-section-title">Programme summary</div>', unsafe_allow_html=True)
-    summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
-    npv_summary_label = npv_context_label(
-        data,
-        opt_selection,
-        comp_selection,
-        horizon_override=summary_horizon_years,
-    )
-
-    stats_opt = (
-        scenario_metrics(opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
-        if opt_series is not None else None
-    )
-    stats_cmp = (
-        scenario_metrics(cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
-        if cmp_series is not None else None
-    )
-
-    render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)
     st.markdown('<div class="pbi-section-title">Efficiency & net present value</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
@@ -6398,7 +6378,7 @@ def render_gantt_tab(
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
 
-    st.markdown('<div class="pbi-section-title">Delivery schedule (Gantt)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pbi-section-title">Programme schedule</div>', unsafe_allow_html=True)
 
     # Work out which scenarios are available for display
     scenario_tokens = []
@@ -6416,7 +6396,7 @@ def render_gantt_tab(
         token_to_label["Comparison"] = cmp_label
 
     if not scenario_tokens:
-        st.info("Select at least one scenario to display the Gantt chart.")
+        st.info("Select at least one scenario to display the Programme Schedule chart.")
         return export_tables
 
     # Keep radio selection stable across reruns
@@ -6427,7 +6407,7 @@ def render_gantt_tab(
     control_cols = st.columns([3, 1])
     with control_cols[0]:
         gantt_token = st.radio(
-            "Gantt display",
+            "Programme schedule display",
             scenario_tokens,
             horizontal=True,
             key="gantt_choice",
@@ -6471,7 +6451,7 @@ def render_gantt_tab(
             comparison_selection,
         )
         if gantt_export is not None:
-            export_tables[f"Gantt - {primary_label}"] = gantt_export
+            export_tables[f"Programme Schedule - {primary_label}"] = gantt_export
     else:
         st.info("No spend matrix found for the selected scenario.")
 
@@ -6895,6 +6875,26 @@ def main() -> None:
     st.session_state["active_tab"] = active_tab
 
     with content_col:
+        summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
+        npv_summary_label = npv_context_label(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_override=summary_horizon_years,
+        )
+
+        stats_opt = (
+            scenario_metrics(opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
+            if opt_series is not None else None
+        )
+        stats_cmp = (
+            scenario_metrics(cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
+            if cmp_series is not None else None
+        )
+
+        with st.expander("Programme summary", expanded=True):
+            render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)
+
         download_tables: Dict[str, pd.DataFrame] = {}
 
         if active_tab == "Overview":
@@ -6956,7 +6956,7 @@ def main() -> None:
                     cmp_label=cmp_label,
                 )
             )
-        elif active_tab == "Gantt":
+        elif active_tab == "Programme Schedule":
             download_tables.update(
                 render_gantt_tab(
                     data,
