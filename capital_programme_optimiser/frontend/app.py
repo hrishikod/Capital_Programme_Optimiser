@@ -186,6 +186,8 @@ CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B-$3.0B)
 CAPACITY_HEAT_RED    = "#DC2626"  # High pressure (>= $3.0B)
 
 
+REGION_MAP_ZERO_COLOR = "#D7E3FA"
+
 PBI_SEQUENTIAL_SCALE = [
     [0.0, POWERBI_TERTIARY],
     [0.5, POWERBI_GREEN],
@@ -1250,8 +1252,8 @@ def prepare_efficiency_export(
         if not cum_spend.empty:
             aligned_spend = cum_spend.reindex(index)
             if aligned_spend.notna().any():
-                export["Optimised cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix="Optimised")
+                export[f"{SCENARIO_PRIMARY_NAME} cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
+        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=SCENARIO_PRIMARY_NAME)
         if not series_opt.empty:
             year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
             mask = year_values.notna()
@@ -1410,7 +1412,7 @@ def prepare_dimension_overlay_export(
             opt = opt.cumsum()
         for dim in selected_dims:
             if dim in opt.columns:
-                export[f"Optimised - {dim} ($)"] = scale_series_to_nzd(opt[dim])
+                export[f"{SCENARIO_PRIMARY_NAME} - {dim} ($)"] = scale_series_to_nzd(opt[dim])
                 added = True
     if pivot_cmp is not None and not pivot_cmp.empty:
         cmp = pivot_cmp.reindex(index=years_list)
@@ -1452,7 +1454,7 @@ def prepare_waterfall_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                "Optimised NPV ($)": opt_val * 1_000_000.0,
+                f"{SCENARIO_PRIMARY_NAME} NPV ($)": opt_val * 1_000_000.0,
                 "Comparison NPV ($)": cmp_val * 1_000_000.0,
                 "Delta ($)": (opt_val - cmp_val) * 1_000_000.0,
             }
@@ -1465,7 +1467,7 @@ def prepare_waterfall_export(
     rows.append(
         {
             "Dimension": "Total",
-            "Optimised NPV ($)": total_opt * 1_000_000.0,
+            f"{SCENARIO_PRIMARY_NAME} NPV ($)": total_opt * 1_000_000.0,
             "Comparison NPV ($)": total_cmp * 1_000_000.0,
             "Delta ($)": (total_opt - total_cmp) * 1_000_000.0,
         }
@@ -1504,7 +1506,7 @@ def prepare_bridge_export(
     total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
     bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
     rows = [
-        {"Step": "Optimised NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
+        {"Step": f"{SCENARIO_PRIMARY_NAME} NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
     ]
     for dim, delta in zip(dim_sequence, bridge_diffs):
         rows.append(
@@ -1551,7 +1553,7 @@ def prepare_radar_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                "Optimised NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                f"{SCENARIO_PRIMARY_NAME} NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
                 "Comparison NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
             }
         )
@@ -3526,7 +3528,7 @@ def benefit_bridge_chart(
 
     bridge_diffs = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    labels = ["Optimised NPV total"] + [f"{dim} delta NPV" for dim in dim_sequence] + ["Comparison NPV total"]
+    labels = [f"{SCENARIO_PRIMARY_NAME} NPV total"] + [f"{dim} delta NPV" for dim in dim_sequence] + ["Comparison NPV total"]
 
     measures = ["relative"] + ["relative"] * len(dim_sequence) + ["total"]
 
@@ -3653,7 +3655,7 @@ def efficiency_chart(
 
         )
 
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix="Optimised")
+        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=SCENARIO_PRIMARY_NAME)
 
     series_cmp = label_cmp = None
 
@@ -4763,6 +4765,24 @@ def _colorscale_with_opacity(colorscale: Any, opacity: float) -> list[list[Any]]
         r, g, b = _color_to_rgb_tuple(color)
         adjusted.append([float(stop), f'rgba({int(r)}, {int(g)}, {int(b)}, {opacity:.3f})'])
     return adjusted
+
+
+def _colorscale_with_zero_base(colorscale: Any, zero_color: str = "#E5E7EB") -> list[list[Any]]:
+    """Return a colorscale with a guaranteed light zero stop."""
+    try:
+        resolved = plc.get_colorscale(colorscale)
+    except Exception:
+        resolved = colorscale if isinstance(colorscale, (list, tuple)) else plc.get_colorscale('YlOrRd')
+    resolved = sorted(resolved, key=lambda entry: float(entry[0]))
+    if not resolved:
+        fallback_colour = PBI_SEQUENTIAL_SCALE[-1][1] if PBI_SEQUENTIAL_SCALE else "#19456B"
+        return [[0.0, zero_color], [1.0, fallback_colour]]
+    epsilon = 1e-6
+    adjusted: list[list[Any]] = [[0.0, zero_color]]
+    for stop, color in resolved:
+        adjusted.append([max(float(stop), epsilon), color])
+    return adjusted
+
 # ---------------------------------------------------------------------
 
 def _format_percentage(value: float, decimals: int = 1, *, signed: bool = False) -> str:
@@ -5052,7 +5072,9 @@ def build_region_map_figure(
     map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
     map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
 
-    values = map_df["_metric_value"].to_numpy(dtype=float)
+    values = map_df.loc[map_df["_has_data"], "_metric_value"].to_numpy(dtype=float)
+    if values.size == 0:
+        values = np.array([0.0], dtype=float)
     is_diverging = config.get("type") == "diverging"
     if is_diverging:
         max_abs = float(np.nanmax(np.abs(values))) if values.size else 0.0
@@ -5072,7 +5094,8 @@ def build_region_map_figure(
     land_color = "rgba(148, 163, 184, 0.32)" if dark_mode else "rgba(148, 163, 184, 0.18)"
     marker_line_width = 1.2 if show_borders else 0.3
     opacity = float(np.clip(fill_opacity, 0.05, 1.0))
-    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", PBI_SEQUENTIAL_SCALE), opacity)
+    base_colorscale = _colorscale_with_zero_base(config.get("colorscale", PBI_SEQUENTIAL_SCALE), zero_color=REGION_MAP_ZERO_COLOR)
+    effective_colorscale = _colorscale_with_opacity(base_colorscale, opacity)
 
     active_locations = [
         str(loc)
@@ -5117,11 +5140,12 @@ def build_region_map_figure(
         outlinewidth=0,
         bgcolor="rgba(0,0,0,0)",
     )
+    z_series = map_df["_metric_value"].where(map_df["_has_data"], np.nan)
     trace = go.Choropleth(
         geojson=geojson,
         featureidkey=f"properties.{name_field}",
         locations=map_df["join_key"],
-        z=map_df["_metric_value"],
+        z=z_series,
         zmin=zmin,
         zmax=zmax,
         colorscale=effective_colorscale,
@@ -5256,8 +5280,8 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     table = df.copy()
 
     # Metric value + display text
-    raw_metric = _scaled_region_metric(table, metric_key)
-    table["_has_data"] = ~raw_metric.isna()
+    raw_metric = pd.to_numeric(_scaled_region_metric(table, metric_key), errors="coerce")
+    table["_has_data"] = raw_metric.notna()
     table["_metric_value"] = raw_metric.fillna(0.0)
     display_series = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
     display_series.loc[~table["_has_data"]] = "No data"
@@ -5315,11 +5339,13 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     # Sorting behaviour per metric
     sort_mode = config.get("sort", "desc")
     if sort_mode == "asc":
-        table = table.sort_values("_metric_value", ascending=True)
+        table = table.sort_values(["_has_data", "_metric_value"], ascending=[False, True])
     elif sort_mode == "abs_desc":
-        table = table.assign(_abs=table["_metric_value"].abs()).sort_values("_abs", ascending=False).drop(columns="_abs")
+        table = table.assign(_abs=table["_metric_value"].abs()).sort_values(["_has_data", "_abs"], ascending=[False, False]).drop(columns="_abs")
     else:
-        table = table.sort_values("_metric_value", ascending=False)
+        table = table.sort_values(["_has_data", "_metric_value"], ascending=[False, False])
+
+    table.drop(columns=['_has_data'], inplace=True, errors='ignore')
 
     # Column labels
     share_prefix_is_benefit = (
@@ -5637,7 +5663,8 @@ def _prepare_region_reactive_payload(
 
     config = REGION_METRIC_CONFIG[metric_key]
     opacity = float(np.clip(fill_opacity, 0.05, 1.0))
-    effective_colorscale = _colorscale_with_opacity(config.get("colorscale", PBI_SEQUENTIAL_SCALE), opacity)
+    base_colorscale = _colorscale_with_zero_base(config.get("colorscale", PBI_SEQUENTIAL_SCALE), zero_color=REGION_MAP_ZERO_COLOR)
+    effective_colorscale = _colorscale_with_opacity(base_colorscale, opacity)
     reversescale = bool(config.get("reversescale", False))
 
     # Theme-aware styling
@@ -5685,8 +5712,9 @@ def _prepare_region_reactive_payload(
         # Keep rows present in GeoJSON (by join_key) and compute metric
         map_df = df_year[df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0].copy()
         raw_metric = _scaled_region_metric(map_df, metric_key)
-        map_df["_has_data"] = ~raw_metric.isna()
-        map_df["_metric_value"] = raw_metric.fillna(0.0)
+        map_df["_metric_value"] = pd.to_numeric(raw_metric, errors="coerce")
+        map_df["_has_data"] = map_df["_metric_value"].notna()
+        map_df["_metric_value"] = map_df["_metric_value"].fillna(0.0)
         display_series = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
         display_series.loc[~map_df["_has_data"]] = "No data"
         map_df["_metric_display"] = display_series
@@ -5709,11 +5737,12 @@ def _prepare_region_reactive_payload(
                     numeric_val = float(row.get("_metric_value", 0.0))
                 except (TypeError, ValueError):
                     numeric_val = 0.0
+                    has_data = False
                 if has_data and math.isfinite(numeric_val):
                     zval = numeric_val
                     all_values.append(numeric_val)
                 else:
-                    zval = 0.0
+                    zval = None
                 z_values.append(zval)
                 custom_values.append([
                     str(row["region"]),
@@ -5726,7 +5755,7 @@ def _prepare_region_reactive_payload(
                     str(row["_population_fmt"]),
                 ])
             else:
-                z_values.append(0.0)
+                z_values.append(None)
                 custom_values.append([loc, str(year), "No data", "-", "-", "-", "-", "-"])
 
         z_by_year[str(year)] = z_values
