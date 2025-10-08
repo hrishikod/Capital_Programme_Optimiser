@@ -114,7 +114,7 @@ WATERFALL_TOTAL_COLOR = "#4C4C4C"
 
 BAR_OPACITY = 0.75
 
-GANTT_COLOR = POWERBI_BLUE
+GANTT_COLOR = "#225F92"
 
 GANTT_OUTLINE_COLOR_BASE = "#DC2626"
 GANTT_OUTLINE_COLOR_ALT = "#B91C1C"
@@ -4140,7 +4140,7 @@ def spend_gantt_chart(
 
                 "End FY: %{customdata[2]}<br>"
 
-                "Schedule shift: %{{customdata[4]}}<extra></extra>"
+                "Schedule shift: %{customdata[4]}<extra></extra>"
 
             ),
 
@@ -4222,11 +4222,15 @@ def spend_gantt_chart(
 
                     line=dict(color=outline_color, width=1.5, dash="dot"),
 
-                    hovertext=[hover_text] * 5,
+                    fill="toself",
 
-                    hovertemplate="%{hovertext}<extra></extra>",
+                    fillcolor="rgba(0, 0, 0, 0)",
 
-                    hoverlabel=_hoverlabel_style(),
+                    fillpattern=dict(shape=".", size=2, solidity=0.4, fgcolor=outline_color, fgopacity=0.6, bgcolor="rgba(0, 0, 0, 0)"),
+
+                    hoveron="fills",
+
+                    hoverinfo="skip",
 
                     showlegend=False,
 
@@ -4261,7 +4265,9 @@ def spend_gantt_chart(
                         y=[y_bottom, y_bottom, y_top, y_top, y_bottom],
                         mode="none",
                         fill="toself",
-                        fillcolor="rgba(152, 194, 220, 0.02)",
+                        fillcolor="rgba(0, 0, 0, 0)",
+
+                        fillpattern=dict(shape=".", size=2, solidity=0.4, fgcolor=outline_color, fgopacity=0.6, bgcolor="rgba(0, 0, 0, 0)"),
                         hoveron="fills",
                         name="",
                         hovertemplate=hover_template,
@@ -4604,8 +4610,8 @@ def market_capacity_indicator(
         hoverinfo="text",
         hovertemplate=(
             "<b>FY %{customdata[0]}</b><br>"
-            "Total spend: %{customdata[2]} | %{{customdata[3]}}<br>"
-            "Status: %{{customdata[4]}}<extra></extra>"
+            "Total spend: %{customdata[2]} | %{customdata[3]}<br>"
+            "Status: %{customdata[4]}<extra></extra>"
         ),
         customdata=[custom],
         colorbar=dict(
@@ -4636,13 +4642,16 @@ def market_capacity_indicator(
     n_years = max(1, len(years))
     if height_px is None:
         height_px = int(max(28, min(44, 44 - 0.12 * (n_years - 20))))
+    bottom_margin = max(36, int(height_px * 0.65))
+    height_px += max(0, bottom_margin - 2)
+
 
     x0 = float(min(years))
     x1 = float(max(years))
 
     fig.update_layout(
         height=height_px,
-        margin=dict(l=schedule_left_margin, r=schedule_right_margin, t=20, b=2),
+        margin=dict(l=schedule_left_margin, r=schedule_right_margin, t=20, b=bottom_margin),
         autosize=False,
         xaxis=dict(
             tickmode="linear",
