@@ -5023,6 +5023,35 @@ def build_region_map_figure(
     name_field: str,
 ) -> go.Figure:
     config = REGION_METRIC_CONFIG[metric_key]
+    map_df = map_df.copy()
+    map_df["_metric_value"] = pd.to_numeric(map_df.get("_metric_value"), errors="coerce")
+    map_df["_has_data"] = map_df["_metric_value"].notna()
+    map_df["_metric_value"] = map_df["_metric_value"].fillna(0.0)
+    display_series = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+    if map_df["_has_data"].isin([False]).any():
+        display_series.loc[~map_df["_has_data"]] = "No data"
+    map_df["_metric_display"] = display_series
+
+    share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
+    cum_share_col = share_cfg.get("cum")
+    year_share_col = share_cfg.get("year")
+
+    def _share_series(column: Optional[str]) -> pd.Series:
+        if column and column in map_df.columns:
+            return pd.to_numeric(map_df[column], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=map_df.index)
+
+    map_df["_share_cum_fmt"] = (_share_series(cum_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
+    map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+    map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
+    map_df.loc[~map_df["_has_data"], "_share_cum_fmt"] = '-'
+    map_df.loc[~map_df["_has_data"], "_share_year_fmt"] = '-'
+    map_df.loc[~map_df["_has_data"], "_percap_cum_fmt"] = '-'
+    map_df.loc[~map_df["_has_data"], "_percap_year_fmt"] = '-'
+    map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
+    map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
+
     values = map_df["_metric_value"].to_numpy(dtype=float)
     is_diverging = config.get("type") == "diverging"
     if is_diverging:
@@ -5044,24 +5073,6 @@ def build_region_map_figure(
     marker_line_width = 1.2 if show_borders else 0.3
     opacity = float(np.clip(fill_opacity, 0.05, 1.0))
     effective_colorscale = _colorscale_with_opacity(config.get("colorscale", PBI_SEQUENTIAL_SCALE), opacity)
-    map_df = map_df.copy()
-    map_df["_metric_display"] = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
-
-    share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
-    cum_share_col = share_cfg.get("cum")
-    year_share_col = share_cfg.get("year")
-
-    def _share_series(column: Optional[str]) -> pd.Series:
-        if column and column in map_df.columns:
-            return pd.to_numeric(map_df[column], errors="coerce").fillna(0.0)
-        return pd.Series(0.0, index=map_df.index)
-
-    map_df["_share_cum_fmt"] = (_share_series(cum_share_col) * 100).map(lambda v: _format_percentage(v, 1))
-    map_df["_share_year_fmt"] = (_share_series(year_share_col) * 100).map(lambda v: _format_percentage(v, 1))
-    map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
-    map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
-    map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
-    map_df["_year_str"] = map_df["Year"].astype(int).astype(str)
 
     active_locations = [
         str(loc)
@@ -5245,8 +5256,12 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     table = df.copy()
 
     # Metric value + display text
-    table["_metric_value"] = _scaled_region_metric(table, metric_key)
-    table["_metric_display"] = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+    raw_metric = _scaled_region_metric(table, metric_key)
+    table["_has_data"] = ~raw_metric.isna()
+    table["_metric_value"] = raw_metric.fillna(0.0)
+    display_series = table["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+    display_series.loc[~table["_has_data"]] = "No data"
+    table["_metric_display"] = display_series
 
     # Which columns represent "share" so we can show both cumulative + annual
     share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
@@ -5267,6 +5282,7 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     table["_percap_year_fmt"] = (
         pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
     ).map(_format_currency_compact)
+    table.loc[~table["_has_data"], ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"]] = '-'
 
     # Optional spend / benefit columns (shown when the metric group implies them)
     if "Spend_M" in table.columns:
@@ -5286,6 +5302,15 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
             table["_benefit_cum_fmt"] = (
                 pd.to_numeric(table["Benefit_Cum_Region"], errors="coerce").fillna(0.0).map(format_currency)
             )
+    if table["_has_data"].isin([False]).any():
+        if "_spend_year_fmt" in table.columns:
+            table.loc[~table["_has_data"], "_spend_year_fmt"] = "-"
+        if "_spend_cum_fmt" in table.columns:
+            table.loc[~table["_has_data"], "_spend_cum_fmt"] = "-"
+        if "_benefit_year_fmt" in table.columns:
+            table.loc[~table["_has_data"], "_benefit_year_fmt"] = "-"
+        if "_benefit_cum_fmt" in table.columns:
+            table.loc[~table["_has_data"], "_benefit_cum_fmt"] = "-"
 
     # Sorting behaviour per metric
     sort_mode = config.get("sort", "desc")
@@ -5308,6 +5333,8 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     if metric_label in {"Share vs national (cum)", "Share vs national (annual)",
                         "Benefit share (cum)", "Benefit share (annual)"}:
         metric_label = f"{metric_label} value"
+
+    table.drop(columns=['_has_data'], inplace=True, errors='ignore')
 
     columns = {
         "region": "Region",
@@ -5657,13 +5684,18 @@ def _prepare_region_reactive_payload(
 
         # Keep rows present in GeoJSON (by join_key) and compute metric
         map_df = df_year[df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0].copy()
-        map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
-        map_df["_metric_display"] = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+        raw_metric = _scaled_region_metric(map_df, metric_key)
+        map_df["_has_data"] = ~raw_metric.isna()
+        map_df["_metric_value"] = raw_metric.fillna(0.0)
+        display_series = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+        display_series.loc[~map_df["_has_data"]] = "No data"
+        map_df["_metric_display"] = display_series
         map_df["_share_cum_fmt"] = (_share_series(cum_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
         map_df["_share_year_fmt"] = (_share_series(year_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
         map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
         map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
         map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
+        map_df.loc[~map_df["_has_data"], ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"]] = "-"
 
         by_key = map_df.set_index("join_key")
         z_values: list[float] = []
@@ -5672,19 +5704,16 @@ def _prepare_region_reactive_payload(
         for loc in locations:
             if loc in by_key.index:
                 row = by_key.loc[loc]
-                raw_val = row["_metric_value"]
-                if pd.notna(raw_val):
-                    try:
-                        numeric_val = float(raw_val)
-                    except (TypeError, ValueError):
-                        numeric_val = math.nan
-                    if math.isfinite(numeric_val):
-                        zval = numeric_val
-                        all_values.append(numeric_val)
-                    else:
-                        zval = None
+                has_data = bool(row.get("_has_data", True))
+                try:
+                    numeric_val = float(row.get("_metric_value", 0.0))
+                except (TypeError, ValueError):
+                    numeric_val = 0.0
+                if has_data and math.isfinite(numeric_val):
+                    zval = numeric_val
+                    all_values.append(numeric_val)
                 else:
-                    zval = None
+                    zval = 0.0
                 z_values.append(zval)
                 custom_values.append([
                     str(row["region"]),
@@ -5697,8 +5726,8 @@ def _prepare_region_reactive_payload(
                     str(row["_population_fmt"]),
                 ])
             else:
-                z_values.append(None)
-                custom_values.append([loc, str(year), "-", "-", "-", "-", "-", "-"])
+                z_values.append(0.0)
+                custom_values.append([loc, str(year), "No data", "-", "-", "-", "-", "-"])
 
         z_by_year[str(year)] = z_values
         custom_by_year[str(year)] = custom_values
