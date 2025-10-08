@@ -5239,7 +5239,7 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     server-rendered dataframe. Keeps labels consistent with the rest of the app
     and pre-formats numeric values. Styling (font/colours) is done by CSS.
     """
-    config = REGION_METRIC_CONFIG[metric_key]
+    config = REGION_METRIC_CONFIG.get(metric_key, {})
 
     # Working copy
     table = df.copy()
@@ -5489,7 +5489,7 @@ _REGION_MAP_REACTIVE_HTML = """
     html += '</tbody></table>';
 
     tableDiv.innerHTML = html;
-    yearLabel.textContent = 'FY ' + year + ' - ' + payload.title;
+    yearLabel.textContent = 'FY ' + year;
   }
 
   // ---- Plotly map ----
@@ -5760,10 +5760,6 @@ def _prepare_region_reactive_payload(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         height=520,
-        title=dict(
-            text=f"{config['label']} - {scenario_label}",
-            x=0.02, y=0.96, xanchor="left", yanchor="top", font=dict(size=16), pad=dict(b=12),
-        ),
         geo=dict(
             visible=False,
             projection=dict(type="mercator", scale=2.0),
@@ -5881,7 +5877,6 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
     initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
     if initial_year not in available_years:
         initial_year = available_years[0]
-    st.caption(f"Drag the year slider below the map - updates while dragging (no page rerun). Default FY: {initial_year}")
 
     default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
     if default_metric not in metric_options:
@@ -5893,7 +5888,6 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
     st.session_state["region_metric_key"] = metric_key
 
     config = REGION_METRIC_CONFIG[metric_key]
-    st.caption(config.get("description", ""))
 
     # Reactive map + table (client-driven)
     initial_table = render_region_map_reactive(

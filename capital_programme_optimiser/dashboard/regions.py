@@ -289,6 +289,85 @@ def _geojson_has_official_field(geojson: Dict[str, Any]) -> bool:
             return False
     return True
 
+
+def _iter_lonlat_pairs(coords: Any):
+    """Yield (lon, lat) pairs from a GeoJSON coordinate structure."""
+    if isinstance(coords, (list, tuple)):
+        if coords and isinstance(coords[0], (int, float)) and len(coords) >= 2:
+            yield float(coords[0]), float(coords[1])
+        else:
+            for item in coords:
+                yield from _iter_lonlat_pairs(item)
+
+
+def _geojson_is_lonlat(geojson: Dict[str, Any], *, sample_limit: int = 50) -> bool:
+    """Return True when coordinates appear to be lon/lat (EPSG:4326)."""
+    if not isinstance(geojson, dict):
+        return False
+    sampled = 0
+    for feature in geojson.get("features", []):
+        geom = feature.get("geometry")
+        if not isinstance(geom, dict):
+            continue
+        coords = geom.get("coordinates")
+        if coords is None:
+            continue
+        for lon, lat in _iter_lonlat_pairs(coords):
+            if not (np.isfinite(lon) and np.isfinite(lat)):
+                continue
+            if abs(lon) > 180.0 or abs(lat) > 90.0:
+                return False
+            sampled += 1
+            if sampled >= sample_limit:
+                return True
+    return True
+
+def audit_region_coverage(mapping_df: pd.DataFrame) -> None:
+    """Print any regional gaps between the GeoJSON and the project mapping."""
+    if mapping_df is None or mapping_df.empty:
+        print(">> Mapping is empty; cannot audit coverage")
+        return
+    geojson = fetch_region_geojson()
+    geo_regions = {
+        _canonical_region_name(
+            (feature.get("properties") or {}).get("REGC2025_V1_00_NAME")
+            or (feature.get("properties") or {}).get("REGC_name")
+        )
+        for feature in geojson.get("features", [])
+    } if geojson else set()
+    geo_regions = {name for name in geo_regions if name}
+    mapping_regions = {
+        _canonical_region_name(value)
+        for value in mapping_df.get("region", pd.Series(dtype=object)).dropna().tolist()
+    }
+    mapping_regions = {name for name in mapping_regions if name}
+    missing_in_mapping = sorted(geo_regions - mapping_regions)
+    missing_in_geojson = sorted(mapping_regions - geo_regions)
+    print(">> Missing in mapping (present in GeoJSON):", missing_in_mapping)
+    print(">> Missing in GeoJSON (present in mapping):", missing_in_geojson)
+
+
+
+def preview_join_status(region_df: pd.DataFrame) -> pd.DataFrame:
+    """Return a DataFrame showing which GeoJSON regions are missing from region_df."""
+    geojson = fetch_region_geojson()
+    feat_names = []
+    if geojson:
+        for feature in geojson.get("features", []):
+            props = feature.get("properties") or {}
+            name = _canonical_region_name(
+                props.get("REGC2025_V1_00_NAME") or props.get("REGC_name")
+            )
+            if name:
+                feat_names.append(name)
+    want = pd.DataFrame({"region": sorted(set(feat_names))})
+    got = region_df[["region"]].drop_duplicates() if not region_df.empty else pd.DataFrame({"region": []})
+    merged = want.merge(got, on="region", how="left", indicator=True)
+    return merged.assign(missing=lambda d: d["_merge"].eq("left_only")).drop(columns=["_merge"])
+
+
+
+
 def _geojson_name_lookup(geojson: Dict[str, Any]) -> Dict[str, str]:
     """Build a normalised name → canonical name lookup from the GeoJSON."""
     _ensure_official_geojson_fields(geojson)
@@ -371,13 +450,15 @@ def fetch_region_geojson(
     """Fetch regional polygons as GeoJSON, caching to disk and memory."""
     lp: Optional[Path] = Path(local_path) if local_path is not None else None
 
-    def _download() -> Dict[str, Any]:
+    def _download(spatial_ref: Optional[int] = None) -> Dict[str, Any]:
+        target_sr = spatial_ref if spatial_ref is not None else source.spatial_ref or 4326
         params = {
             "where": source.where,
             "outFields": ",".join(source.out_fields),
             "returnGeometry": "true",
             "f": "geojson",
-            "outSR": str(source.spatial_ref),
+            "outSR": str(target_sr),
+            "resultRecordCount": "2000",
         }
         r = requests.get(source.url, params=params, timeout=30)
         r.raise_for_status()
@@ -398,7 +479,15 @@ def fetch_region_geojson(
             # ↓ New: ensure the cached file also uses simplified precision
             simplify_geojson_precision_inplace(geojson, decimals=5)
             if not _geojson_has_official_field(geojson):
-                geojson = _download()
+                geojson = _download(4326)
+                if lp is not None and geojson:
+                    try:
+                        lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
+                return geojson
+            if not _geojson_is_lonlat(geojson):
+                geojson = _download(4326)
                 if lp is not None and geojson:
                     try:
                         lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
@@ -413,7 +502,9 @@ def fetch_region_geojson(
             return geojson
 
     # Otherwise download
-    geojson = _download()
+    geojson = _download(4326)
+    if geojson and not _geojson_is_lonlat(geojson):
+        return geojson
     if lp is not None and geojson:
         try:
             lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
@@ -805,9 +896,34 @@ def compute_region_metrics(
         mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
 
     region_info = _prepare_region_info(mapping_df)
+    
+    geojson = fetch_region_geojson()
+    geo_regions = sorted({
+        _canonical_region_name(
+            (feature.get("properties") or {}).get("REGC2025_V1_00_NAME")
+            or (feature.get("properties") or {}).get("REGC_name")
+        )
+        for feature in (geojson.get("features", []) if geojson else [])
+    })
+    geo_regions = [name for name in geo_regions if name]
+    existing_regions = set(region_info["region"].tolist())
+    all_region_names = sorted(existing_regions.union(geo_regions))
+    missing_regions = [name for name in all_region_names if name not in existing_regions]
+    if missing_regions:
+        filler = pd.DataFrame(
+            {
+                "region": missing_regions,
+                "join_key": missing_regions,
+                "join_key_norm": [_normalise_region_label(name) for name in missing_regions],
+                "gdp_per_capita": np.nan,
+                "population": np.nan,
+            }
+        )
+        region_info = pd.concat([region_info, filler], ignore_index=True)
+    
     pop_total = region_info["population"].sum(skipna=True)
     gdp_total = (region_info["gdp_per_capita"] * region_info["population"]).sum(skipna=True)
-
+    
     spend_df = data.spend_matrix[data.spend_matrix["Code"] == scenario_code]
     if spend_df.empty:
         raise ValueError(f"No spend matrix data for scenario code {scenario_code}")
@@ -858,7 +974,7 @@ def compute_region_metrics(
         region_info = pd.concat([region_info, extra], ignore_index=True)
 
     years_present = sorted(region_spend["Year"].unique().tolist())
-    all_regions = region_info["region"].unique().tolist()
+    all_regions = sorted(region_info["region"].unique().tolist())
     full_index = pd.MultiIndex.from_product([years_present, all_regions], names=["Year", "region"])
     region_spend = (
         region_spend
