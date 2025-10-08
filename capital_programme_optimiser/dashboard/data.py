@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
+from capital_programme_optimiser.dashboard.constants import (
+    SCENARIO_COMPARISON_NAME,
+)
 
 _DIM_SHORT = {
     "Total": "TOT",
@@ -87,7 +90,7 @@ def _detect_comparison_prefixes(stems: Iterable[str]) -> Dict[str, Any]:
     def _label(pref: str) -> str:
         base = pref.strip("_- ").strip()
         if not base:
-            return "Comparison"
+            return SCENARIO_COMPARISON_NAME
         label = re.sub(r"[_\-]+", " ", base).strip()
         return label if label.isupper() and len(label) <= 6 else label.title()
 
