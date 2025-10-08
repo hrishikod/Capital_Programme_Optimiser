@@ -4266,10 +4266,30 @@ def spend_gantt_chart(
                         mode="none",
                         fill="toself",
                         fillcolor="rgba(0, 0, 0, 0)",
-
                         fillpattern=dict(shape=".", size=2, solidity=0.4, fgcolor=outline_color, fgopacity=0.6, bgcolor="rgba(0, 0, 0, 0)"),
                         hoveron="fills",
+                        hoverinfo="skip",
                         name="",
+                        hoverlabel=_hoverlabel_style(),
+                        showlegend=False,
+                        cliponaxis=False,
+                    )
+                )
+
+                span = max(seg_end - seg_start, 1e-6)
+                marker_count = max(1, int(math.ceil(span)))
+                if marker_count == 1:
+                    marker_x = [0.5 * (seg_start + seg_end)]
+                else:
+                    step = span / marker_count
+                    marker_x = list(np.linspace(seg_start + 0.5 * step, seg_end - 0.5 * step, marker_count))
+                marker_y = [y_center] * len(marker_x)
+                fig.add_trace(
+                    go.Scatter(
+                        x=marker_x,
+                        y=marker_y,
+                        mode="markers",
+                        marker=dict(color="rgba(0, 0, 0, 0)", size=28, symbol="square"),
                         hovertemplate=hover_template,
                         hoverlabel=_hoverlabel_style(),
                         showlegend=False,
