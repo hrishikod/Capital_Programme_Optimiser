@@ -40,6 +40,36 @@
     border-radius: 14px;
     padding: 16px 18px 12px;
     box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .map-app__header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .map-app__titles {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 180px;
+  }
+  .map-app__toggle-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    background: rgba(25, 69, 107, 0.05);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    flex-shrink: 0;
+  }
+  .map-app__toggle-card:empty {
+    display: none;
   }
   .map-app__title {
     font-size: 1.15rem;
@@ -49,6 +79,56 @@
   .map-app__subtitle {
     font-size: 0.95rem;
     color: var(--text-2);
+  }
+  .map-toggle {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    background: rgba(25, 69, 107, 0.08);
+    padding: 4px;
+    min-width: 220px;
+    overflow: hidden;
+    --toggle-count: 2;
+    --toggle-index: 0;
+  }
+  .map-toggle__thumb {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    height: calc(100% - 8px);
+    width: calc((100% - 8px) / var(--toggle-count, 2));
+    border-radius: 999px;
+    background: #ffffff;
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.15);
+    transform: translateX(calc(var(--toggle-index, 0) * ((100% - 8px) / var(--toggle-count, 2))));
+    transition: transform 0.22s ease, width 0.22s ease;
+  }
+  .map-toggle__option {
+    position: relative;
+    flex: 1 1 0%;
+    border: none;
+    background: transparent;
+    padding: 6px 16px;
+    border-radius: 999px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-2);
+    cursor: pointer;
+    z-index: 1;
+    transition: color 0.2s ease;
+  }
+  .map-toggle__option.is-active {
+    color: var(--pbi-blue);
+  }
+  .map-toggle__option:hover {
+    color: var(--pbi-blue);
+  }
+  .map-toggle__option:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px rgba(25, 69, 107, 0.4);
   }
   .map-app__map {
     position: relative;
@@ -217,6 +297,18 @@
   .map-app__tooltip-row span:last-child {
     font-weight: 500;
     color: #f8fafc;
+  }
+  @media (max-width: 720px) {
+    .map-app__header-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .map-app__toggle-card {
+      width: 100%;
+    }
+    .map-toggle {
+      width: 100%;
+    }
   }
   @media (max-width: 1180px) {
     .map-app {
@@ -405,15 +497,222 @@
     years.push(currentYear);
   }
 
-  const metricLabel = typeof payload.metricLabel === 'string' && payload.metricLabel.trim()
+  const baseMetricLabel = typeof payload.metricLabel === 'string' && payload.metricLabel.trim()
     ? payload.metricLabel.trim()
     : (typeof payload.title === 'string' ? payload.title : 'Regional investment');
+  let metricLabel = baseMetricLabel;
   const scenarioLabel = typeof payload.scenarioLabel === 'string' && payload.scenarioLabel.trim()
     ? payload.scenarioLabel.trim()
     : 'Scenario';
-  const shareLabel = typeof payload.shareLabel === 'string' && payload.shareLabel.trim()
+  const baseShareLabel = typeof payload.shareLabel === 'string' && payload.shareLabel.trim()
     ? payload.shareLabel.trim()
     : 'Share';
+  let currentShareLabel = baseShareLabel;
+  const metricBundlesRaw = payload.metricBundles && typeof payload.metricBundles === 'object'
+    ? payload.metricBundles
+    : {};
+  const toggleConfig = payload.metricToggle && typeof payload.metricToggle === 'object'
+    ? payload.metricToggle
+    : null;
+  const fallbackBundle = {
+    key: typeof payload.metricKey === 'string' && payload.metricKey ? payload.metricKey : null,
+    metricLabel,
+    legend: payload.legend && typeof payload.legend === 'object' ? payload.legend : null,
+    featureStates: payload.featureStates && typeof payload.featureStates === 'object' ? payload.featureStates : {},
+    tableByYear: payload.tableByYear && typeof payload.tableByYear === 'object' ? payload.tableByYear : {},
+    tableHeaders: Array.isArray(payload.tableHeaders) ? payload.tableHeaders : [],
+    shareLabel: currentShareLabel,
+  };
+
+  function normaliseBundle(bundle, keyHint) {
+    if (!bundle || typeof bundle !== 'object') {
+      return null;
+    }
+    const key = keyHint || (typeof bundle.metricKey === 'string' ? bundle.metricKey : fallbackBundle.key);
+    const label = typeof bundle.metricLabel === 'string' && bundle.metricLabel.trim()
+      ? bundle.metricLabel.trim()
+      : metricLabel;
+    return {
+      key,
+      metricLabel: label || metricLabel,
+      legend: bundle.legend && typeof bundle.legend === 'object' ? bundle.legend : fallbackBundle.legend,
+      featureStates: bundle.featureStates && typeof bundle.featureStates === 'object' ? bundle.featureStates : fallbackBundle.featureStates,
+      tableByYear: bundle.tableByYear && typeof bundle.tableByYear === 'object' ? bundle.tableByYear : fallbackBundle.tableByYear,
+      tableHeaders: Array.isArray(bundle.tableHeaders) ? bundle.tableHeaders.slice() : fallbackBundle.tableHeaders,
+      shareLabel: typeof bundle.shareLabel === 'string' && bundle.shareLabel.trim()
+        ? bundle.shareLabel.trim()
+        : fallbackBundle.shareLabel,
+    };
+  }
+
+  function resolveBundle(key) {
+    if (key && Object.prototype.hasOwnProperty.call(metricBundlesRaw, key)) {
+      const resolved = normaliseBundle(metricBundlesRaw[key], key);
+      if (resolved) {
+        return resolved;
+      }
+    }
+    if (key && fallbackBundle.key && key === fallbackBundle.key) {
+      return normaliseBundle(fallbackBundle, fallbackBundle.key);
+    }
+    return null;
+  }
+
+  let activeMetricKey = null;
+  if (toggleConfig && typeof toggleConfig.defaultKey === 'string') {
+    const preferred = toggleConfig.defaultKey;
+    if (resolveBundle(preferred)) {
+      activeMetricKey = preferred;
+    }
+  }
+  if (!activeMetricKey && typeof payload.metricKey === 'string' && resolveBundle(payload.metricKey)) {
+    activeMetricKey = payload.metricKey;
+  }
+  if (!activeMetricKey) {
+    const fallbackKey = Object.keys(metricBundlesRaw)[0];
+    if (fallbackKey && resolveBundle(fallbackKey)) {
+      activeMetricKey = fallbackKey;
+    }
+  }
+  if (!activeMetricKey) {
+    activeMetricKey = fallbackBundle.key;
+  }
+
+  let activeBundle = resolveBundle(activeMetricKey) || normaliseBundle(fallbackBundle, fallbackBundle.key);
+  if (!activeBundle) {
+    activeBundle = normaliseBundle({
+      metricKey: activeMetricKey,
+      metricLabel,
+      legend: null,
+      featureStates: {},
+      tableByYear: {},
+      tableHeaders: [],
+      shareLabel: currentShareLabel,
+    }, activeMetricKey);
+  }
+
+  metricLabel = activeBundle.metricLabel || metricLabel;
+  currentShareLabel = activeBundle.shareLabel || currentShareLabel;
+  let currentLegend = activeBundle.legend || null;
+  let featureStates = activeBundle.featureStates || {};
+  let tableByYear = activeBundle.tableByYear || {};
+  let tableHeaders = Array.isArray(activeBundle.tableHeaders) ? activeBundle.tableHeaders.slice() : [];
+
+  const toggleButtons = [];
+  let toggleContainer = null;
+
+  const rawToggleOptions = toggleConfig && Array.isArray(toggleConfig.options)
+    ? toggleConfig.options
+    : [];
+  const seenToggleKeys = new Set();
+  const effectiveToggleOptions = [];
+  rawToggleOptions.forEach((option) => {
+    if (!option || typeof option !== 'object') {
+      return;
+    }
+    const key = typeof option.key === 'string' && option.key
+      ? option.key
+      : (typeof option.value === 'string' ? option.value : null);
+    if (!key || seenToggleKeys.has(key)) {
+      return;
+    }
+    const label = typeof option.label === 'string' && option.label.trim()
+      ? option.label.trim()
+      : key;
+    seenToggleKeys.add(key);
+    effectiveToggleOptions.push({ key, label });
+  });
+  if (activeMetricKey && !seenToggleKeys.has(activeMetricKey)) {
+    effectiveToggleOptions.push({ key: activeMetricKey, label: metricLabel });
+    seenToggleKeys.add(activeMetricKey);
+  }
+  if (effectiveToggleOptions.length < 2) {
+    effectiveToggleOptions.length = 0;
+  }
+
+  function createToggle() {
+    if (!effectiveToggleOptions.length) {
+      return null;
+    }
+    const container = document.createElement('div');
+    container.className = 'map-toggle';
+    container.style.setProperty('--toggle-count', String(effectiveToggleOptions.length));
+    container.setAttribute('role', 'radiogroup');
+    container.setAttribute('aria-label', 'Metric display mode');
+    const thumb = document.createElement('div');
+    thumb.className = 'map-toggle__thumb';
+    container.appendChild(thumb);
+    effectiveToggleOptions.forEach((option, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'map-toggle__option';
+      button.textContent = option.label;
+      button.dataset.key = option.key;
+      button.dataset.index = String(index);
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', 'false');
+      button.tabIndex = -1;
+      button.addEventListener('click', () => {
+        if (option.key === activeMetricKey) {
+          return;
+        }
+        applyMetricToggle(option.key);
+      });
+      container.appendChild(button);
+      toggleButtons.push(button);
+    });
+    container.addEventListener('keydown', (event) => {
+      if (!toggleButtons.length) {
+        return;
+      }
+      let nextIndex = toggleButtons.findIndex((btn) => btn.dataset.key === activeMetricKey);
+      if (nextIndex === -1) {
+        nextIndex = 0;
+      }
+      let handled = false;
+      if (event.key === 'ArrowRight') {
+        nextIndex = (nextIndex + 1) % toggleButtons.length;
+        handled = true;
+      } else if (event.key === 'ArrowLeft') {
+        nextIndex = (nextIndex - 1 + toggleButtons.length) % toggleButtons.length;
+        handled = true;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+        handled = true;
+      } else if (event.key === 'End') {
+        nextIndex = toggleButtons.length - 1;
+        handled = true;
+      }
+      if (handled) {
+        event.preventDefault();
+        const target = toggleButtons[nextIndex];
+        if (target) {
+          target.focus();
+          applyMetricToggle(target.dataset.key);
+        }
+      }
+    });
+    toggleContainer = container;
+    return container;
+  }
+
+  function syncToggleVisuals(key) {
+    if (!toggleContainer || !toggleButtons.length) {
+      return;
+    }
+    let activeIndex = 0;
+    toggleButtons.forEach((button, index) => {
+      const isActive = button.dataset.key === key;
+      if (isActive) {
+        activeIndex = index;
+      }
+      button.classList.toggle('is-active', isActive);
+      button.setAttribute('aria-checked', isActive ? 'true' : 'false');
+      button.tabIndex = isActive ? 0 : -1;
+    });
+    toggleContainer.style.setProperty('--toggle-count', String(toggleButtons.length));
+    toggleContainer.style.setProperty('--toggle-index', String(activeIndex));
+  }
 
   const app = document.createElement('div');
   app.className = 'map-app';
@@ -424,6 +723,12 @@
   const header = document.createElement('div');
   header.className = 'map-app__header';
 
+  const headerRow = document.createElement('div');
+  headerRow.className = 'map-app__header-row';
+
+  const titlesWrapper = document.createElement('div');
+  titlesWrapper.className = 'map-app__titles';
+
   const titleEl = document.createElement('div');
   titleEl.className = 'map-app__title';
   titleEl.textContent = metricLabel || 'Regional investment';
@@ -431,8 +736,25 @@
   const subtitleEl = document.createElement('div');
   subtitleEl.className = 'map-app__subtitle';
 
-  header.appendChild(titleEl);
-  header.appendChild(subtitleEl);
+  titlesWrapper.appendChild(titleEl);
+  titlesWrapper.appendChild(subtitleEl);
+  headerRow.appendChild(titlesWrapper);
+
+  if (effectiveToggleOptions.length) {
+    const toggleCard = document.createElement('div');
+    toggleCard.className = 'map-app__toggle-card';
+    const toggleElement = createToggle();
+    if (toggleElement) {
+      toggleCard.appendChild(toggleElement);
+      headerRow.appendChild(toggleCard);
+    }
+  }
+
+  header.appendChild(headerRow);
+
+  if (effectiveToggleOptions.length) {
+    syncToggleVisuals(activeMetricKey);
+  }
 
   const mapWrapper = document.createElement('div');
   mapWrapper.className = 'map-app__map';
@@ -469,7 +791,7 @@
 
   const legendTitle = document.createElement('div');
   legendTitle.className = 'map-app__legend-title';
-  legendTitle.textContent = (payload.legend && payload.legend.label) || metricLabel || 'Legend';
+  legendTitle.textContent = (currentLegend && currentLegend.label) || metricLabel || 'Legend';
 
   const legendBar = document.createElement('div');
   legendBar.className = 'map-app__legend-bar';
@@ -498,22 +820,28 @@
 
   const table = document.createElement('table');
   const thead = document.createElement('thead');
-  const headRow = document.createElement('tr');
-
-  const headers = Array.isArray(payload.tableHeaders) ? payload.tableHeaders : [];
   const headerIsNumeric = [];
-  headers.forEach((headerValue, index) => {
-    const text = String(headerValue || '').trim();
-    const th = document.createElement('th');
-    th.textContent = text;
-    const numeric = /(share|percent|\$|value|per\s?cap|total|benefit|spend|cum)/i.test(text);
-    if (numeric) {
-      th.classList.add('cell--num');
-    }
-    headerIsNumeric[index] = numeric;
-    headRow.appendChild(th);
-  });
-  thead.appendChild(headRow);
+
+  function buildTableHeader(headersArray) {
+    tableHeaders = Array.isArray(headersArray) ? headersArray.slice() : [];
+    headerIsNumeric.length = 0;
+    thead.innerHTML = '';
+    const headRow = document.createElement('tr');
+    tableHeaders.forEach((headerValue, index) => {
+      const text = String(headerValue || '').trim();
+      const th = document.createElement('th');
+      th.textContent = text;
+      const numeric = /(share|percent|\$|value|per\s?cap|total|benefit|spend|cum)/i.test(text);
+      if (numeric) {
+        th.classList.add('cell--num');
+      }
+      headerIsNumeric[index] = numeric;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+  }
+
+  buildTableHeader(tableHeaders);
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
@@ -552,14 +880,14 @@
   }
 
   function updateTable(year) {
-    const rows = payload.tableByYear && payload.tableByYear[String(year)]
-      ? payload.tableByYear[String(year)]
+    const rows = tableByYear && tableByYear[String(year)]
+      ? tableByYear[String(year)]
       : [];
     tbody.innerHTML = '';
     if (!rows.length) {
       const emptyRow = document.createElement('tr');
       const emptyCell = document.createElement('td');
-      emptyCell.colSpan = headers.length || 1;
+      emptyCell.colSpan = tableHeaders.length || 1;
       emptyCell.textContent = 'No data';
       emptyRow.appendChild(emptyCell);
       tbody.appendChild(emptyRow);
@@ -582,12 +910,52 @@
     });
   }
 
+  function applyMetricToggle(nextKey) {
+    const nextBundle = resolveBundle(nextKey) || resolveBundle(fallbackBundle.key);
+    if (!nextBundle) {
+      return;
+    }
+    activeMetricKey = nextBundle.key || nextKey || activeMetricKey;
+    activeBundle = nextBundle;
+    metricLabel = nextBundle.metricLabel || metricLabel;
+    currentShareLabel = nextBundle.shareLabel || currentShareLabel;
+    currentLegend = nextBundle.legend || null;
+    featureStates = nextBundle.featureStates || {};
+    tableByYear = nextBundle.tableByYear || {};
+    buildTableHeader(nextBundle.tableHeaders);
+    titleEl.textContent = metricLabel || 'Regional investment';
+    legendTitle.textContent = (currentLegend && currentLegend.label) || metricLabel || 'Legend';
+    updateLegend(currentLegend || null);
+
+    const merged = new Set(featureIds);
+    Object.keys(featureStates || {}).forEach((yearKey) => {
+      const yearStates = featureStates[yearKey];
+      if (yearStates && typeof yearStates === 'object') {
+        Object.keys(yearStates).forEach((id) => merged.add(id));
+      }
+    });
+    featureIds = Array.from(merged);
+
+    updateTable(currentYear);
+    applyFeatureStates(currentYear);
+    syncToggleVisuals(activeMetricKey);
+
+    if (mapInstance && typeof mapInstance.setPaintProperty === 'function') {
+      try {
+        mapInstance.setPaintProperty(
+          'regions-fill',
+          'fill-color',
+          buildColorExpression(currentLegend || null, payload.noDataColor || 'rgba(0,0,0,0)')
+        );
+      } catch (err) {
+        // Ignore missing layer errors
+      }
+    }
+  }
+
   let featureIds = Array.isArray(payload.featureIds) ? payload.featureIds.slice() : [];
-  const featureStates = payload.featureStates && typeof payload.featureStates === 'object'
-    ? payload.featureStates
-    : {};
   if (!featureIds.length) {
-    const firstYearKey = Object.keys(featureStates)[0];
+    const firstYearKey = Object.keys(featureStates || {})[0];
     if (firstYearKey && featureStates[firstYearKey]) {
       featureIds = Object.keys(featureStates[firstYearKey]);
     }
@@ -641,7 +1009,7 @@
 
   }
 
-  updateLegend(payload.legend || null);
+  updateLegend(currentLegend || null);
   updateYear(currentYear);
 
   if (slider && !slider.disabled) {
@@ -811,7 +1179,7 @@
         type: 'fill',
         source: 'regions',
         paint: {
-          'fill-color': buildColorExpression(payload.legend || null, payload.noDataColor || 'rgba(0,0,0,0)'),
+          'fill-color': buildColorExpression(currentLegend || null, payload.noDataColor || 'rgba(0,0,0,0)'),
           'fill-opacity': ['case', ['==', ['feature-state', 'hasFill'], true], Number(payload.fillOpacity) || 0.85, 0.0],
         },
       });
@@ -847,7 +1215,7 @@
           hideTooltip();
           return;
         }
-        tooltipEl.innerHTML = renderTooltip(state.tooltip || state, shareLabel);
+        tooltipEl.innerHTML = renderTooltip(state.tooltip || state, currentShareLabel);
         tooltipEl.style.display = 'block';
         tooltipEl.style.left = `${event.point.x + 14}px`;
         tooltipEl.style.top = `${event.point.y - 12}px`;

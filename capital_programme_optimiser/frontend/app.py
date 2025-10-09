@@ -5051,6 +5051,12 @@ REGION_METRIC_DEFAULT = {
     "Spend share": "Share_Cum",
     "Benefit share": "BenefitShare_Cum",
 }
+REGION_METRIC_TOGGLE_PAIRS: Dict[str, Tuple[str, str]] = {
+    "Share_Cum": ("Share_Cum", "Share_Year"),
+    "Share_Year": ("Share_Cum", "Share_Year"),
+    "BenefitShare_Cum": ("BenefitShare_Cum", "BenefitShare_Year"),
+    "BenefitShare_Year": ("BenefitShare_Cum", "BenefitShare_Year"),
+}
 
 _REGION_BOUNDS_EXCLUDE = {"area outside region"}
 
@@ -5098,7 +5104,6 @@ def build_region_map_figure(
     fill_opacity: float,
     name_field: str,
 ) -> go.Figure:
-    config = REGION_METRIC_CONFIG[metric_key]
     map_df = map_df.copy()
     map_df["_metric_value"] = pd.to_numeric(map_df.get("_metric_value"), errors="coerce")
     map_df["_has_data"] = map_df["_metric_value"].notna()
@@ -5587,120 +5592,50 @@ def _linz_topographic_light_style(
     }
 
 
-def _prepare_region_reactive_payload(
-    metrics_df: pd.DataFrame,
+def _metric_toggle_label(metric_key: str) -> str:
+    """Return the label used in the map toggle for a metric key."""
+    key_lower = metric_key.lower()
+    if "cum" in key_lower:
+        return "Show Cumulative"
+    if "year" in key_lower:
+        return "Show Annual"
+    return REGION_METRIC_CONFIG.get(metric_key, {}).get("label", metric_key)
+
+
+def _build_region_metric_bundle(
     metric_key: str,
     *,
-    scenario_label: str,
+    config: Dict[str, Any],
+    year_contexts: Dict[int, Dict[str, pd.DataFrame]],
+    locations: List[str],
     initial_year: int,
-    show_borders: bool,
-    fill_opacity: float,
-    settings: Settings,
-    basemap_mode: str,
-) -> tuple[dict, pd.DataFrame]:
-    """Build the client payload for the React + MapLibre regional view."""
-    geojson = fetch_region_geojson()
-    name_field = get_geojson_name_field(geojson)
-
-    locations: list[str] = []
-    for feature in geojson.get("features", []):
-        props = feature.get("properties") or {}
-        value = props.get(name_field)
-        if value is None:
-            continue
-        text = _canonical_join_key(value)
-        if text:
-            locations.append(text)
-
-    if not locations:
-        fetch_region_geojson.cache_clear()
-        geojson = fetch_region_geojson()
-        name_field = get_geojson_name_field(geojson)
-        locations = []
-        for feature in geojson.get("features", []):
-            props = feature.get("properties") or {}
-            value = props.get(name_field)
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                locations.append(text)
-
-    if not locations:
-        raise ValueError(
-            "GeoJSON has no joinable name field. Check ArcGIS out_fields or normalisation."
-        )
-
-    region_mapping = load_region_mapping()
-    catalog, _, _ = region_baselines(region_mapping)
-    baseline_keys = (
-        catalog[["region", "join_key", "population", "gdp_per_capita"]]
-        .drop_duplicates(subset=["region"])
-        .copy()
-    )
-
-    years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
-    if not years:
-        years = [initial_year]
-    if initial_year not in years:
-        initial_year = years[0]
-
-    config = REGION_METRIC_CONFIG[metric_key]
-    opacity = float(np.clip(fill_opacity, 0.05, 1.0))
-    base_colorscale = _colorscale_with_zero_base(
-        config.get("colorscale", PBI_SEQUENTIAL_SCALE),
-        zero_color=REGION_MAP_ZERO_COLOR,
-    )
-    effective_colorscale = _colorscale_with_opacity(base_colorscale, opacity)
-    reversescale = bool(config.get("reversescale", False))
-
-    dark_mode = is_dark_mode()
-    line_color = "#93c5fd" if dark_mode else "#1f2937"
-    border_width = 1.3 if show_borders else 0.6
-
+    opacity: float,
+) -> tuple[Dict[str, Any], pd.DataFrame]:
     share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
     cum_share_col = share_cfg.get("cum")
     year_share_col = share_cfg.get("year")
-
-    feature_states: dict[str, dict[str, dict[str, Any]]] = {}
-    table_by_year: dict[str, list[list[str]]] = {}
-    table_headers: list[str] = []
-    all_values: list[float] = []
+    feature_states: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    table_by_year: Dict[str, List[List[str]]] = {}
+    table_headers: List[str] = []
+    all_values: List[float] = []
     initial_table_df: pd.DataFrame | None = None
     fill_threshold = float(config.get("map_fill_threshold", 1e-9))
+    colorscale = _colorscale_with_zero_base(
+        config.get("colorscale", PBI_SEQUENTIAL_SCALE),
+        zero_color=REGION_MAP_ZERO_COLOR,
+    )
+    effective_colorscale = _colorscale_with_opacity(colorscale, opacity)
+    reversescale = bool(config.get("reversescale", False))
 
     def _share_series(column: Optional[str], frame: pd.DataFrame) -> pd.Series:
         if column and column in frame.columns:
             return pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
         return pd.Series(0.0, index=frame.index)
 
-    for year in years:
-        df_year = metrics_df[metrics_df["Year"] == int(year)].copy()
-        df_year = baseline_keys.merge(
-            df_year,
-            on=["region", "join_key"],
-            how="left",
-            suffixes=("", "_data"),
-        )
+    for year, ctx in year_contexts.items():
+        df_year = ctx["frame"].copy()
+        map_df = ctx["map"].copy()
 
-        if "population_data" in df_year.columns:
-            df_year["population"] = df_year["population_data"].fillna(df_year["population"])
-        if "gdp_per_capita_data" in df_year.columns:
-            df_year["gdp_per_capita"] = df_year["gdp_per_capita_data"].fillna(df_year["gdp_per_capita"])
-
-        drop_cols = [col for col in ("population_data", "gdp_per_capita_data") if col in df_year.columns]
-        if drop_cols:
-            df_year.drop(columns=drop_cols, inplace=True)
-
-        df_year["Year"] = int(year)
-        numeric_cols = df_year.select_dtypes(include=[np.number]).columns
-        df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
-        df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
-        df_year["region"] = df_year["region"].map(_canonical_join_key)
-
-        map_df = df_year[
-            df_year["join_key"].isin(locations) & (df_year["join_key"].str.len() > 0)
-        ].copy()
         raw_metric = _scaled_region_metric(map_df, metric_key)
         map_df["_metric_value"] = pd.to_numeric(raw_metric, errors="coerce")
         map_df["_has_data"] = map_df["_metric_value"].notna()
@@ -5712,6 +5647,7 @@ def _prepare_region_reactive_payload(
         )
         display_series.loc[~map_df["_has_data"]] = "No data"
         map_df["_metric_display"] = display_series
+
         map_df["_share_cum_fmt"] = (
             _share_series(cum_share_col, map_df) * 100.0
         ).map(lambda value: _format_percentage(value, 1))
@@ -5733,7 +5669,7 @@ def _prepare_region_reactive_payload(
         ] = "-"
 
         by_key = map_df.set_index("join_key")
-        year_states: dict[str, dict[str, Any]] = {}
+        year_states: Dict[str, Dict[str, Any]] = {}
 
         for loc in locations:
             if loc in by_key.index:
@@ -5743,12 +5679,12 @@ def _prepare_region_reactive_payload(
                     value = float(raw_value) if raw_value is not None else None
                 except (TypeError, ValueError):
                     value = None
-
-                has_data = bool(row.get("_has_data", False) and value is not None and math.isfinite(value))
-                has_fill = bool(row.get("_has_fill", False) and value is not None and math.isfinite(value))
+                if value is not None and not math.isfinite(value):
+                    value = None
+                has_data = bool(row.get("_has_data", False) and value is not None)
+                has_fill = bool(row.get("_has_fill", False) and value is not None)
                 if has_fill and value is not None:
-                    all_values.append(value)
-
+                    all_values.append(float(value))
                 year_states[loc] = {
                     "value": value if has_data else None,
                     "hasData": has_data,
@@ -5779,7 +5715,7 @@ def _prepare_region_reactive_payload(
 
         feature_states[str(year)] = year_states
 
-        summary_df = build_region_summary_table(df_year, metric_key, year=int(year))
+        summary_df = build_region_summary_table(df_year.copy(), metric_key, year=int(year))
         if not table_headers:
             table_headers = [str(col) for col in summary_df.columns]
         table_by_year[str(year)] = summary_df.astype(str).values.tolist()
@@ -5802,7 +5738,7 @@ def _prepare_region_reactive_payload(
         if not math.isfinite(domain_max) or math.isclose(domain_min, domain_max):
             domain_max = domain_min + max(1.0, abs(domain_min) * 0.1 + 1.0)
 
-    span_entries: list[tuple[float, str]] = []
+    span_entries: List[Tuple[float, str]] = []
     for stop, colour in effective_colorscale:
         try:
             fraction = float(stop)
@@ -5817,8 +5753,8 @@ def _prepare_region_reactive_payload(
         domain_max = domain_min + 1.0
 
     span = domain_max - domain_min
-    legend_stops: list[list[Any]] = [
-        [domain_min + span * fraction, colour] for fraction, colour in span_entries
+    legend_stops: List[Tuple[float, str]] = [
+        (domain_min + span * fraction, colour) for fraction, colour in span_entries
     ]
 
     share_prefix = (
@@ -5829,6 +5765,158 @@ def _prepare_region_reactive_payload(
         )
         else "Share"
     )
+
+    bundle = {
+        "metricKey": metric_key,
+        "metricLabel": config.get("label", metric_key),
+        "legend": {
+            "stops": [[float(value), colour] for value, colour in legend_stops],
+            "min": float(domain_min),
+            "max": float(domain_max),
+            "label": config.get("colorbar", config.get("label", metric_key)),
+            "suffix": config.get("ticksuffix"),
+            "format": config.get("tickformat"),
+        },
+        "featureStates": feature_states,
+        "tableByYear": table_by_year,
+        "tableHeaders": table_headers,
+        "shareLabel": share_prefix,
+    }
+
+    if initial_table_df is None:
+        initial_table_df = pd.DataFrame(columns=table_headers)
+
+    return bundle, initial_table_df
+
+
+def _prepare_region_reactive_payload(
+    metrics_df: pd.DataFrame,
+    metric_key: str,
+    *,
+    scenario_label: str,
+    initial_year: int,
+    show_borders: bool,
+    fill_opacity: float,
+    settings: Settings,
+    basemap_mode: str,
+    toggle_metric_keys: Iterable[str] | None = None,
+) -> tuple[dict, pd.DataFrame]:
+    geojson = fetch_region_geojson()
+    name_field = get_geojson_name_field(geojson)
+
+    locations: List[str] = []
+    for feature in geojson.get("features", []):
+        props = feature.get("properties") or {}
+        value = props.get(name_field)
+        if value is None:
+            continue
+        text_value = _canonical_join_key(value)
+        if text_value:
+            locations.append(text_value)
+
+    if not locations:
+        fetch_region_geojson.cache_clear()
+        geojson = fetch_region_geojson()
+        name_field = get_geojson_name_field(geojson)
+        locations = []
+        for feature in geojson.get("features", []):
+            props = feature.get("properties") or {}
+            value = props.get(name_field)
+            if value is None:
+                continue
+            text_value = str(value).strip()
+            if text_value:
+                locations.append(text_value)
+
+    if not locations:
+        raise ValueError(
+            "GeoJSON has no joinable name field. Check ArcGIS out_fields or normalisation."
+        )
+
+    region_mapping = load_region_mapping()
+    catalog, _, _ = region_baselines(region_mapping)
+    baseline_keys = (
+        catalog[["region", "join_key", "population", "gdp_per_capita"]]
+        .drop_duplicates(subset=["region"])
+        .copy()
+    )
+    baseline_keys["join_key"] = baseline_keys["join_key"].map(_canonical_join_key)
+    baseline_keys["region"] = baseline_keys["region"].map(_canonical_join_key)
+
+    working_df = metrics_df.copy()
+    working_df["join_key"] = working_df["join_key"].map(_canonical_join_key)
+    working_df["region"] = working_df["region"].map(_canonical_join_key)
+
+    years = sorted(int(y) for y in working_df["Year"].dropna().unique())
+    initial_year = int(initial_year)
+    if initial_year not in years:
+        years.append(initial_year)
+        years.sort()
+
+    year_contexts: Dict[int, Dict[str, pd.DataFrame]] = {}
+    for year in years:
+        df_year = working_df[working_df["Year"] == int(year)].copy()
+        df_year = baseline_keys.merge(
+            df_year,
+            on=["region", "join_key"],
+            how="left",
+            suffixes=("", "_data"),
+        )
+
+        if "population_data" in df_year.columns:
+            df_year["population"] = df_year["population_data"].fillna(df_year["population"])
+        if "gdp_per_capita_data" in df_year.columns:
+            df_year["gdp_per_capita"] = df_year["gdp_per_capita_data"].fillna(df_year["gdp_per_capita"])
+
+        drop_cols = [col for col in ("population_data", "gdp_per_capita_data") if col in df_year.columns]
+        if drop_cols:
+            df_year.drop(columns=drop_cols, inplace=True)
+
+        df_year["Year"] = int(year)
+        numeric_cols = df_year.select_dtypes(include=[np.number]).columns
+        df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
+        df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
+        df_year["region"] = df_year["region"].map(_canonical_join_key)
+
+        map_df = df_year[
+            df_year["join_key"].isin(locations) & (df_year["join_key"].str.len() > 0)
+        ].copy()
+
+        year_contexts[int(year)] = {"frame": df_year, "map": map_df}
+
+    opacity = float(np.clip(fill_opacity, 0.05, 1.0))
+    dark_mode = is_dark_mode()
+    line_color = "#93c5fd" if dark_mode else "#1f2937"
+    border_width = 1.3 if show_borders else 0.6
+
+    metric_order: List[str] = []
+    candidates = [metric_key]
+    if toggle_metric_keys:
+        candidates.extend(toggle_metric_keys)
+    for candidate in candidates:
+        if candidate and candidate in REGION_METRIC_CONFIG and candidate not in metric_order:
+            metric_order.append(candidate)
+    if not metric_order:
+        metric_order.append(metric_key)
+
+    metric_bundles: Dict[str, Dict[str, Any]] = {}
+    base_key = metric_order[0]
+    initial_table_df: pd.DataFrame | None = None
+    for key in metric_order:
+        config = REGION_METRIC_CONFIG[key]
+        bundle, bundle_table = _build_region_metric_bundle(
+            key,
+            config=config,
+            year_contexts=year_contexts,
+            locations=locations,
+            initial_year=initial_year,
+            opacity=opacity,
+        )
+        metric_bundles[key] = bundle
+        if key == base_key:
+            initial_table_df = bundle_table
+
+    base_bundle = metric_bundles[base_key]
 
     def _clean(value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -5843,6 +5931,8 @@ def _prepare_region_reactive_payload(
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    toggle_metric_keys = REGION_METRIC_TOGGLE_PAIRS.get(metric_key)
 
     map_cfg = getattr(getattr(settings, "ui", None), "maplibre", None)
     style_light = _clean(getattr(map_cfg, "style_url", None)) or MAPLIBRE_FALLBACK_LIGHT
@@ -5923,85 +6013,20 @@ def _prepare_region_reactive_payload(
         style_light = selected_style_url
         style_dark = selected_style_url
 
-    basemap_options: list[dict[str, Any]] = []
-    if tile_template:
-        basemap_options.append(
-            {
-                "id": "terrain",
-                "label": terrain_label,
-                "type": "raster",
-                "tileTemplate": tile_template,
-            }
-        )
-    if light_tile_url:
-        basemap_options.append(
-            {
-                "id": "light",
-                "label": light_label,
-                "type": "raster",
-                "tileTemplate": light_tile_url,
-            }
-        )
-    elif light_style_url:
-        basemap_options.append(
-            {
-                "id": "light",
-                "label": light_label,
-                "type": "style",
-                "styleUrl": light_style_url,
-            }
-        )
-    elif vector_light_style is not None:
-        basemap_options.append(
-            {
-                "id": "light",
-                "label": light_label,
-                "type": "style",
-                "styleObject": vector_light_style,
-            }
-        )
-    elif isinstance(style_light_base, str) and style_light_base:
-        basemap_options.append(
-            {
-                "id": "light",
-                "label": light_label,
-                "type": "style",
-                "styleUrl": style_light_base,
-            }
-        )
-    if not basemap_options:
-        basemap_options.append(
-            {
-                "id": "default",
-                "label": "Light basemap",
-                "type": "style",
-                "styleUrl": MAPLIBRE_FALLBACK_LIGHT,
-            }
-        )
-
-    default_basemap = basemap_mode if any(opt["id"] == basemap_mode for opt in basemap_options) else (basemap_options[0]["id"] if basemap_options else "default")
-
     payload = {
-        "title": config.get("label", metric_key),
-        "metricKey": metric_key,
-        "metricLabel": config.get("label", metric_key),
+        "title": base_bundle.get("metricLabel", base_key),
+        "metricKey": base_key,
+        "metricLabel": base_bundle.get("metricLabel", base_key),
         "scenarioLabel": scenario_label,
         "years": [int(y) for y in years],
-        "initialYear": int(initial_year),
+        "initialYear": initial_year,
         "geojson": geojson,
         "nameField": name_field,
         "featureIds": locations,
-        "featureStates": feature_states,
-        "tableByYear": table_by_year,
-        "tableHeaders": table_headers,
-        "legend": {
-            "stops": legend_stops,
-            "min": float(domain_min),
-            "max": float(domain_max),
-            "label": config.get("colorbar", config.get("label", metric_key)),
-            "suffix": config.get("ticksuffix"),
-            "format": config.get("tickformat"),
-        },
+        "featureStates": base_bundle["featureStates"],
+        "tableByYear": base_bundle["tableByYear"],
+        "tableHeaders": base_bundle["tableHeaders"],
+        "legend": base_bundle["legend"],
         "style": {
             "light": style_light,
             "dark": style_dark,
@@ -6013,12 +6038,22 @@ def _prepare_region_reactive_payload(
         "lineColor": line_color,
         "borderWidth": float(border_width),
         "noDataColor": REGION_MAP_ZERO_COLOR,
-        "shareLabel": share_prefix,
+        "shareLabel": base_bundle["shareLabel"],
         "theme": {"mode": "dark" if dark_mode else "light"},
+        "metricBundles": metric_bundles,
     }
 
+    if len(metric_order) > 1:
+        payload["metricToggle"] = {
+            "defaultKey": base_key,
+            "options": [
+                {"key": key, "label": _metric_toggle_label(key)}
+                for key in metric_order
+            ],
+        }
+
     if initial_table_df is None:
-        initial_table_df = pd.DataFrame(columns=table_headers)
+        initial_table_df = pd.DataFrame(columns=base_bundle["tableHeaders"])
 
     return payload, initial_table_df
 
@@ -6033,6 +6068,7 @@ def render_region_map_reactive(
     fill_opacity: float,
     settings: Settings,
     basemap_mode: str,
+    toggle_metric_keys: Iterable[str] | None = None,
     key: Optional[str] = None,
 ) -> pd.DataFrame:
     payload, initial_table = _prepare_region_reactive_payload(
@@ -6044,6 +6080,7 @@ def render_region_map_reactive(
         fill_opacity=fill_opacity,
         settings=settings,
         basemap_mode=basemap_mode,
+        toggle_metric_keys=toggle_metric_keys,
     )
 
     def _sanitise(value: Any):
@@ -6117,7 +6154,8 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
     st.session_state[metric_state_key] = metric_key
     st.session_state["region_metric_key"] = metric_key
 
-    config = REGION_METRIC_CONFIG[metric_key]
+
+    toggle_metric_keys = REGION_METRIC_TOGGLE_PAIRS.get(metric_key)
 
     map_cfg = getattr(getattr(settings, "ui", None), "maplibre", None)
     terrain_label = getattr(map_cfg, "terrain_label", None) or "Terrain imagery"
@@ -6152,6 +6190,7 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
         fill_opacity=1.0,
         settings=settings,
         basemap_mode=basemap_mode,
+        toggle_metric_keys=toggle_metric_keys,
         key=f"reactive_map_{selected_mode}_{metric_key}",
     )
 
@@ -7236,4 +7275,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
 
