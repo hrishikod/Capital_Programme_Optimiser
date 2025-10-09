@@ -7,6 +7,7 @@ from .loader import (
     DataConfig,
     OptimisationConfig,
     PathsConfig,
+    MapLibreConfig,
     UIConfig,
     ForcedStartRule,
 )

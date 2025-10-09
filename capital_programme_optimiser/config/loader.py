@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import os
 import yaml
 import pandas as pd
 import re
-
 
 @dataclass
 class ForcedStartRule:
@@ -55,11 +55,29 @@ class PathsConfig:
     default_preset: str = ""
 
 
+
+
+@dataclass
+class MapLibreConfig:
+    style_url: Optional[str] = None
+    dark_style_url: Optional[str] = None
+    tile_url: Optional[str] = None
+    light_style_url: Optional[str] = None
+    light_tile_url: Optional[str] = None
+    terrain_label: Optional[str] = None
+    light_label: Optional[str] = None
+    token: Optional[str] = None
+    attribution: Optional[str] = None
+    min_zoom: Optional[float] = None
+    max_zoom: Optional[float] = None
+    hash: bool = False
+
 @dataclass
 class UIConfig:
     default_run_mode: str = "standard"
     baseline_options_m: List[int] = field(default_factory=list)
     buffer_levels_m: List[int] = field(default_factory=list)
+    maplibre: MapLibreConfig = field(default_factory=MapLibreConfig)
 
 
 @dataclass
@@ -97,6 +115,42 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
         return yaml.safe_load(fh)
 
 
+
+def _maybe_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+def _maybe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def _maybe_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        norm = value.strip().lower()
+        if not norm:
+            return None
+        if norm in {"1", "true", "yes", "on"}:
+            return True
+        if norm in {"0", "false", "no", "off"}:
+            return False
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
 def load_settings(path: Optional[Path] = None) -> Settings:
     cfg_path = path or DEFAULT_SETTINGS_PATH
     raw = _load_yaml(cfg_path)
@@ -139,16 +193,37 @@ def load_settings(path: Optional[Path] = None) -> Settings:
     baseline_opts = [int(v) for v in ui_raw.get("baseline_options_m", [])]
     buffer_levels = [int(v) for v in ui_raw.get("buffer_levels_m", [])]
     default_mode = str(ui_raw.get("default_run_mode", "standard"))
+    map_raw = ui_raw.get("maplibre", {}) or {}
+    map_cfg = MapLibreConfig(
+        style_url=_maybe_str(map_raw.get("style_url")),
+        dark_style_url=_maybe_str(map_raw.get("dark_style_url")),
+        tile_url=_maybe_str(map_raw.get("tile_url")),
+        light_style_url=_maybe_str(map_raw.get("light_style_url")),
+        light_tile_url=_maybe_str(map_raw.get("light_tile_url")),
+        terrain_label=_maybe_str(map_raw.get("terrain_label")),
+        light_label=_maybe_str(map_raw.get("light_label")),
+        token=_maybe_str(map_raw.get("token")),
+        attribution=_maybe_str(map_raw.get("attribution")),
+        min_zoom=_maybe_float(map_raw.get("min_zoom")),
+        max_zoom=_maybe_float(map_raw.get("max_zoom")),
+        hash=_maybe_bool(map_raw.get("hash")) or False,
+    )
+    env_token = os.getenv("LINZ_BASEMAPS_KEY") or os.getenv("MAPTILER_KEY")
+    if env_token:
+        map_cfg.token = env_token.strip()
+
     try:
         ui_cfg = UIConfig(
             default_run_mode=default_mode,
             baseline_options_m=baseline_opts,
             buffer_levels_m=buffer_levels,
+            maplibre=map_cfg,
         )
     except TypeError:
         ui_cfg = UIConfig(default_run_mode=default_mode)
         setattr(ui_cfg, "baseline_options_m", baseline_opts)
         setattr(ui_cfg, "buffer_levels_m", buffer_levels)
+        setattr(ui_cfg, "maplibre", map_cfg)
 
     forced = {
         name: ForcedStartRule.from_dict(rule if isinstance(rule, dict) else {})
@@ -227,3 +302,4 @@ def load_project_region_mapping(path: Optional[Path] = None) -> pd.DataFrame:
     df_proc['population'] = pd.to_numeric(df_proc['population'], errors='coerce').fillna(0.0)
 
     return df_proc
+

@@ -1,0 +1,871 @@
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.0/dist/maplibre-gl.css" />
+<style>
+  :root {
+    --pbi-blue: #19456B;
+    --pbi-green: #AFBD22;
+    --pbi-tertiary: #908070;
+    --header-bg: #ffffff;
+    --border: rgba(148, 163, 184, 0.35);
+    --shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    --text-1: #0F172A;
+    --text-2: #475569;
+    --row-alt: rgba(25, 69, 107, 0.04);
+    --row-hover: rgba(175, 189, 34, 0.16);
+    --card-bg: #ffffff;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI','Inter',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+    color: var(--text-1);
+  }
+  #reactive-region-map {
+    width: 100%;
+  }
+  .map-app {
+    display: flex;
+    gap: 16px;
+    align-items: stretch;
+    width: 100%;
+  }
+  .map-app__panel {
+    flex: 2 1 0%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .map-app__header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 18px 12px;
+    box-shadow: var(--shadow);
+  }
+  .map-app__title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .map-app__subtitle {
+    font-size: 0.95rem;
+    color: var(--text-2);
+  }
+  .map-app__map {
+    position: relative;
+    height: 520px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    background: #f8fafc;
+  }
+  .map-app__map .maplibregl-canvas {
+    border-radius: inherit;
+  }
+  .map-app__map .maplibregl-control-container {
+    font-family: inherit;
+  }
+  .map-app__map--empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    color: var(--text-2);
+  }
+  .map-app__slider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+  }
+  .map-app__range {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.45);
+  }
+  .map-app__range:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .map-app__range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--pbi-green);
+    cursor: pointer;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 2px rgba(25, 69, 107, 0.25);
+  }
+  .map-app__range::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--pbi-green);
+    cursor: pointer;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 2px rgba(25, 69, 107, 0.25);
+  }
+  .map-app__year {
+    font-weight: 600;
+    color: var(--pbi-blue);
+    min-width: 70px;
+    text-align: right;
+  }
+  .map-app__side {
+    flex: 1 1 0%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 16px 18px;
+  }
+  .map-app__legend-title {
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .map-app__legend-bar {
+    height: 12px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #d1d5db, #1d4ed8);
+  }
+  .map-app__legend-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: var(--text-2);
+  }
+  .map-app__table-title {
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .map-app__table-scroll {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .map-app__table-scroll table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .map-app__table-scroll thead {
+    position: sticky;
+    top: 0;
+    background: #f1f5f9;
+    box-shadow: inset 0 -1px 0 rgba(148, 163, 184, 0.45);
+  }
+  .map-app__table-scroll th,
+  .map-app__table-scroll td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .map-app__table-scroll tbody tr:nth-child(odd) {
+    background: rgba(25, 69, 107, 0.03);
+  }
+  .map-app__table-scroll tbody tr:hover {
+    background: rgba(175, 189, 34, 0.18);
+  }
+  .map-app__table-scroll .cell--num {
+    text-align: right;
+  }
+  .map-app__tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(15, 23, 42, 0.92);
+    color: white;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    min-width: 200px;
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
+    transform: translate(-50%, -100%);
+    z-index: 1000;
+  }
+  .map-app__tooltip-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .map-app__tooltip-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .map-app__tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .map-app__tooltip-row span:first-child {
+    color: rgba(226, 232, 240, 0.88);
+  }
+  .map-app__tooltip-row span:last-child {
+    font-weight: 500;
+    color: #f8fafc;
+  }
+  @media (max-width: 1180px) {
+    .map-app {
+      flex-direction: column;
+    }
+    .map-app__side {
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .map-app__side .card {
+      flex: 1 1 320px;
+    }
+  }
+</style>
+<div id="reactive-region-map">
+  <div id="root"></div>
+</div>
+<script src="https://unpkg.com/maplibre-gl@3.6.0/dist/maplibre-gl.js"></script>
+<script>
+(function () {
+  const payload = {DATA_JSON};
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+
+  const root = document.getElementById('root');
+  if (!root) {
+    return;
+  }
+
+  function escapeHtml(value) {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function uniqueSortedYears(source) {
+    const years = Array.isArray(source) ? source : [];
+    const mapped = years
+      .map((year) => Number(year))
+      .filter((year) => Number.isFinite(year));
+    const byKey = new Set(mapped);
+    return Array.from(byKey).sort((a, b) => a - b);
+  }
+
+  function appendToken(styleRef, token) {
+    if (!styleRef) {
+      return null;
+    }
+    if (typeof styleRef === 'object') {
+      try {
+        return JSON.parse(JSON.stringify(styleRef));
+      } catch (err) {
+        return styleRef;
+      }
+    }
+    if (typeof styleRef !== 'string') {
+      return null;
+    }
+    const trimmed = styleRef.trim();
+    if (!token || typeof token !== 'string' || !token.trim()) {
+      return trimmed;
+    }
+    if (trimmed.indexOf('{token}') !== -1) {
+      return trimmed.replace('{token}', encodeURIComponent(token.trim()));
+    }
+    const separator = trimmed.indexOf('?') === -1 ? '?' : '&';
+    const paramName = /maptiler/i.test(trimmed) ? 'key' : 'api';
+    return `${trimmed}${separator}${paramName}=${encodeURIComponent(token.trim())}`;
+  }
+
+  function formatLegendValue(value, legend) {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+      return '';
+    }
+    const suffix = legend && typeof legend.suffix === 'string' ? legend.suffix : '';
+    const abs = Math.abs(value);
+    let formatter;
+    if (abs >= 1e9) {
+      formatter = new Intl.NumberFormat('en-NZ', { notation: 'compact', maximumFractionDigits: 1 });
+    } else if (abs >= 1e6) {
+      formatter = new Intl.NumberFormat('en-NZ', { notation: 'compact', maximumFractionDigits: 1 });
+    } else if (abs >= 1000) {
+      formatter = new Intl.NumberFormat('en-NZ', { maximumFractionDigits: 0 });
+    } else if (abs >= 100) {
+      formatter = new Intl.NumberFormat('en-NZ', { maximumFractionDigits: 1 });
+    } else {
+      formatter = new Intl.NumberFormat('en-NZ', { maximumFractionDigits: 2 });
+    }
+    return `${formatter.format(value)}${suffix}`;
+  }
+
+  function renderTooltip(state, shareLabel) {
+    if (!state) {
+      return '<div class="map-app__tooltip-body">No data</div>';
+    }
+    if (!state.hasData) {
+      return `<div class="map-app__tooltip-title">${escapeHtml(state.region || '')}</div>` +
+        '<div class="map-app__tooltip-body">No data</div>';
+    }
+    const sharePrefix = shareLabel || 'Share';
+    const rows = [
+      ['Year', state.year ? `FY ${escapeHtml(state.year)}` : '-'],
+      ['Metric', state.metricDisplay || '-'],
+      [`${sharePrefix} (cumulative)`, state.shareCumulative || '-'],
+      [`${sharePrefix} (annual)`, state.shareAnnual || '-'],
+      ['Per-capita (cum)', state.perCapitaCumulative || '-'],
+      ['Per-capita (annual)', state.perCapitaAnnual || '-'],
+      ['Population', state.population || '-'],
+    ];
+    const body = rows
+      .map(([label, value]) => `<div class="map-app__tooltip-row"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`)
+      .join('');
+    return `<div class="map-app__tooltip-title">${escapeHtml(state.region || '')}</div>` +
+      `<div class="map-app__tooltip-body">${body}</div>`;
+  }
+
+  function buildColorExpression(legend, fallbackColor) {
+    const stops = legend && Array.isArray(legend.stops) ? legend.stops : [];
+    const legendMin = legend && typeof legend.min === 'number' ? legend.min : (stops.length ? stops[0][0] : 0);
+    const expression = ['interpolate', ['linear'], ['coalesce', ['feature-state', 'value'], legendMin]];
+    if (stops.length) {
+      stops.forEach((stop) => {
+        const value = Array.isArray(stop) ? Number(stop[0]) : null;
+        const colour = Array.isArray(stop) ? stop[1] : null;
+        if (Number.isFinite(value) && typeof colour === 'string') {
+          expression.push(value);
+          expression.push(colour);
+        }
+      });
+    } else {
+      expression.push(legendMin - 1);
+      expression.push('#d1d5db');
+      expression.push(legendMin + 1);
+      expression.push('#1d4ed8');
+    }
+    return [
+      'case',
+      ['all', ['==', ['feature-state', 'hasData'], true], ['!=', ['feature-state', 'value'], null]],
+      expression,
+      fallbackColor,
+    ];
+  }
+
+  function buildLegendGradient(legend) {
+    const stops = legend && Array.isArray(legend.stops) ? legend.stops : [];
+    const min = legend && typeof legend.min === 'number' ? legend.min : (stops.length ? stops[0][0] : 0);
+    const max = legend && typeof legend.max === 'number' ? legend.max : min + 1;
+    const span = max - min || 1;
+    if (!stops.length) {
+      return 'linear-gradient(90deg, #d1d5db, #1d4ed8)';
+    }
+    const entries = stops
+      .map((stop) => {
+        const value = Array.isArray(stop) ? Number(stop[0]) : null;
+        const colour = Array.isArray(stop) ? stop[1] : null;
+        if (!Number.isFinite(value) || typeof colour !== 'string') {
+          return null;
+        }
+        const pct = ((value - min) / span) * 100;
+        const clamped = Math.max(0, Math.min(100, pct));
+        return `${colour} ${clamped}%`;
+      })
+      .filter(Boolean);
+    if (!entries.length) {
+      return 'linear-gradient(90deg, #d1d5db, #1d4ed8)';
+    }
+    return `linear-gradient(90deg, ${entries.join(', ')})`;
+  }
+
+  const years = uniqueSortedYears(payload.years);
+  let currentYear = Number(payload.initialYear);
+  if (!Number.isFinite(currentYear)) {
+    currentYear = years.length ? years[0] : new Date().getFullYear();
+  }
+  if (years.length && !years.includes(currentYear)) {
+    currentYear = years[0];
+  }
+  if (!years.length) {
+    years.push(currentYear);
+  }
+
+  const metricLabel = typeof payload.metricLabel === 'string' && payload.metricLabel.trim()
+    ? payload.metricLabel.trim()
+    : (typeof payload.title === 'string' ? payload.title : 'Regional investment');
+  const scenarioLabel = typeof payload.scenarioLabel === 'string' && payload.scenarioLabel.trim()
+    ? payload.scenarioLabel.trim()
+    : 'Scenario';
+  const shareLabel = typeof payload.shareLabel === 'string' && payload.shareLabel.trim()
+    ? payload.shareLabel.trim()
+    : 'Share';
+
+  const app = document.createElement('div');
+  app.className = 'map-app';
+
+  const panel = document.createElement('div');
+  panel.className = 'map-app__panel';
+
+  const header = document.createElement('div');
+  header.className = 'map-app__header';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'map-app__title';
+  titleEl.textContent = metricLabel || 'Regional investment';
+
+  const subtitleEl = document.createElement('div');
+  subtitleEl.className = 'map-app__subtitle';
+
+  header.appendChild(titleEl);
+  header.appendChild(subtitleEl);
+
+  const mapWrapper = document.createElement('div');
+  mapWrapper.className = 'map-app__map';
+
+  const sliderRow = document.createElement('div');
+  sliderRow.className = 'map-app__slider';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'map-app__range';
+  slider.min = String(years[0]);
+  slider.max = String(years[years.length - 1]);
+  slider.step = '1';
+  slider.value = String(currentYear);
+  if (years.length <= 1) {
+    slider.disabled = true;
+  }
+
+  const yearLabelEl = document.createElement('div');
+  yearLabelEl.className = 'map-app__year';
+
+  sliderRow.appendChild(slider);
+  sliderRow.appendChild(yearLabelEl);
+
+  panel.appendChild(header);
+  panel.appendChild(mapWrapper);
+  panel.appendChild(sliderRow);
+
+  const side = document.createElement('div');
+  side.className = 'map-app__side';
+
+  const legendCard = document.createElement('div');
+  legendCard.className = 'map-app__legend card';
+
+  const legendTitle = document.createElement('div');
+  legendTitle.className = 'map-app__legend-title';
+  legendTitle.textContent = (payload.legend && payload.legend.label) || metricLabel || 'Legend';
+
+  const legendBar = document.createElement('div');
+  legendBar.className = 'map-app__legend-bar';
+
+  const legendScale = document.createElement('div');
+  legendScale.className = 'map-app__legend-scale';
+
+  const legendMin = document.createElement('span');
+  const legendMax = document.createElement('span');
+  legendScale.appendChild(legendMin);
+  legendScale.appendChild(legendMax);
+
+  legendCard.appendChild(legendTitle);
+  legendCard.appendChild(legendBar);
+  legendCard.appendChild(legendScale);
+
+  const tableCard = document.createElement('div');
+  tableCard.className = 'map-app__table card';
+
+  const tableTitle = document.createElement('div');
+  tableTitle.className = 'map-app__table-title';
+  tableTitle.textContent = 'Top regions';
+
+  const tableScroll = document.createElement('div');
+  tableScroll.className = 'map-app__table-scroll';
+
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+
+  const headers = Array.isArray(payload.tableHeaders) ? payload.tableHeaders : [];
+  const headerIsNumeric = [];
+  headers.forEach((headerValue, index) => {
+    const text = String(headerValue || '').trim();
+    const th = document.createElement('th');
+    th.textContent = text;
+    const numeric = /(share|percent|\$|value|per\s?cap|total|benefit|spend|cum)/i.test(text);
+    if (numeric) {
+      th.classList.add('cell--num');
+    }
+    headerIsNumeric[index] = numeric;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+  tableScroll.appendChild(table);
+
+  tableCard.appendChild(tableTitle);
+  tableCard.appendChild(tableScroll);
+
+  side.appendChild(legendCard);
+  side.appendChild(tableCard);
+
+  app.appendChild(panel);
+  app.appendChild(side);
+  root.innerHTML = '';
+  root.appendChild(app);
+
+  function updateLegend(legend) {
+    if (!legend) {
+      legendBar.style.background = 'linear-gradient(90deg, #d1d5db, #1d4ed8)';
+      legendMin.textContent = '';
+      legendMax.textContent = '';
+      return;
+    }
+    legendBar.style.background = buildLegendGradient(legend);
+    legendMin.textContent = formatLegendValue(legend.min, legend);
+    legendMax.textContent = formatLegendValue(legend.max, legend);
+  }
+
+  function updateSubtitle(year) {
+    subtitleEl.textContent = `${scenarioLabel} • FY ${year}`;
+  }
+
+  function updateYearLabel(year) {
+    yearLabelEl.textContent = `FY ${year}`;
+  }
+
+  function updateTable(year) {
+    const rows = payload.tableByYear && payload.tableByYear[String(year)]
+      ? payload.tableByYear[String(year)]
+      : [];
+    tbody.innerHTML = '';
+    if (!rows.length) {
+      const emptyRow = document.createElement('tr');
+      const emptyCell = document.createElement('td');
+      emptyCell.colSpan = headers.length || 1;
+      emptyCell.textContent = 'No data';
+      emptyRow.appendChild(emptyCell);
+      tbody.appendChild(emptyRow);
+      return;
+    }
+    rows.forEach((rowValues) => {
+      const tr = document.createElement('tr');
+      rowValues.forEach((cellValue, idx) => {
+        const td = document.createElement('td');
+        const text = cellValue == null ? '' : String(cellValue);
+        if (headerIsNumeric[idx]) {
+          td.classList.add('cell--num');
+        } else if (/^\s*(?:[\$£€]?\s?-?\d|\d+\.?\d*%)/.test(text)) {
+          td.classList.add('cell--num');
+        }
+        td.textContent = text;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  let featureIds = Array.isArray(payload.featureIds) ? payload.featureIds.slice() : [];
+  const featureStates = payload.featureStates && typeof payload.featureStates === 'object'
+    ? payload.featureStates
+    : {};
+  if (!featureIds.length) {
+    const firstYearKey = Object.keys(featureStates)[0];
+    if (firstYearKey && featureStates[firstYearKey]) {
+      featureIds = Object.keys(featureStates[firstYearKey]);
+    }
+  }
+
+  let mapInstance = null;
+  let tooltipEl = null;
+
+  function hideTooltip() {
+    if (tooltipEl) {
+      tooltipEl.style.display = 'none';
+    }
+  }
+
+  function applyFeatureStates(year) {
+    if (!mapInstance || !mapInstance.getSource('regions')) {
+      return;
+    }
+    const yearStates = featureStates && featureStates[String(year)] ? featureStates[String(year)] : {};
+    featureIds.forEach((id) => {
+      const state = yearStates[id] || null;
+      try {
+        mapInstance.setFeatureState({ source: 'regions', id }, state ? {
+          value: state.value != null ? state.value : null,
+          hasData: !!state.hasData,
+          hasFill: !!state.hasFill,
+          tooltip: state,
+        } : {
+          value: null,
+          hasData: false,
+          hasFill: false,
+          tooltip: null,
+        });
+      } catch (err) {
+        // Silently ignore features that are missing from the GeoJSON
+      }
+    });
+  }
+
+  function updateYear(year) {
+    currentYear = Number(year);
+    if (!Number.isFinite(currentYear)) {
+      currentYear = years[0];
+    }
+    slider.value = String(currentYear);
+    updateSubtitle(currentYear);
+    updateYearLabel(currentYear);
+    updateTable(currentYear);
+    applyFeatureStates(currentYear);
+
+
+  }
+
+  updateLegend(payload.legend || null);
+  updateYear(currentYear);
+
+  if (slider && !slider.disabled) {
+    slider.addEventListener('input', (event) => {
+      const value = Number(event.target.value);
+      if (!Number.isNaN(value)) {
+        updateYear(value);
+      }
+    });
+  }
+
+
+  const mapOptions = payload.map && typeof payload.map === 'object' ? payload.map : {};
+  const mapStyle = payload.style && typeof payload.style === 'object' ? payload.style : {};
+  const prefersDark = payload.theme && payload.theme.mode === 'dark';
+  const lightStyle = appendToken(mapStyle.light, mapStyle.token);
+  const darkStyle = appendToken(mapStyle.dark || mapStyle.light, mapStyle.token);
+  const chosenStyle = prefersDark ? (darkStyle || lightStyle) : (lightStyle || darkStyle);
+  const apiToken = typeof mapStyle.token === 'string' && mapStyle.token.trim() ? mapStyle.token.trim() : null;
+  const rasterTemplateRaw = typeof mapOptions.tileTemplate === 'string' ? mapOptions.tileTemplate.trim() : '';
+
+  function normaliseTileTemplate(template, token) {
+    if (!template || typeof template !== 'string') {
+      return null;
+    }
+    let url = template.trim();
+    if (!url) {
+      return null;
+    }
+    if (token && token.trim()) {
+      if (url.indexOf('{token}') !== -1) {
+        url = url.replace('{token}', encodeURIComponent(token.trim()));
+      } else if (!/[?&](api|key|access_token|token)=/i.test(url)) {
+        const separator = url.indexOf('?') === -1 ? '?' : '&';
+        const paramName = /maptiler/i.test(url) ? 'key' : 'api';
+        url = `${url}${separator}${paramName}=${encodeURIComponent(token.trim())}`;
+      }
+    }
+    return url;
+  }
+
+  function buildRasterStyle(template, token, options) {
+    const resolved = normaliseTileTemplate(template, token);
+    if (!resolved) {
+      return null;
+    }
+    const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : 0;
+    const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : 18;
+    return {
+      version: 8,
+      sources: {
+        'linz-raster': {
+          type: 'raster',
+          tiles: [resolved],
+          tileSize: 256,
+          minzoom: minZoom,
+          maxzoom: maxZoom,
+        },
+      },
+      layers: [
+        {
+          id: 'linz-raster',
+          type: 'raster',
+          source: 'linz-raster',
+        },
+      ],
+    };
+  }
+
+  let finalStyle = rasterTemplateRaw ? null : chosenStyle;
+  let usingObjectStyle = typeof finalStyle === 'object' && finalStyle !== null;
+  if (!finalStyle && rasterTemplateRaw) {
+    finalStyle = buildRasterStyle(rasterTemplateRaw, apiToken, mapOptions);
+    usingObjectStyle = typeof finalStyle === 'object' && finalStyle !== null;
+  }
+  if (!finalStyle) {
+    finalStyle = buildRasterStyle('https://basemaps.linz.govt.nz/v1/tiles/aerial/WebMercatorQuad/{z}/{x}/{y}.webp', apiToken, mapOptions);
+    usingObjectStyle = typeof finalStyle === 'object' && finalStyle !== null;
+  }
+  if (!finalStyle) {
+    finalStyle = appendToken('https://basemaps.cartocdn.com/gl/positron-gl-style/style.json', mapStyle.token);
+    usingObjectStyle = typeof finalStyle === 'object' && finalStyle !== null;
+  }
+
+  if (typeof maplibregl === 'undefined') {
+    mapWrapper.classList.add('map-app__map--empty');
+    mapWrapper.textContent = 'Map library unavailable';
+    return;
+  }
+
+  if (!payload.geojson || typeof payload.geojson !== 'object') {
+    mapWrapper.classList.add('map-app__map--empty');
+    mapWrapper.textContent = 'No map geometry available';
+    return;
+  }
+
+  if (!finalStyle) {
+    mapWrapper.classList.add('map-app__map--empty');
+    mapWrapper.textContent = 'Basemap style unavailable';
+    return;
+  }
+
+  const mapConfig = {
+    container: mapWrapper,
+    style: finalStyle,
+    center: Array.isArray(mapOptions.center) ? mapOptions.center : [173.0, -41.0],
+    zoom: Number.isFinite(mapOptions.zoom) ? mapOptions.zoom : 4.6,
+    pitch: Number.isFinite(mapOptions.pitch) ? mapOptions.pitch : 0,
+    attributionControl: false,
+  };
+  if (Number.isFinite(mapOptions.minZoom)) {
+    mapConfig.minZoom = mapOptions.minZoom;
+  }
+  if (Number.isFinite(mapOptions.maxZoom)) {
+    mapConfig.maxZoom = mapOptions.maxZoom;
+  }
+  if (mapOptions.hash === true) {
+    mapConfig.hash = true;
+  }
+  if (apiToken && !usingObjectStyle) {
+    mapConfig.transformRequest = (url) => {
+      if (typeof url !== 'string') {
+        return { url };
+      }
+      let nextUrl = url;
+      if (nextUrl.indexOf('{token}') !== -1) {
+        nextUrl = nextUrl.replace('{token}', encodeURIComponent(apiToken));
+      }
+      if (/[?&](api|key|access_token|token)=/i.test(nextUrl)) {
+        return { url: nextUrl };
+      }
+      const separator = nextUrl.indexOf('?') === -1 ? '?' : '&';
+      const paramName = /maptiler/i.test(nextUrl) ? 'key' : 'api';
+      return { url: `${nextUrl}${separator}${paramName}=${encodeURIComponent(apiToken)}` };
+    };
+  }
+
+  mapInstance = new maplibregl.Map(mapConfig);
+
+  if (mapStyle && typeof mapStyle.attribution === 'string' && mapStyle.attribution.trim()) {
+    mapInstance.addControl(new maplibregl.AttributionControl({ customAttribution: mapStyle.attribution.trim(), compact: true }));
+  } else {
+    mapInstance.addControl(new maplibregl.AttributionControl({ customAttribution: 'OpenStreetMap contributors | CARTO', compact: true }));
+  }
+  mapInstance.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
+
+  tooltipEl = document.createElement('div');
+  tooltipEl.className = 'map-app__tooltip';
+  tooltipEl.style.display = 'none';
+  mapWrapper.appendChild(tooltipEl);
+
+  mapInstance.on('load', () => {
+    try {
+      const sourceConfig = {
+        type: 'geojson',
+        data: payload.geojson,
+      }
+      if (payload.nameField && typeof payload.nameField === 'string') {
+        sourceConfig.promoteId = payload.nameField;
+      } else {
+        sourceConfig.generateId = true;
+      }
+      mapInstance.addSource('regions', sourceConfig);
+
+      mapInstance.addLayer({
+        id: 'regions-fill',
+        type: 'fill',
+        source: 'regions',
+        paint: {
+          'fill-color': buildColorExpression(payload.legend || null, payload.noDataColor || 'rgba(0,0,0,0)'),
+          'fill-opacity': ['case', ['==', ['feature-state', 'hasFill'], true], Number(payload.fillOpacity) || 0.85, 0.0],
+        },
+      });
+
+      mapInstance.addLayer({
+        id: 'regions-outline',
+        type: 'line',
+        source: 'regions',
+        paint: {
+          'line-color': payload.lineColor || '#1f2937',
+          'line-width': Number(payload.borderWidth) || 0.8,
+        },
+      });
+
+      if (Array.isArray(mapOptions.bounds) && mapOptions.bounds.length === 2) {
+        try {
+          mapInstance.fitBounds(mapOptions.bounds, { padding: 24, duration: 0 });
+        } catch (fitErr) {
+          // Ignore invalid bounds
+        }
+      }
+
+      applyFeatureStates(currentYear);
+
+      mapInstance.on('mousemove', 'regions-fill', (event) => {
+        const feature = event.features && event.features[0];
+        if (!feature) {
+          hideTooltip();
+          return;
+        }
+        const state = feature.state || mapInstance.getFeatureState({ source: 'regions', id: feature.id });
+        if (!state) {
+          hideTooltip();
+          return;
+        }
+        tooltipEl.innerHTML = renderTooltip(state.tooltip || state, shareLabel);
+        tooltipEl.style.display = 'block';
+        tooltipEl.style.left = `${event.point.x + 14}px`;
+        tooltipEl.style.top = `${event.point.y - 12}px`;
+      });
+
+      mapInstance.on('mouseleave', 'regions-fill', hideTooltip);
+    } catch (layerErr) {
+      mapWrapper.classList.add('map-app__map--empty');
+      mapWrapper.textContent = 'Unable to render map data';
+    }
+  });
+
+
+  mapInstance.on('dragstart', hideTooltip);
+  mapInstance.on('zoomstart', hideTooltip);
+})();
+</script>
+
+
+
+

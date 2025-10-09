@@ -7,9 +7,9 @@ import math
 import re
 import sys
 import json
-
-
+import copy
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from datetime import datetime
 
 from pathlib import Path
@@ -192,18 +192,24 @@ CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B-$3.0B)
 CAPACITY_HEAT_RED    = "#DC2626"  # High pressure (>= $3.0B)
 
 
-REGION_MAP_ZERO_COLOR = "#D7E3FA"
+REGION_MAP_ZERO_COLOR = "rgba(0, 0, 0, 0)"
+MAPLIBRE_FALLBACK_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+MAPLIBRE_FALLBACK_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+MAPLIBRE_FALLBACK_ATTRIBUTION = "OpenStreetMap contributors | CARTO"
+LINZ_TOPO_VECTOR_TILE = "https://basemaps.linz.govt.nz/v1/tiles/topographic/WebMercatorQuad/{z}/{x}/{y}.pbf"
+NZ_BOUNDS = [[165.0, -47.5], [180.0, -33.0]]
+NZ_CENTER = [173.0, -41.0]
 
 PBI_SEQUENTIAL_SCALE = [
-    [0.0, POWERBI_TERTIARY],
-    [0.5, POWERBI_GREEN],
-    [1.0, POWERBI_BLUE],
+    [0.0, '#C62828'],
+    [0.5, '#F59E0B'],
+    [1.0, '#2E7D32'],
 ]
 
 PBI_DIVERGING_SCALE = [
-    [0.0, POWERBI_GREEN],
-    [0.5, POWERBI_TERTIARY],
-    [1.0, POWERBI_BLUE],
+    [0.0, '#C62828'],
+    [0.5, '#F59E0B'],
+    [1.0, '#2E7D32'],
 ]
 
 
@@ -5427,206 +5433,138 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
 
 
 
-_REGION_MAP_REACTIVE_HTML = """
-<style>
-  :root{
-    /* Inline the same palette the app uses so the iframe matches the theme */
-    --pbi-blue: #19456B;
-    --pbi-green: #AFBD22;
-    --pbi-tertiary: #908070;
-    --row-alt: rgba(25,69,107,0.04);
-    --row-hover: rgba(175,189,34,0.16);
-    --border: rgba(148,163,184,0.35);
-    --header-bg: #ffffff;
-    --header-shadow: 0 2px 4px rgba(15,23,42,0.08);
-    --text-1: #0F172A;
-    --text-2: #475569;
-  }
-  /* Make sure the entire iframe uses the same font family as the dashboard */
-  html, body, #reactive-region-map, #map, #side, #table {
-    font-family: 'Segoe UI','Inter',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif !important;
-    color: var(--text-1);
-  }
-  #reactive-region-map { display:flex; gap:14px; align-items:stretch; }
-  #map { flex: 2 1 0%; min-height:520px; }
-  #side { flex: 1 1 0%; min-width:280px; }
-  #year_label {
-    font-weight: 600; margin: 0 0 8px 0; color: var(--pbi-blue);
-  }
 
-  /* Mini table container beside the map */
-  .mini-table {
-    height: 480px;
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 10px 24px rgba(25,69,107,0.08);
-    background: #fff;
-  }
-  .mini-table table {
-    width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: 14px;
-    line-height: 1.35;
-  }
-  .mini-table thead th {
-    position: sticky; top: 0; z-index: 2;
-    text-align: left;
-    padding: 8px 10px;
-    background: var(--header-bg);
-    color: var(--pbi-blue);
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    box-shadow: var(--header-shadow);
-  }
-  .mini-table tbody td {
-    padding: 8px 10px;
-    border-top: 1px solid var(--border);
-    background: #ffffff;
-    color: var(--text-2);
-  }
-  .mini-table tbody tr:nth-child(even) td { background: var(--row-alt); }
-  .mini-table tbody tr:hover td { background: var(--row-hover); }
+@lru_cache(maxsize=1)
+def _region_map_template() -> str:
+    template_path = Path(__file__).with_name("region_map_template.html")
+    if not template_path.exists():
+        raise FileNotFoundError(f"Region map template missing: {template_path}")
+    return template_path.read_text(encoding="utf-8")
 
-  /* First column (Region) stronger */
-  .mini-table tbody td:first-child {
-    font-weight: 600; color: var(--pbi-blue);
-  }
-  /* Numeric alignment + tabular numerals for tidy columns */
-  .mini-table td.cell--num, .mini-table th.cell--num {
-    text-align: right;
-    font-variant-numeric: tabular-nums lining-nums;
-  }
 
-  /* Range slider to match app look a bit better */
-  input[type="range"]{
-    width:100%;
-    accent-color: var(--pbi-blue);
-  }
-</style>
-
-<div id="reactive-region-map">
-  <div id="map"></div>
-  <div id="side">
-    <div id="year_label"></div>
-    <div id="table" class="mini-table" role="region" aria-label="Regional summary table"></div>
-  </div>
-</div>
-
-<div style="margin-top:8px;">
-  <input id="year_slider" type="range" min="0" max="0" value="0" step="1" aria-label="Financial year slider">
-</div>
-
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-<script id="payload" type="application/json">{DATA_JSON}</script>
-
-<script>
-(function(){
-  const payload = JSON.parse(document.getElementById('payload').textContent);
-  const years = payload.years;
-  const minY = years[0], maxY = years[years.length - 1];
-  const mapDiv = document.getElementById('map');
-  const slider = document.getElementById('year_slider');
-  const yearLabel = document.getElementById('year_label');
-  const tableDiv = document.getElementById('table');
-
-  slider.min = String(minY);
-  slider.max = String(maxY);
-  slider.value = String(payload.initial_year);
-
-  // Escape HTML to avoid accidental injection in table cells
-  function esc(s){
-    return String(s)
-      .replaceAll('&','&amp;')
-      .replaceAll('<','&lt;')
-      .replaceAll('>','&gt;');
-  }
-
-  // Heuristics to detect numeric-like columns/cells (percentages, $m/$b, raw numbers)
-  const headerNumRegex = /(share|percent|per[- ]?cap|spend|benefit|\$|annual|cum|pp|\(%\))/i;
-  const cellNumRegex = /^\\s*(?:\\$?\\s?-?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?(?:\\s?[mbMB])?|\\$?-?\\d+(?:\\.\\d+)?\\s?(?:m|b)|-?\\d+(?:\\.\\d+)?\\s?%|\\$\\s?\\d[\\d,]*(?:\\.\\d+)?)\\s*$/;
-
-  function renderTable(year){
-    const rows = payload.table_by_year[String(year)] || [];
-    const headers = payload.table_headers || [];
-
-    // Decide which columns to right-align
-    const numericCol = headers.map(h => headerNumRegex.test(String(h)));
-
-    let html = '<table><thead><tr>';
-    headers.forEach((h, idx) => {
-      html += '<th class="' + (numericCol[idx] ? 'cell--num' : '') + '">' + esc(h) + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-
-    for (const r of rows){
-      html += '<tr>';
-      for (let cIdx = 0; cIdx < r.length; cIdx++){
-        const val = r[cIdx];
-        const isNum = numericCol[cIdx] || cellNumRegex.test(String(val));
-        html += '<td class="' + (isNum ? 'cell--num' : '') + '">' + esc(val) + '</td>';
-      }
-      html += '</tr>';
+def _linz_topographic_light_style(
+    *,
+    token: Optional[str],
+    min_zoom: Optional[float],
+    max_zoom: Optional[float],
+) -> dict[str, Any]:
+    """Create a lightweight LINZ topographic basemap style for MapLibre."""
+    min_zoom_value = 0.0
+    max_zoom_value = 14.0
+    if min_zoom is not None and math.isfinite(min_zoom):
+        min_zoom_value = max(0.0, float(min_zoom))
+    if max_zoom is not None and math.isfinite(max_zoom):
+        max_zoom_value = max(min_zoom_value, float(max_zoom))
+    tile_url = LINZ_TOPO_VECTOR_TILE
+    if token:
+        tile_url = f"{tile_url}?api={token}"
+    return {
+        "version": 8,
+        "sources": {
+            "linz-topographic": {
+                "type": "vector",
+                "tiles": [tile_url],
+                "minzoom": min_zoom_value,
+                "maxzoom": max_zoom_value,
+            }
+        },
+        "layers": [
+            {
+                "id": "background",
+                "type": "background",
+                "paint": {"background-color": "#f8fafc"},
+            },
+            {
+                "id": "water-fill",
+                "type": "fill",
+                "source": "linz-topographic",
+                "source-layer": "water",
+                "paint": {"fill-color": "#bfdbfe", "fill-opacity": 0.85},
+            },
+            {
+                "id": "landcover-fill",
+                "type": "fill",
+                "source": "linz-topographic",
+                "source-layer": "landcover",
+                "paint": {"fill-color": "#f1f5f9", "fill-opacity": 0.55},
+            },
+            {
+                "id": "landuse-fill",
+                "type": "fill",
+                "source": "linz-topographic",
+                "source-layer": "landuse",
+                "paint": {"fill-color": "#e2e8f0", "fill-opacity": 0.45},
+            },
+            {
+                "id": "transportation-case",
+                "type": "line",
+                "source": "linz-topographic",
+                "source-layer": "transportation",
+                "paint": {
+                    "line-color": "#cbd5f5",
+                    "line-width": [
+                        "interpolate",
+                        ["linear"],
+                        ["zoom"],
+                        5,
+                        0.6,
+                        10,
+                        1.4,
+                        14,
+                        3.0,
+                    ],
+                    "line-opacity": 0.65,
+                },
+            },
+            {
+                "id": "transportation-line",
+                "type": "line",
+                "source": "linz-topographic",
+                "source-layer": "transportation",
+                "filter": [
+                    "match",
+                    ["get", "class"],
+                    ["motorway", "trunk", "primary", "secondary"],
+                    True,
+                    False,
+                ],
+                "paint": {
+                    "line-color": [
+                        "match",
+                        ["get", "class"],
+                        "motorway",
+                        "#1d4ed8",
+                        "trunk",
+                        "#2563eb",
+                        "primary",
+                        "#0ea5e9",
+                        "secondary",
+                        "#38bdf8",
+                        "#64748b",
+                    ],
+                    "line-width": [
+                        "interpolate",
+                        ["linear"],
+                        ["zoom"],
+                        5,
+                        0.4,
+                        10,
+                        1.1,
+                        14,
+                        2.4,
+                    ],
+                    "line-opacity": 0.85,
+                },
+            },
+            {
+                "id": "coastline",
+                "type": "line",
+                "source": "linz-topographic",
+                "source-layer": "coastline",
+                "paint": {"line-color": "#94a3b8", "line-width": 0.6},
+            },
+        ],
     }
-    html += '</tbody></table>';
-
-    tableDiv.innerHTML = html;
-    yearLabel.textContent = 'FY ' + year;
-  }
-
-  // ---- Plotly map ----
-  const trace = {
-    type: 'choropleth',
-    geojson: payload.geojson,
-    featureidkey: 'properties.' + payload.name_field,
-    locations: payload.locations,
-    z: payload.z_by_year[String(payload.initial_year)],
-    zmin: payload.zmin,
-    zmax: payload.zmax,
-    colorscale: payload.colorscale,
-    reversescale: payload.reversescale,
-    marker: { line: { color: payload.line_color, width: payload.marker_line_width } },
-    colorbar: payload.colorbar,
-    customdata: payload.customdata_by_year[String(payload.initial_year)],
-    hovertemplate: payload.hovertemplate
-  };
-
-  const layout = payload.layout;
-
-  Plotly.newPlot(mapDiv, [trace], layout, {displayModeBar:false, responsive:true}).then(function(){
-    renderTable(payload.initial_year);
-  });
-
-  // Smooth slider updates with RAF throttling
-  let raf = null;
-  let lastApplied = payload.initial_year;
-
-  function apply(year){
-    year = Math.max(minY, Math.min(maxY, year|0));
-    if (year === lastApplied) return;
-    lastApplied = year;
-    Plotly.restyle(mapDiv, {
-      z: [payload.z_by_year[String(year)]],
-      customdata: [payload.customdata_by_year[String(year)]]
-    });
-    renderTable(year);
-  }
-
-  function onInput(){
-    if (raf !== null) return;
-    raf = requestAnimationFrame(function(){
-      raf = null;
-      apply(parseInt(slider.value, 10));
-    });
-  }
-
-  slider.addEventListener('input', onInput);
-  slider.addEventListener('change', function(){ apply(parseInt(slider.value, 10)); });
-})();
-</script>
-"""
-
 
 
 def _prepare_region_reactive_payload(
@@ -5637,19 +5575,13 @@ def _prepare_region_reactive_payload(
     initial_year: int,
     show_borders: bool,
     fill_opacity: float,
+    settings: Settings,
+    basemap_mode: str,
 ) -> tuple[dict, pd.DataFrame]:
-    """
-    Build a compact, client-ready payload:
-     - ordered region locations aligned to GeoJSON featureidkey
-     - per-year z vectors and per-year customdata for hover
-     - per-year (preformatted) top-10 table
-     - static Plotly layout, colorbar and colorscale
-    Returns (payload_dict, initial_year_table_df).
-    """
+    """Build the client payload for the React + MapLibre regional view."""
     geojson = fetch_region_geojson()
     name_field = get_geojson_name_field(geojson)
 
-    # Ordered locations list matching GeoJSON feature order
     locations: list[str] = []
     for feature in geojson.get("features", []):
         props = feature.get("properties") or {}
@@ -5661,7 +5593,6 @@ def _prepare_region_reactive_payload(
             locations.append(text)
 
     if not locations:
-        # Clear cached geometry and retry once to self-heal after schema changes.
         fetch_region_geojson.cache_clear()
         geojson = fetch_region_geojson()
         name_field = get_geojson_name_field(geojson)
@@ -5680,10 +5611,13 @@ def _prepare_region_reactive_payload(
             "GeoJSON has no joinable name field. Check ArcGIS out_fields or normalisation."
         )
 
-    # Region baselines (ensures consistent population/gdp fields)
     region_mapping = load_region_mapping()
     catalog, _, _ = region_baselines(region_mapping)
-    baseline_keys = catalog[["region", "join_key", "population", "gdp_per_capita"]].drop_duplicates(subset=["region"]).copy()
+    baseline_keys = (
+        catalog[["region", "join_key", "population", "gdp_per_capita"]]
+        .drop_duplicates(subset=["region"])
+        .copy()
+    )
 
     years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not years:
@@ -5693,43 +5627,48 @@ def _prepare_region_reactive_payload(
 
     config = REGION_METRIC_CONFIG[metric_key]
     opacity = float(np.clip(fill_opacity, 0.05, 1.0))
-    base_colorscale = _colorscale_with_zero_base(config.get("colorscale", PBI_SEQUENTIAL_SCALE), zero_color=REGION_MAP_ZERO_COLOR)
+    base_colorscale = _colorscale_with_zero_base(
+        config.get("colorscale", PBI_SEQUENTIAL_SCALE),
+        zero_color=REGION_MAP_ZERO_COLOR,
+    )
     effective_colorscale = _colorscale_with_opacity(base_colorscale, opacity)
     reversescale = bool(config.get("reversescale", False))
 
-    # Theme-aware styling
     dark_mode = is_dark_mode()
-    line_color = "#1f2937" if dark_mode else "#0b1120"
-    coastline_color = "#f1f5f9" if dark_mode else "#1f2937"
-    land_color = "rgba(148, 163, 184, 0.32)" if dark_mode else "rgba(148, 163, 184, 0.18)"
-    marker_line_width = 1.2 if show_borders else 0.3
+    line_color = "#93c5fd" if dark_mode else "#1f2937"
+    border_width = 1.3 if show_borders else 0.6
 
-    # Helper to compute display fields used in hover + table
     share_cfg = config.get("share_columns", {"cum": "Share_Cum", "year": "Share_Year"})
     cum_share_col = share_cfg.get("cum")
     year_share_col = share_cfg.get("year")
+
+    feature_states: dict[str, dict[str, dict[str, Any]]] = {}
+    table_by_year: dict[str, list[list[str]]] = {}
+    table_headers: list[str] = []
+    all_values: list[float] = []
+    initial_table_df: pd.DataFrame | None = None
+    fill_threshold = float(config.get("map_fill_threshold", 1e-9))
 
     def _share_series(column: Optional[str], frame: pd.DataFrame) -> pd.Series:
         if column and column in frame.columns:
             return pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
         return pd.Series(0.0, index=frame.index)
 
-    z_by_year: dict[str, list[float]] = {}
-    custom_by_year: dict[str, list[list[str]]] = {}
-    table_by_year: dict[str, list[list[str]]] = {}
-    table_headers: list[str] = []
-    all_values: list[float] = []
-
-    initial_table_df: pd.DataFrame | None = None
-
     for year in years:
         df_year = metrics_df[metrics_df["Year"] == int(year)].copy()
-        df_year = baseline_keys.merge(df_year, on=["region", "join_key"], how="left", suffixes=("", "_data"))
+        df_year = baseline_keys.merge(
+            df_year,
+            on=["region", "join_key"],
+            how="left",
+            suffixes=("", "_data"),
+        )
+
         if "population_data" in df_year.columns:
             df_year["population"] = df_year["population_data"].fillna(df_year["population"])
         if "gdp_per_capita_data" in df_year.columns:
             df_year["gdp_per_capita"] = df_year["gdp_per_capita_data"].fillna(df_year["gdp_per_capita"])
-        drop_cols = [c for c in ("population_data", "gdp_per_capita_data") if c in df_year.columns]
+
+        drop_cols = [col for col in ("population_data", "gdp_per_capita_data") if col in df_year.columns]
         if drop_cols:
             df_year.drop(columns=drop_cols, inplace=True)
 
@@ -5739,153 +5678,330 @@ def _prepare_region_reactive_payload(
         df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
         df_year["region"] = df_year["region"].map(_canonical_join_key)
 
-        # Keep rows present in GeoJSON (by join_key) and compute metric
-        map_df = df_year[df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0].copy()
+        map_df = df_year[
+            df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0
+        ].copy()
         raw_metric = _scaled_region_metric(map_df, metric_key)
         map_df["_metric_value"] = pd.to_numeric(raw_metric, errors="coerce")
         map_df["_has_data"] = map_df["_metric_value"].notna()
         map_df["_metric_value"] = map_df["_metric_value"].fillna(0.0)
-        display_series = map_df["_metric_value"].apply(lambda v: _format_region_metric_value(metric_key, v))
+        map_df["_has_fill"] = map_df["_has_data"] & (map_df["_metric_value"].abs() > fill_threshold)
+
+        display_series = map_df["_metric_value"].apply(
+            lambda value: _format_region_metric_value(metric_key, value)
+        )
         display_series.loc[~map_df["_has_data"]] = "No data"
         map_df["_metric_display"] = display_series
-        map_df["_share_cum_fmt"] = (_share_series(cum_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
-        map_df["_share_year_fmt"] = (_share_series(year_share_col, map_df) * 100.0).map(lambda v: _format_percentage(v, 1))
-        map_df["_percap_cum_fmt"] = (pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
-        map_df["_percap_year_fmt"] = (pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000).map(_format_currency_compact)
-        map_df["_population_fmt"] = map_df["population"].map(lambda v: f"{v:,.0f}" if np.isfinite(v) else "-")
-        map_df.loc[~map_df["_has_data"], ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"]] = "-"
+        map_df["_share_cum_fmt"] = (
+            _share_series(cum_share_col, map_df) * 100.0
+        ).map(lambda value: _format_percentage(value, 1))
+        map_df["_share_year_fmt"] = (
+            _share_series(year_share_col, map_df) * 100.0
+        ).map(lambda value: _format_percentage(value, 1))
+        map_df["_percap_cum_fmt"] = (
+            pd.to_numeric(map_df.get("PerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+        ).map(_format_currency_compact)
+        map_df["_percap_year_fmt"] = (
+            pd.to_numeric(map_df.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+        ).map(_format_currency_compact)
+        map_df["_population_fmt"] = map_df["population"].map(
+            lambda value: f"{value:,.0f}" if np.isfinite(value) else "-"
+        )
+        map_df.loc[
+            ~map_df["_has_data"],
+            ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"],
+        ] = "-"
 
         by_key = map_df.set_index("join_key")
-        z_values: list[float] = []
-        custom_values: list[list[str]] = []
+        year_states: dict[str, dict[str, Any]] = {}
 
         for loc in locations:
             if loc in by_key.index:
                 row = by_key.loc[loc]
-                has_data = bool(row.get("_has_data", True))
+                raw_value = row.get("_metric_value")
                 try:
-                    numeric_val = float(row.get("_metric_value", 0.0))
+                    value = float(raw_value) if raw_value is not None else None
                 except (TypeError, ValueError):
-                    numeric_val = 0.0
-                    has_data = False
-                if has_data and math.isfinite(numeric_val):
-                    zval = numeric_val
-                    all_values.append(numeric_val)
-                else:
-                    zval = None
-                z_values.append(zval)
-                custom_values.append([
-                    str(row["region"]),
-                    str(year),
-                    str(row["_metric_display"]),
-                    str(row["_share_cum_fmt"]),
-                    str(row["_share_year_fmt"]),
-                    str(row["_percap_cum_fmt"]),
-                    str(row["_percap_year_fmt"]),
-                    str(row["_population_fmt"]),
-                ])
+                    value = None
+
+                has_data = bool(row.get("_has_data", False) and value is not None and math.isfinite(value))
+                has_fill = bool(row.get("_has_fill", False) and value is not None and math.isfinite(value))
+                if has_fill and value is not None:
+                    all_values.append(value)
+
+                year_states[loc] = {
+                    "value": value if has_data else None,
+                    "hasData": has_data,
+                    "hasFill": has_fill,
+                    "region": str(row.get("region", loc)) or loc,
+                    "year": int(year),
+                    "metricDisplay": str(row.get("_metric_display", "-")),
+                    "shareCumulative": str(row.get("_share_cum_fmt", "-")),
+                    "shareAnnual": str(row.get("_share_year_fmt", "-")),
+                    "perCapitaCumulative": str(row.get("_percap_cum_fmt", "-")),
+                    "perCapitaAnnual": str(row.get("_percap_year_fmt", "-")),
+                    "population": str(row.get("_population_fmt", "-")),
+                }
             else:
-                z_values.append(None)
-                custom_values.append([loc, str(year), "No data", "-", "-", "-", "-", "-"])
+                year_states[loc] = {
+                    "value": None,
+                    "hasData": False,
+                    "hasFill": False,
+                    "region": loc,
+                    "year": int(year),
+                    "metricDisplay": "No data",
+                    "shareCumulative": "-",
+                    "shareAnnual": "-",
+                    "perCapitaCumulative": "-",
+                    "perCapitaAnnual": "-",
+                    "population": "-",
+                }
 
-        z_by_year[str(year)] = z_values
-        custom_by_year[str(year)] = custom_values
+        feature_states[str(year)] = year_states
 
-        # Build the small summary table (top 10) for this year
         summary_df = build_region_summary_table(df_year, metric_key, year=int(year))
         if not table_headers:
-            table_headers = summary_df.columns.tolist()
-        table_rows = summary_df.astype(str).values.tolist()
-        table_by_year[str(year)] = table_rows
-
+            table_headers = [str(col) for col in summary_df.columns]
+        table_by_year[str(year)] = summary_df.astype(str).values.tolist()
         if year == initial_year:
             initial_table_df = summary_df
 
-    # Color scale bounds (global, so the map doesn't flicker)
     if config.get("type") == "diverging":
-        max_abs = max((abs(v) for v in all_values), default=1.0)
-        if not np.isfinite(max_abs) or max_abs <= 0:
+        max_abs = max((abs(value) for value in all_values), default=1.0)
+        if not math.isfinite(max_abs) or max_abs <= 0:
             max_abs = 1.0
-        zmin, zmax = -max_abs, max_abs
+        domain_min, domain_max = -max_abs, max_abs
     else:
         if config.get("force_zero_min", False):
-            zmin = 0.0
+            domain_min = 0.0
         else:
-            zmin = min(all_values) if all_values else 0.0
-            if not np.isfinite(zmin):
-                zmin = 0.0
-        zmax = max(all_values) if all_values else (zmin + 1.0)
-        if not np.isfinite(zmax) or np.isclose(zmin, zmax):
-            zmax = zmin + max(1.0, abs(zmin) * 0.1 + 1.0)
+            domain_min = min(all_values) if all_values else 0.0
+            if not math.isfinite(domain_min):
+                domain_min = 0.0
+        domain_max = max(all_values) if all_values else (domain_min + 1.0)
+        if not math.isfinite(domain_max) or math.isclose(domain_min, domain_max):
+            domain_max = domain_min + max(1.0, abs(domain_min) * 0.1 + 1.0)
 
-    colorbar = dict(
-        title=dict(text=config.get("colorbar", config["label"]), side="right"),
-        ticksuffix=config.get("ticksuffix"),
-        tickformat=config.get("tickformat"),
-        len=0.7,
-        thickness=16,
-        x=1.05,
-        y=0.5,
-        xpad=12,
-        outlinewidth=0,
-        bgcolor="rgba(0,0,0,0)",
+    span_entries: list[tuple[float, str]] = []
+    for stop, colour in effective_colorscale:
+        try:
+            fraction = float(stop)
+        except (TypeError, ValueError):
+            continue
+        if reversescale:
+            fraction = 1.0 - fraction
+        span_entries.append((max(0.0, min(1.0, fraction)), colour))
+    span_entries.sort()
+
+    if math.isclose(domain_min, domain_max):
+        domain_max = domain_min + 1.0
+
+    span = domain_max - domain_min
+    legend_stops: list[list[Any]] = [
+        [domain_min + span * fraction, colour] for fraction, colour in span_entries
+    ]
+
+    share_prefix = (
+        "Benefit share"
+        if (
+            (cum_share_col and str(cum_share_col).startswith("Benefit"))
+            or (year_share_col and str(year_share_col).startswith("Benefit"))
+        )
+        else "Share"
     )
 
-    share_prefix = "Benefit share" if (cum_share_col and str(cum_share_col).startswith("Benefit")) or (year_share_col and str(year_share_col).startswith("Benefit")) else "Share"
-    hovertemplate = (
-        "<b>%{customdata[0]}</b><br>"
-        "Year: %{customdata[1]}<br>"
-        f"{config['label']}: %{{customdata[2]}}<br>"
-        f"{share_prefix} (cum): %{{customdata[3]}}<br>"
-        f"{share_prefix} (annual): %{{customdata[4]}}<br>"
-        "Per-capita cumulative: %{customdata[5]}<br>"
-        "Per-capita annual: %{customdata[6]}<br>"
-        "Population: %{customdata[7]}<extra></extra>"
-    )
+    def _clean(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
-    layout = dict(
-        margin=dict(l=0, r=140, t=60, b=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=520,
-        geo=dict(
-            visible=False,
-            projection=dict(type="mercator", scale=2.0),
-            center=dict(lat=-41.0, lon=173.0),
-            lataxis=dict(range=[-58.0, -24.0]),
-            lonaxis=dict(range=[152.0, 195.0]),
-            showcountries=False,
-            showcoastlines=True,
-            coastlinecolor=coastline_color,
-            coastlinewidth=1.5,
-            showland=True,
-            landcolor=land_color,
-        ),
-    )
+    def _clean_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    map_cfg = getattr(getattr(settings, "ui", None), "maplibre", None)
+    style_light = _clean(getattr(map_cfg, "style_url", None)) or MAPLIBRE_FALLBACK_LIGHT
+    style_dark = _clean(getattr(map_cfg, "dark_style_url", None)) or style_light or MAPLIBRE_FALLBACK_DARK
+    style_light_base = style_light
+    tile_template = _clean(getattr(map_cfg, "tile_url", None))
+    light_style_url = _clean(getattr(map_cfg, "light_style_url", None))
+    light_tile_url = _clean(getattr(map_cfg, "light_tile_url", None))
+    terrain_label = _clean(getattr(map_cfg, "terrain_label", None)) or "Terrain imagery"
+    light_label = _clean(getattr(map_cfg, "light_label", None)) or "Light basemap"
+    style_token = _clean(getattr(map_cfg, "token", None))
+    style_attr = _clean(getattr(map_cfg, "attribution", None)) or MAPLIBRE_FALLBACK_ATTRIBUTION
+    map_min_zoom = _clean_float(getattr(map_cfg, "min_zoom", None))
+    map_max_zoom = _clean_float(getattr(map_cfg, "max_zoom", None))
+    map_hash_flag = bool(getattr(map_cfg, "hash", False))
+
+    vector_light_style: Optional[dict[str, Any]] = None
+    if style_token:
+        vector_light_style = _linz_topographic_light_style(
+            token=style_token,
+            min_zoom=map_min_zoom,
+            max_zoom=map_max_zoom,
+        )
+
+    selected_tile_template: Optional[str] = None
+    selected_style_url: Optional[str] = None
+    selected_style_object: Optional[dict[str, Any]] = None
+    mode_lower = (basemap_mode or "").strip().lower()
+    if mode_lower == "terrain" and tile_template:
+        selected_tile_template = tile_template
+    elif mode_lower == "light":
+        if light_tile_url:
+            selected_tile_template = light_tile_url
+        elif light_style_url:
+            selected_style_url = light_style_url
+        elif vector_light_style is not None:
+            selected_style_object = vector_light_style
+    if (
+        selected_tile_template is None
+        and selected_style_url is None
+        and selected_style_object is None
+    ):
+        if light_tile_url:
+            selected_tile_template = light_tile_url
+        elif light_style_url:
+            selected_style_url = light_style_url
+        elif vector_light_style is not None:
+            selected_style_object = vector_light_style
+        else:
+            selected_style_url = style_light_base or MAPLIBRE_FALLBACK_LIGHT
+
+    if selected_tile_template:
+        map_payload = {
+            "center": NZ_CENTER,
+            "bounds": NZ_BOUNDS,
+            "zoom": 4.6,
+            "pitch": 0.0,
+            "tileTemplate": selected_tile_template,
+        }
+    else:
+        map_payload = {
+            "center": NZ_CENTER,
+            "bounds": NZ_BOUNDS,
+            "zoom": 4.6,
+            "pitch": 0.0,
+        }
+    if map_min_zoom is not None and math.isfinite(map_min_zoom):
+        map_payload["minZoom"] = float(map_min_zoom)
+    if map_max_zoom is not None and math.isfinite(map_max_zoom):
+        map_payload["maxZoom"] = float(map_max_zoom)
+    if map_hash_flag:
+        map_payload["hash"] = True
+
+    if selected_style_object is not None:
+        style_light = selected_style_object
+        style_dark = selected_style_object
+    elif selected_style_url:
+        style_light = selected_style_url
+        style_dark = selected_style_url
+
+    basemap_options: list[dict[str, Any]] = []
+    if tile_template:
+        basemap_options.append(
+            {
+                "id": "terrain",
+                "label": terrain_label,
+                "type": "raster",
+                "tileTemplate": tile_template,
+            }
+        )
+    if light_tile_url:
+        basemap_options.append(
+            {
+                "id": "light",
+                "label": light_label,
+                "type": "raster",
+                "tileTemplate": light_tile_url,
+            }
+        )
+    elif light_style_url:
+        basemap_options.append(
+            {
+                "id": "light",
+                "label": light_label,
+                "type": "style",
+                "styleUrl": light_style_url,
+            }
+        )
+    elif vector_light_style is not None:
+        basemap_options.append(
+            {
+                "id": "light",
+                "label": light_label,
+                "type": "style",
+                "styleObject": vector_light_style,
+            }
+        )
+    elif isinstance(style_light_base, str) and style_light_base:
+        basemap_options.append(
+            {
+                "id": "light",
+                "label": light_label,
+                "type": "style",
+                "styleUrl": style_light_base,
+            }
+        )
+    if not basemap_options:
+        basemap_options.append(
+            {
+                "id": "default",
+                "label": "Light basemap",
+                "type": "style",
+                "styleUrl": MAPLIBRE_FALLBACK_LIGHT,
+            }
+        )
+
+    default_basemap = basemap_mode if any(opt["id"] == basemap_mode for opt in basemap_options) else (basemap_options[0]["id"] if basemap_options else "default")
 
     payload = {
-        "title": config["label"],
-        "years": years,
-        "initial_year": int(initial_year),
+        "title": config.get("label", metric_key),
+        "metricKey": metric_key,
+        "metricLabel": config.get("label", metric_key),
+        "scenarioLabel": scenario_label,
+        "years": [int(y) for y in years],
+        "initialYear": int(initial_year),
         "geojson": geojson,
-        "name_field": name_field,
-        "locations": locations,
-        "z_by_year": z_by_year,
-        "customdata_by_year": custom_by_year,
-        "table_by_year": table_by_year,
-        "table_headers": table_headers,
-        "zmin": float(zmin),
-        "zmax": float(zmax),
-        "colorscale": effective_colorscale,
-        "reversescale": reversescale,
-        "line_color": line_color,
-        "marker_line_width": float(marker_line_width),
-        "colorbar": colorbar,
-        "hovertemplate": hovertemplate,
-        "layout": layout,
+        "nameField": name_field,
+        "featureIds": locations,
+        "featureStates": feature_states,
+        "tableByYear": table_by_year,
+        "tableHeaders": table_headers,
+        "legend": {
+            "stops": legend_stops,
+            "min": float(domain_min),
+            "max": float(domain_max),
+            "label": config.get("colorbar", config.get("label", metric_key)),
+            "suffix": config.get("ticksuffix"),
+            "format": config.get("tickformat"),
+        },
+        "style": {
+            "light": style_light,
+            "dark": style_dark,
+            "token": style_token,
+            "attribution": style_attr,
+        },
+        "map": map_payload,
+        "fillOpacity": opacity,
+        "lineColor": line_color,
+        "borderWidth": float(border_width),
+        "noDataColor": REGION_MAP_ZERO_COLOR,
+        "shareLabel": share_prefix,
+        "theme": {"mode": "dark" if dark_mode else "light"},
     }
 
-    return payload, (initial_table_df if initial_table_df is not None else pd.DataFrame(columns=table_headers))
+    if initial_table_df is None:
+        initial_table_df = pd.DataFrame(columns=table_headers)
+
+    return payload, initial_table_df
+
 
 def render_region_map_reactive(
     metrics_df: pd.DataFrame,
@@ -5895,39 +6011,46 @@ def render_region_map_reactive(
     initial_year: int,
     show_borders: bool,
     fill_opacity: float,
+    settings: Settings,
+    basemap_mode: str,
     key: Optional[str] = None,
 ) -> pd.DataFrame:
     payload, initial_table = _prepare_region_reactive_payload(
-        metrics_df, metric_key,
+        metrics_df,
+        metric_key,
         scenario_label=scenario_label,
         initial_year=int(initial_year),
         show_borders=show_borders,
         fill_opacity=fill_opacity,
+        settings=settings,
+        basemap_mode=basemap_mode,
     )
-    def _sanitise_for_json(value):
+
+    def _sanitise(value: Any):
         if isinstance(value, float) and math.isnan(value):
             return None
         if isinstance(value, dict):
-            return {key: _sanitise_for_json(val) for key, val in value.items()}
+            return {k: _sanitise(v) for k, v in value.items()}
         if isinstance(value, list):
-            return [_sanitise_for_json(item) for item in value]
+            return [_sanitise(v) for v in value]
         return value
 
     try:
         payload_json = json.dumps(payload, ensure_ascii=False, allow_nan=False)
     except ValueError:
-        payload_json = json.dumps(_sanitise_for_json(payload), ensure_ascii=False, allow_nan=False)
-    html = _REGION_MAP_REACTIVE_HTML.replace("{DATA_JSON}", payload_json)
-    # Key includes metric to force a rebuild when user switches the dropdown
+        payload_json = json.dumps(_sanitise(payload), ensure_ascii=False, allow_nan=False)
+
+    payload_json = payload_json.replace('</', '<' + chr(92) + '/')
+    html = _region_map_template().replace('{DATA_JSON}', payload_json)
+
     widget_key = key or f"region_map_reactive_{metric_key}"
     state_key = "_region_map_html_supports_key"
     allow_key = st.session_state.get(state_key, True)
-    html_kwargs = dict(height=620, scrolling=False)
+    html_kwargs = dict(height=660, scrolling=False)
     if allow_key:
         try:
             components.html(html, key=widget_key, **html_kwargs)
         except TypeError:
-            # Older Streamlit builds do not accept a widget key for components.html
             st.session_state[state_key] = False
             components.html(html, **html_kwargs)
     else:
@@ -5935,8 +6058,7 @@ def render_region_map_reactive(
     return initial_table
 
 
-
-def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) -> pd.DataFrame | None:
+def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *, settings: Settings) -> pd.DataFrame | None:
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
@@ -5977,6 +6099,37 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
 
     config = REGION_METRIC_CONFIG[metric_key]
 
+    map_cfg = getattr(getattr(settings, "ui", None), "maplibre", None)
+    basemap_options: list[tuple[str, str]] = []
+    terrain_label = getattr(map_cfg, "terrain_label", None) or "Terrain imagery"
+    light_label = getattr(map_cfg, "light_label", None) or "Light basemap"
+    if getattr(map_cfg, "tile_url", None):
+        basemap_options.append((terrain_label, "terrain"))
+    if getattr(map_cfg, "light_tile_url", None) or getattr(map_cfg, "light_style_url", None) or not basemap_options:
+        basemap_options.append((light_label, "light"))
+
+    if basemap_options:
+        labels = [label for label, _ in basemap_options]
+        ids = [value for _, value in basemap_options]
+        default_id = ids[0]
+        stored_mode = st.session_state.get("region_basemap_mode", default_id)
+        if stored_mode in ids:
+            default_id = stored_mode
+        if len(labels) > 1:
+            chosen_label = st.radio(
+                "Basemap",
+                labels,
+                index=ids.index(default_id),
+                horizontal=True,
+                key="region_basemap_toggle",
+            )
+            basemap_mode = ids[labels.index(chosen_label)]
+        else:
+            basemap_mode = ids[0]
+        st.session_state["region_basemap_mode"] = basemap_mode
+    else:
+        basemap_mode = "light"
+
     # Reactive map + table (client-driven)
     initial_table = render_region_map_reactive(
         metrics_df,
@@ -5985,6 +6138,8 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
         initial_year=initial_year,
         show_borders=False,
         fill_opacity=1.0,
+        settings=settings,
+        basemap_mode=basemap_mode,
         key=f"reactive_map_{selected_mode}_{metric_key}",
     )
 
@@ -5999,6 +6154,7 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str) ->
 def render_region_tab(
     data: DashboardData,
     *,
+    settings: Settings,
     opt_selection,
     comp_selection,
     opt_label: str,
@@ -6041,7 +6197,7 @@ def render_region_tab(
             st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
             return export_tables
         cache_bucket[cache_key] = metrics_df
-    summary = render_region_map_controls(metrics_df, selected_label)
+    summary = render_region_map_controls(metrics_df, selected_label, settings=settings)
     if summary is not None and not summary.empty:
         export_tables[f"Regional summary - {selected_label}"] = summary
     return export_tables
@@ -7010,6 +7166,7 @@ def main() -> None:
             download_tables.update(
                 render_region_tab(
                     data,
+                    settings=settings,
                     opt_selection=opt_selection,
                     comp_selection=comp_selection,
                     opt_label=opt_label,
@@ -7067,4 +7224,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

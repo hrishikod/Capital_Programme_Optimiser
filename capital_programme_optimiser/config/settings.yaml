@@ -41,6 +41,17 @@ paths:
   default_preset: AllProjects_vs_NCorridorBroughtForward
 ui:
   default_run_mode: standard
+  maplibre:
+    style_url: "https://basemaps.linz.govt.nz/v1/styles/linz-aerial/webp.json?api={token}"
+    dark_style_url: "https://basemaps.linz.govt.nz/v1/styles/linz-aerial/webp.json?api={token}"
+    tile_url: "https://basemaps.linz.govt.nz/v1/tiles/aerial/WebMercatorQuad/{z}/{x}/{y}.webp?api={token}"
+    light_style_url: null
+    terrain_label: "Terrain imagery"
+    light_label: "Topographic basemap"
+    token: "c01k73f6r7e984kssxdhp2b7bms"
+    attribution: "Imagery (c) LINZ"
+    min_zoom: 4
+    max_zoom: 17
 forced_start:
   Project 1:
     start: null
@@ -150,4 +161,5 @@ forced_start:
   Project 36:
     start: null
     include: true
+
 
