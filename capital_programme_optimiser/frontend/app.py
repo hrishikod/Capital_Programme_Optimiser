@@ -192,7 +192,7 @@ CAPACITY_HEAT_ORANGE = "#FB923C"  # Watch zone   ($2.0B-$3.0B)
 CAPACITY_HEAT_RED    = "#DC2626"  # High pressure (>= $3.0B)
 
 
-REGION_MAP_ZERO_COLOR = "rgba(0, 0, 0, 0)"
+REGION_MAP_ZERO_COLOR = "rgba(148, 163, 184, 0.28)"
 MAPLIBRE_FALLBACK_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 MAPLIBRE_FALLBACK_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 MAPLIBRE_FALLBACK_ATTRIBUTION = "OpenStreetMap contributors | CARTO"
@@ -387,6 +387,7 @@ def inject_kpi_card_theme() -> None:
         --kpi-shadow: 0 10px 24px rgba(25,69,107,.08);
         --kpi-text-1: #0F172A;
         --kpi-text-2: #475569;
+        --kpi-top-grey: rgba(148,163,184,.45);
       }}
 
       div[data-testid="stMetric"] {{
@@ -401,7 +402,7 @@ def inject_kpi_card_theme() -> None:
         content: "";
         position: absolute; left: 12px; right: 12px; top: 0;
         height: 6px; border-radius: 999px;
-        background: linear-gradient(90deg, var(--pbi-blue), rgba(25,69,107,.15) 45%, var(--pbi-green));
+        background: linear-gradient(90deg, var(--pbi-green), var(--kpi-top-grey));
         transform: translateY(-3px);
       }}
       div[data-testid="stMetric"] label {{
@@ -445,7 +446,7 @@ def inject_kpi_card_theme() -> None:
         content:"";
         position:absolute; left:14px; right:14px; top:0;
         height:6px; border-radius:999px;
-        background: linear-gradient(90deg,var(--pbi-blue), rgba(25,69,107,.15) 45%, var(--pbi-green));
+        background: linear-gradient(90deg, var(--pbi-green), var(--kpi-top-grey));
         transform: translateY(-3px);
       }}
       .kpi-title {{
@@ -472,6 +473,11 @@ def inject_kpi_card_theme() -> None:
         font-weight:600; font-size:.85rem;
         padding:3px 10px; border-radius:999px;
         border:1px solid transparent;
+      }}
+      .kpi-delta.lead {{
+        font-size:1.5rem;
+        padding:9px 18px;
+        margin-top:.85rem;
       }}
       .kpi-delta.up {{
         color: var(--pbi-green);
@@ -4846,22 +4852,27 @@ def _format_currency_compact(value: float) -> str:
 
 def _kpi_card_html(
     title: str,
-    value: str,
+    value: str | None,
     *,
     subtitle: str | None = None,
     delta_text: str | None = None,
     delta_state: str = "neutral",
+    body_html: str | None = None,
 ) -> str:
     """Return HTML for a single KPI card."""
     parts = [
         '<div class="kpi-card">',
         f'<div class="kpi-title">{title}</div>',
-        f'<div class="kpi-value">{value}</div>',
     ]
-    if subtitle:
-        parts.append(f'<div class="kpi-sub">{subtitle}</div>')
-    if delta_text:
-        parts.append(f'<div class="kpi-delta {delta_state}">{delta_text}</div>')
+    if body_html is not None:
+        parts.append(body_html)
+    else:
+        if value is not None:
+            parts.append(f'<div class="kpi-value">{value}</div>')
+        if subtitle:
+            parts.append(f'<div class="kpi-sub">{subtitle}</div>')
+        if delta_text:
+            parts.append(f'<div class="kpi-delta {delta_state}">{delta_text}</div>')
     parts.append('</div>')
     return "\n".join(parts)
 
@@ -4893,6 +4904,21 @@ def render_programme_kpis(
         pv_chip_state = "up" if delta_pv >= 0 else "down"
         pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {SCENARIO_COMPARISON_NAME}"
 
+    if pv_chip_text:
+        delta_pv_card = _kpi_card_html(
+            f"Delta total NPV benefit ({npv_label})",
+            None,
+            body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
+        )
+    else:
+        delta_pv_card = _kpi_card_html(
+            f"Delta total NPV benefit ({npv_label})",
+            _fmt(delta_pv),
+            subtitle=SCENARIO_PAIR_NAME,
+            delta_text=pv_chip_text,
+            delta_state=pv_chip_state,
+        )
+
     cards = [
         '<div class="kpi-grid">',
         _kpi_card_html(f"{SCENARIO_PRIMARY_NAME} - total spend", _fmt(opt_spend)),
@@ -4910,13 +4936,7 @@ def render_programme_kpis(
             f"{SCENARIO_COMPARISON_NAME} total NPV benefit ({npv_label})",
             _fmt(cmp_pv),
         ),
-        _kpi_card_html(
-            f"Delta total NPV benefit ({npv_label})",
-            _fmt(delta_pv),
-            subtitle=SCENARIO_PAIR_NAME,
-            delta_text=pv_chip_text,
-            delta_state=pv_chip_state,
-        ),
+        delta_pv_card,
         '</div>',
     ]
     st.markdown("".join(cards), unsafe_allow_html=True)
@@ -6100,36 +6120,28 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
     config = REGION_METRIC_CONFIG[metric_key]
 
     map_cfg = getattr(getattr(settings, "ui", None), "maplibre", None)
-    basemap_options: list[tuple[str, str]] = []
     terrain_label = getattr(map_cfg, "terrain_label", None) or "Terrain imagery"
-    light_label = getattr(map_cfg, "light_label", None) or "Light basemap"
-    if getattr(map_cfg, "tile_url", None):
-        basemap_options.append((terrain_label, "terrain"))
-    if getattr(map_cfg, "light_tile_url", None) or getattr(map_cfg, "light_style_url", None) or not basemap_options:
-        basemap_options.append((light_label, "light"))
+    light_label = getattr(map_cfg, "light_label", None) or "Simplified basemap"
+    terrain_available = bool(getattr(map_cfg, "tile_url", None))
+    st.session_state.setdefault("region_basemap_mode", "light")
 
-    if basemap_options:
-        labels = [label for label, _ in basemap_options]
-        ids = [value for _, value in basemap_options]
-        default_id = ids[0]
-        stored_mode = st.session_state.get("region_basemap_mode", default_id)
-        if stored_mode in ids:
-            default_id = stored_mode
-        if len(labels) > 1:
-            chosen_label = st.radio(
-                "Basemap",
-                labels,
-                index=ids.index(default_id),
-                horizontal=True,
-                key="region_basemap_toggle",
-            )
-            basemap_mode = ids[labels.index(chosen_label)]
-        else:
-            basemap_mode = ids[0]
-        st.session_state["region_basemap_mode"] = basemap_mode
+    if terrain_available:
+        previous_mode = st.session_state.get("region_basemap_mode", "light")
+        help_text = f"Turn off to switch to the {light_label.lower()}."
+        show_terrain = st.toggle(
+            f"{terrain_label} background",
+            value=(previous_mode == "terrain"),
+            key="region_basemap_toggle",
+            help=help_text,
+        )
+        basemap_mode = "terrain" if show_terrain else "light"
     else:
         basemap_mode = "light"
 
+    st.session_state["region_basemap_mode"] = basemap_mode
+    if terrain_available:
+        active_background = terrain_label if basemap_mode == "terrain" else light_label
+        st.caption(f"Background: {active_background}")
     # Reactive map + table (client-driven)
     initial_table = render_region_map_reactive(
         metrics_df,
