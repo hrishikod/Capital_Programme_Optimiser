@@ -5442,15 +5442,15 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     fy_label = f"FY {int(year)}"
     if "_spend_year_fmt" in table.columns:
         columns["_spend_year_fmt"] = f"Spend in {fy_label}"
-    if "_spend_cum_fmt" in table.columns:
+    if "_spend_cum_fmt" in table.columns and not show_benefit_columns:
         columns["_spend_cum_fmt"] = f"Cumulative spend to {fy_label}"
     if show_benefit_columns and "_benefit_year_fmt" in table.columns:
         columns["_benefit_year_fmt"] = f"Benefit in {fy_label}"
     if show_benefit_columns and "_benefit_cum_fmt" in table.columns:
         columns["_benefit_cum_fmt"] = f"Cumulative benefit to {fy_label}"
-    if "PerCap_Cum" in df.columns:
+    if "PerCap_Cum" in df.columns and not show_benefit_columns:
         columns["_percap_cum_fmt"] = "Per-cap cum"
-    if "PerCap_Year" in df.columns:
+    if "PerCap_Year" in df.columns and not show_benefit_columns:
         columns["_percap_year_fmt"] = "Per-cap annual"
 
     # Present only columns that actually exist
