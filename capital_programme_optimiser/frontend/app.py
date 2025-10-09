@@ -5285,7 +5285,7 @@ def render_region_map(
     df_year[numeric_cols] = df_year[numeric_cols].fillna(0.0)
     df_year["join_key"] = df_year["join_key"].map(_canonical_join_key)
     df_year["region"] = df_year["region"].map(_canonical_join_key)
-    map_df = df_year[df_year["join_key"].isin(valid_regions) & df_year["join_key"].str.len() > 0].copy()
+    map_df = df_year[df_year["join_key"].isin(valid_regions) & (df_year["join_key"].str.len() > 0)].copy()
     if map_df.empty or map_df[metric_key].dropna().empty:
         st.info("No mapped regional spend for the selected inputs.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
@@ -5699,7 +5699,7 @@ def _prepare_region_reactive_payload(
         df_year["region"] = df_year["region"].map(_canonical_join_key)
 
         map_df = df_year[
-            df_year["join_key"].isin(locations) & df_year["join_key"].str.len() > 0
+            df_year["join_key"].isin(locations) & (df_year["join_key"].str.len() > 0)
         ].copy()
         raw_metric = _scaled_region_metric(map_df, metric_key)
         map_df["_metric_value"] = pd.to_numeric(raw_metric, errors="coerce")
@@ -7236,3 +7236,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
