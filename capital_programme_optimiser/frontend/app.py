@@ -661,6 +661,9 @@ def inject_powerbi_theme() -> None:
             button:focus * {{
                 color: #ffffff !important;
             }}
+            .pbi-export-gap {{
+                height: 32px;
+            }}
             div[data-baseweb='segmented-control'] button[aria-pressed='true'] *,
             div[data-baseweb='segmented-control'] button:focus *,
             div[data-baseweb='segmented-control'] button:active * {{
@@ -872,6 +875,7 @@ def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
         return
     filename = f"capital_programme_dashboard_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     export_bytes = build_export_workbook(tables)
+    st.markdown("<div class='pbi-export-gap'></div>", unsafe_allow_html=True)
     st.download_button(
         "Export current tab",
         data=export_bytes,
@@ -6103,7 +6107,7 @@ def render_region_map_reactive(
     widget_key = key or f"region_map_reactive_{metric_key}"
     state_key = "_region_map_html_supports_key"
     allow_key = st.session_state.get(state_key, True)
-    html_kwargs = dict(height=660, scrolling=False)
+    html_kwargs = dict(height=720, scrolling=False)
     if allow_key:
         try:
             components.html(html, key=widget_key, **html_kwargs)
