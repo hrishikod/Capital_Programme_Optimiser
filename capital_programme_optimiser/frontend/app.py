@@ -358,7 +358,7 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Programme Schedule", "Overview", "Benefits", "Regions", "Delivery", "Cash Flow", "Scenario Manager"]
+NAV_TABS = ["Programme Schedule", "Overview", "Regions", "Benefits", "Delivery", "Cash Flow", "Scenario Manager"]
 
 NAV_ICON_MAP = {
     "Programme Schedule": "calendar-event",
