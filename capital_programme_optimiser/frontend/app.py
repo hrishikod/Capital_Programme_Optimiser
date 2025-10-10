@@ -2773,7 +2773,7 @@ def cash_chart(
 
             customdata=[format_large_amount(val) for val in spend_values],
 
-            hovertemplate="<b>Annual spend</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
 
         )
 
@@ -2795,7 +2795,7 @@ def cash_chart(
 
             customdata=[format_large_amount(val) for val in closing_values],
 
-            hovertemplate="<b>Closing net</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            hovertemplate="<b>Closing net</b><br>FY %{x}: %{customdata}<extra></extra>",
 
         )
 
@@ -2819,7 +2819,7 @@ def cash_chart(
 
             customdata=[format_large_amount(val) for val in envelope_values],
 
-            hovertemplate="<b>Envelope</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            hovertemplate="<b>Envelope</b><br>FY %{x}: %{customdata}<extra></extra>",
 
         )
 
@@ -2896,7 +2896,7 @@ def cumulative_revenue_vs_cost_chart(
             marker_color=bar_color,
             opacity=BAR_OPACITY,
             customdata=[format_large_amount(v) for v in cum_cost],
-            hovertemplate="<b>Cumulative cost</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            hovertemplate="<b>Cumulative cost</b><br>FY %{x}: %{customdata}<extra></extra>",
         )
     )
 
@@ -3096,7 +3096,7 @@ def benefit_delta_chart(
             mode="lines",
 
             line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.0),
-            hovertemplate="<b>Delta Cumulative Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+            hovertemplate="<b>Delta Cumulative Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
 
 
 
@@ -3117,7 +3117,7 @@ def benefit_delta_chart(
             mode="lines",
 
             line=dict(color=CUMULATIVE_CMP_LINE_COLOR, dash="dot", width=2.6),
-            hovertemplate="<b>Delta Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+            hovertemplate="<b>Delta Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
 
 
 
@@ -5186,7 +5186,6 @@ def build_region_map_figure(
     hovertemplate = (
         "<b>%{customdata[0]}</b><br>"
         "Year: %{customdata[1]}<br>"
-        f"{config['label']}: %{{customdata[2]}}<br>"
         f"{share_prefix} (cum): %{{customdata[3]}}<br>"
         f"{share_prefix} (annual): %{{customdata[4]}}<br>"
         "Per-capita cumulative: %{customdata[5]}<br>"
@@ -7179,14 +7178,29 @@ def main() -> None:
             horizon_override=summary_horizon_years,
         )
 
-        stats_opt = (
-            scenario_metrics(opt_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
-            if opt_series is not None else None
-        )
-        stats_cmp = (
-            scenario_metrics(cmp_series, start_year=data.start_fy, horizon_years=summary_horizon_years)
-            if cmp_series is not None else None
-        )
+        def _scenario_stats(series: pd.DataFrame | None) -> dict | None:
+            if series is None:
+                return None
+            full_stats = scenario_metrics(series, start_year=data.start_fy)
+            horizon_stats = scenario_metrics(
+                series,
+                start_year=data.start_fy,
+                horizon_years=summary_horizon_years,
+            )
+            if not full_stats:
+                return horizon_stats
+            merged_stats = dict(full_stats)
+            if horizon_stats:
+                pv_value = horizon_stats.get("total_pv")
+                if pv_value is not None:
+                    merged_stats["total_pv"] = pv_value
+                benefit_value = horizon_stats.get("total_benefit")
+                if benefit_value is not None:
+                    merged_stats["total_benefit_horizon"] = benefit_value
+            return merged_stats
+
+        stats_opt = _scenario_stats(opt_series)
+        stats_cmp = _scenario_stats(cmp_series)
 
         with st.expander("Programme summary", expanded=True):
             render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)

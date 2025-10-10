@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import json
 import re
@@ -38,6 +38,8 @@ GEOMETRY_LOCAL_PATH = Path(__file__).with_name("nz_regional_councils_2025.geojso
 SETTINGS = load_settings()
 BENEFIT_SCENARIOS = dict(SETTINGS.data.benefit_scenarios)
 SCORING_WORKBOOK = SETTINGS.scoring_workbook()
+
+DEFAULT_ANNUAL_POP_GROWTH = 0.01
 
 # Prefer 2025 fields first; keep legacy fallbacks as distant backups
 NAME_FIELD_PRIORITY: Tuple[str, ...] = (
@@ -659,6 +661,46 @@ def _prepare_region_info(mapping: pd.DataFrame) -> pd.DataFrame:
     return info
 
 
+def _project_population_years(
+    region_info: pd.DataFrame,
+    years: Sequence[int],
+    growth_rate: float = DEFAULT_ANNUAL_POP_GROWTH,
+) -> pd.DataFrame:
+    """Return projected population per region/year using a constant growth rate."""
+    if region_info is None or region_info.empty:
+        return pd.DataFrame(columns=["Year", "region", "population"])
+    if not years:
+        return pd.DataFrame(columns=["Year", "region", "population"])
+    years_sorted = sorted(int(y) for y in years)
+    if not years_sorted:
+        return pd.DataFrame(columns=["Year", "region", "population"])
+    base_year = years_sorted[0]
+    base_df = (
+        region_info[["region", "population"]]
+        .drop_duplicates(subset=["region"])
+        .copy()
+    )
+    base_series = pd.to_numeric(base_df["population"], errors="coerce")
+    base_series.index = base_df["region"].tolist()
+    records = []
+    for region, base_value in base_series.items():
+        try:
+            base_float = float(base_value)
+        except (TypeError, ValueError):
+            base_float = np.nan
+        for year in years_sorted:
+            if not np.isfinite(base_float):
+                projected_value = np.nan
+            else:
+                projected_value = base_float * pow(1.0 + float(growth_rate), year - base_year)
+            records.append((year, region, projected_value))
+    if not records:
+        return pd.DataFrame(columns=["Year", "region", "population"])
+    projected = pd.DataFrame(records, columns=["Year", "region", "population"])
+    projected["Year"] = projected["Year"].astype(int)
+    return projected
+
+
 def _normalise_project(series: pd.Series) -> pd.Series:
     return (
         series.astype(str)
@@ -989,6 +1031,26 @@ def compute_region_metrics(
         on="region",
         suffixes=("", "_info"),
     )
+
+    projected_pop = _project_population_years(region_info, years_present)
+    if not projected_pop.empty:
+        region_spend = region_spend.merge(
+            projected_pop,
+            on=["Year", "region"],
+            how="left",
+            suffixes=("", "_proj"),
+        )
+        if "population_proj" in region_spend.columns:
+            region_spend["population_proj"] = pd.to_numeric(
+                region_spend["population_proj"],
+                errors="coerce",
+            )
+            region_spend["population"] = region_spend["population_proj"].combine_first(
+                region_spend["population"]
+            )
+            region_spend.drop(columns=["population_proj"], inplace=True)
+
+    region_spend["population"] = pd.to_numeric(region_spend["population"], errors="coerce")
 
     total_by_year = region_spend.groupby("Year")["Spend_M"].sum().rename("Spend_National")
     total_cum = total_by_year.sort_index().cumsum()
