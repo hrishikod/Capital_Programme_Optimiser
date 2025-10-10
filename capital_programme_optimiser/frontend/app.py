@@ -367,7 +367,7 @@ NAV_ICON_MAP = {
     "Regions": "geo-alt",
     "Delivery": "box-seam",
     "Cash Flow": "cash-stack",
-    "Scenario Manager": "collection-gear",
+    "Scenario Manager": "kanban",
 }
 
 
