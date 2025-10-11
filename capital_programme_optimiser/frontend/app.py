@@ -2794,6 +2794,12 @@ def scenario_selector(
             st.warning("No cash uplift levels available for this combination.")
 
     dimension_options = data.dims
+    if dimension_options:
+        try:
+            # Ensure "Total" is the first option, with other dimensions preserving order.
+            dimension_options = ["Total"] + [dim for dim in dimension_options if str(dim).strip() != "Total"]
+        except Exception:
+            dimension_options = data.dims
 
     default_dim_index = dimension_options.index("Total") if "Total" in dimension_options else 0
 
@@ -5583,6 +5589,8 @@ REGION_METRIC_TOGGLE_PAIRS: Dict[str, Tuple[str, str]] = {
     "BenefitShare_Year": ("BenefitShare_Cum", "BenefitShare_Year"),
 }
 
+REGION_METRICS_CACHE_VERSION = 2
+
 _REGION_BOUNDS_EXCLUDE = {"area outside region"}
 
 
@@ -6763,15 +6771,70 @@ def render_region_tab(
         st.info("Select a scenario with an available cache entry to view the regional investment map.")
         return export_tables
     cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
+    if st.session_state.get("_region_metrics_cache_version") != REGION_METRICS_CACHE_VERSION:
+        cache_bucket.clear()
+        st.session_state["_region_metrics_cache_version"] = REGION_METRICS_CACHE_VERSION
     cache_key = (cache_signature or "default", scenario_code)
     metrics_df = cache_bucket.get(cache_key)
+    if isinstance(metrics_df, pd.DataFrame):
+        cached_version = metrics_df.attrs.get("cache_version")
+        if cached_version != REGION_METRICS_CACHE_VERSION:
+            metrics_df = None
+            cache_bucket.pop(cache_key, None)
+    def _needs_refresh(df: pd.DataFrame | None) -> bool:
+        if not isinstance(df, pd.DataFrame):
+            return True
+        if df.empty:
+            return True
+        if not {"BenefitShare_Cum", "BenefitShare_Year"}.intersection(df.columns):
+            return True
+        benefit_cols = [
+            col
+            for col in ("BenefitShare_Cum", "BenefitShare_Year", "Benefit_Cum_Region", "Benefit_Year")
+            if col in df.columns
+        ]
+        if benefit_cols:
+            totals: List[float] = []
+            for col in benefit_cols:
+                series = pd.to_numeric(df[col], errors="coerce")
+                series = series.fillna(0.0)
+                totals.append(float(series.abs().sum()))
+            benefit_total = max(totals) if totals else 0.0
+            if not np.isfinite(benefit_total):
+                return True
+            if math.isclose(benefit_total, 0.0, abs_tol=1e-6):
+                spend_cols = [
+                    col for col in ("Spend_National", "Spend_Cum_Region", "Spend_Year") if col in df.columns
+                ]
+                spend_total = 0.0
+                if spend_cols:
+                    spend_totals: List[float] = []
+                    for col in spend_cols:
+                        series = pd.to_numeric(df[col], errors="coerce")
+                        series = series.fillna(0.0)
+                        spend_totals.append(float(series.abs().sum()))
+                    spend_total = max(spend_totals) if spend_totals else 0.0
+                if spend_total > 0.0:
+                    return True
+        return False
     if metrics_df is None:
         try:
             metrics_df = compute_region_metrics(data, scenario_code)
         except Exception as exc:
             st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
             return export_tables
-        cache_bucket[cache_key] = metrics_df
+        if isinstance(metrics_df, pd.DataFrame):
+            metrics_df.attrs["cache_version"] = REGION_METRICS_CACHE_VERSION
+            cache_bucket[cache_key] = metrics_df
+    elif _needs_refresh(metrics_df):
+        try:
+            metrics_df = compute_region_metrics(data, scenario_code)
+        except Exception as exc:
+            st.warning(f"Unable to refresh regional metrics for {selected_label}: {exc}")
+            return export_tables
+        if isinstance(metrics_df, pd.DataFrame):
+            metrics_df.attrs["cache_version"] = REGION_METRICS_CACHE_VERSION
+            cache_bucket[cache_key] = metrics_df
     summary = render_region_map_controls(metrics_df, selected_label, settings=settings)
     if summary is not None and not summary.empty:
         export_tables[f"Regional summary - {selected_label}"] = summary
