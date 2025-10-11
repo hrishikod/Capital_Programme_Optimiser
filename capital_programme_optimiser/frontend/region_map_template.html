@@ -340,8 +340,11 @@
     font-size: 0.85rem;
     min-width: 200px;
     box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
-    transform: translate(-50%, -100%);
+    transform: translate(-50%, calc(-100% - 12px));
     z-index: 1000;
+  }
+  .map-app__tooltip--below {
+    transform: translate(-50%, 12px);
   }
   .map-app__tooltip-title {
     font-weight: 600;
@@ -1309,10 +1312,87 @@
 
   let mapInstance = null;
   let tooltipEl = null;
+  const TOOLTIP_OFFSET_X = 14;
+  const TOOLTIP_BOUNDARY_PADDING = 12;
 
   function hideTooltip() {
     if (tooltipEl) {
       tooltipEl.style.display = 'none';
+      tooltipEl.classList.remove('map-app__tooltip--below');
+    }
+  }
+
+  function positionTooltip(point) {
+    if (!tooltipEl || !mapWrapper || !point) {
+      return;
+    }
+    const pointerX = Number(point.x);
+    const pointerY = Number(point.y);
+    if (!Number.isFinite(pointerX) || !Number.isFinite(pointerY)) {
+      return;
+    }
+
+    tooltipEl.style.left = `${pointerX + TOOLTIP_OFFSET_X}px`;
+    tooltipEl.classList.remove('map-app__tooltip--below');
+    tooltipEl.style.top = `${pointerY}px`;
+
+    const mapRect = mapWrapper.getBoundingClientRect();
+    if (!mapRect || !Number.isFinite(mapRect.top)) {
+      return;
+    }
+    const topLimit = mapRect.top + TOOLTIP_BOUNDARY_PADDING;
+    const bottomLimit = mapRect.bottom - TOOLTIP_BOUNDARY_PADDING;
+    const leftLimit = mapRect.left + TOOLTIP_BOUNDARY_PADDING;
+    const rightLimit = mapRect.right - TOOLTIP_BOUNDARY_PADDING;
+
+    const computeOverflow = (rect) =>
+      Math.max(0, topLimit - rect.top) + Math.max(0, rect.bottom - bottomLimit);
+
+    const aboveRect = tooltipEl.getBoundingClientRect();
+    const aboveOverflow = computeOverflow(aboveRect);
+
+    tooltipEl.classList.add('map-app__tooltip--below');
+    tooltipEl.style.top = `${pointerY}px`;
+    const belowRect = tooltipEl.getBoundingClientRect();
+    const belowOverflow = computeOverflow(belowRect);
+
+    const flipToBottom =
+      belowOverflow < aboveOverflow ||
+      (belowOverflow === aboveOverflow && topLimit - aboveRect.top > 0);
+
+    if (flipToBottom) {
+      tooltipEl.classList.add('map-app__tooltip--below');
+    } else {
+      tooltipEl.classList.remove('map-app__tooltip--below');
+    }
+    tooltipEl.style.top = `${pointerY}px`;
+
+    let tooltipRect = tooltipEl.getBoundingClientRect();
+    let currentTop = Number.parseFloat(tooltipEl.style.top || '0');
+    if (tooltipRect.top < topLimit) {
+      const delta = topLimit - tooltipRect.top;
+      currentTop += delta;
+      tooltipEl.style.top = `${currentTop}px`;
+      tooltipRect = tooltipEl.getBoundingClientRect();
+    }
+    if (tooltipRect.bottom > bottomLimit) {
+      const delta = tooltipRect.bottom - bottomLimit;
+      currentTop = Number.parseFloat(tooltipEl.style.top || '0') - delta;
+      tooltipEl.style.top = `${currentTop}px`;
+      tooltipRect = tooltipEl.getBoundingClientRect();
+    }
+
+    let currentLeft = Number.parseFloat(tooltipEl.style.left || '0');
+    if (tooltipRect.left < leftLimit) {
+      const delta = leftLimit - tooltipRect.left;
+      currentLeft += delta;
+      tooltipEl.style.left = `${currentLeft}px`;
+      tooltipRect = tooltipEl.getBoundingClientRect();
+    }
+    if (tooltipRect.right > rightLimit) {
+      const delta = tooltipRect.right - rightLimit;
+      currentLeft = Number.parseFloat(tooltipEl.style.left || '0') - delta;
+      tooltipEl.style.left = `${currentLeft}px`;
     }
   }
 
@@ -1563,8 +1643,7 @@
         }
         tooltipEl.innerHTML = renderTooltip(state.tooltip || state, currentShareLabel);
         tooltipEl.style.display = 'block';
-        tooltipEl.style.left = `${event.point.x + 14}px`;
-        tooltipEl.style.top = `${event.point.y - 12}px`;
+        positionTooltip(event.point);
       });
 
       mapInstance.on('mouseleave', 'regions-fill', hideTooltip);

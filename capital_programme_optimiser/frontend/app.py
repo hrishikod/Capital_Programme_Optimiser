@@ -429,6 +429,7 @@ def inject_kpi_card_theme() -> None:
         display: grid;
         grid-template-columns: repeat(3, minmax(0,1fr));
         gap: 14px;
+        padding-bottom: 18px;
       }}
       @media (max-width: 1200px) {{ .kpi-grid {{ grid-template-columns: repeat(2, minmax(0,1fr)); }} }}
       @media (max-width: 800px)  {{ .kpi-grid {{ grid-template-columns: 1fr; }} }}
