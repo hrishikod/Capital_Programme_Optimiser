@@ -221,6 +221,63 @@
     box-shadow: var(--shadow);
     padding: 16px 18px;
   }
+  .map-app__legend {
+    position: relative;
+  }
+  .map-app__legend-bar-wrapper {
+    position: relative;
+    padding: 10px 0 6px;
+  }
+  .map-app__legend-tooltip {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translate(-50%, 0) scale(0.98);
+    background: rgba(15, 23, 42, 0.95);
+    color: #f8fafc;
+    padding: 4px 12px;
+    border-radius: 18px;
+    font-size: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 26px;
+    pointer-events: none;
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.28);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.16s ease, transform 0.16s ease;
+    z-index: 1200;
+  }
+  .map-app__legend-tooltip.is-active {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0) scale(1);
+  }
+  .map-app__legend-tooltip::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 50%;
+    width: 12px;
+    height: 12px;
+    background: rgba(15, 23, 42, 0.95);
+    transform: translate(-50%, 0) rotate(45deg);
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.25);
+  }
+  .map-app__legend-tooltip-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(248, 250, 252, 0.55);
+    background: rgba(148, 163, 184, 1);
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.35);
+    flex-shrink: 0;
+  }
+  .map-app__legend-tooltip-value {
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
   .map-app__legend-title {
     font-weight: 600;
     margin-bottom: 10px;
@@ -229,6 +286,7 @@
     height: 12px;
     border-radius: 999px;
     background: linear-gradient(90deg, #d1d5db, #1d4ed8);
+    cursor: pointer;
   }
   .map-app__legend-scale {
     display: flex;
@@ -347,6 +405,28 @@
     return;
   }
 
+  const colorParserEl = (() => {
+    const existing = document.getElementById('map-legend-color-parser');
+    if (existing) {
+      return existing;
+    }
+    const el = document.createElement('span');
+    el.id = 'map-legend-color-parser';
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    el.style.zIndex = '-1';
+    el.style.visibility = 'hidden';
+    el.style.transform = 'translate(-9999px, -9999px)';
+    document.body.appendChild(el);
+    return el;
+  })();
+  let legendColorStops = [];
+  let legendBarElement = null;
+  let legendTooltipEl = null;
+  let legendTooltipSwatchEl = null;
+  let legendTooltipValueEl = null;
+
   function escapeHtml(value) {
     if (value === null || value === undefined) {
       return '';
@@ -415,6 +495,213 @@
     return `${formatter.format(value)}${suffix}`;
   }
 
+  function colorToCssColor(channels) {
+    if (!channels) {
+      return 'rgba(148, 163, 184, 1)';
+    }
+    const rChannel = Number.isFinite(channels.r) ? channels.r : 0;
+    const gChannel = Number.isFinite(channels.g) ? channels.g : 0;
+    const bChannel = Number.isFinite(channels.b) ? channels.b : 0;
+    const aChannel = Number.isFinite(channels.a) ? channels.a : 1;
+    const r = Math.round(Math.min(Math.max(rChannel, 0), 255));
+    const g = Math.round(Math.min(Math.max(gChannel, 0), 255));
+    const b = Math.round(Math.min(Math.max(bChannel, 0), 255));
+    const alpha = Math.round(Math.min(Math.max(aChannel, 0), 1) * 1000) / 1000;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function parseCssColor(color) {
+    if (!colorParserEl || typeof color !== 'string') {
+      return null;
+    }
+    const trimmed = color.trim();
+    if (!trimmed) {
+      return null;
+    }
+    try {
+      colorParserEl.style.color = '';
+      colorParserEl.style.color = trimmed;
+      const computed = window.getComputedStyle(colorParserEl).color;
+      const match = computed && computed.match(/rgba?\(([^)]+)\)/i);
+      if (!match) {
+        return null;
+      }
+      const parts = match[1].split(',').map((part) => part.trim());
+      const r = Number(parts[0]);
+      const g = Number(parts[1]);
+      const b = Number(parts[2]);
+      const aPart = parts.length > 3 ? Number(parts[3]) : 1;
+      if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+        return null;
+      }
+      const channels = {
+        r,
+        g,
+        b,
+        a: Number.isFinite(aPart) ? aPart : 1,
+      };
+      return { ...channels, css: colorToCssColor(channels) };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function blendLegendColors(colorA, colorB, ratio) {
+    const t = Math.min(Math.max(Number.isFinite(ratio) ? ratio : 0, 0), 1);
+    if (!colorA && !colorB) {
+      return null;
+    }
+    if (!colorA) {
+      return colorB;
+    }
+    if (!colorB) {
+      return colorA;
+    }
+    const channels = {
+      r: colorA.r + (colorB.r - colorA.r) * t,
+      g: colorA.g + (colorB.g - colorA.g) * t,
+      b: colorA.b + (colorB.b - colorA.b) * t,
+      a: colorA.a + (colorB.a - colorA.a) * t,
+    };
+    return { ...channels, css: colorToCssColor(channels) };
+  }
+
+  function prepareLegendColorStops(legend) {
+    if (!legend || !Array.isArray(legend.stops)) {
+      legendColorStops = [];
+      return;
+    }
+    const entries = legend.stops
+      .map((stop) => {
+        if (Array.isArray(stop)) {
+          const value = Number(stop[0]);
+          const color = parseCssColor(stop[1]);
+          if (Number.isFinite(value) && color) {
+            return { value, color };
+          }
+        } else if (stop && typeof stop === 'object') {
+          const value = Number(stop.value);
+          const color = parseCssColor(stop.color);
+          if (Number.isFinite(value) && color) {
+            return { value, color };
+          }
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.value - b.value);
+    legendColorStops = entries;
+  }
+
+  function legendColorAtValue(value) {
+    if (!legendColorStops.length || !Number.isFinite(value)) {
+      return null;
+    }
+    if (value <= legendColorStops[0].value) {
+      return legendColorStops[0].color;
+    }
+    const last = legendColorStops[legendColorStops.length - 1];
+    if (value >= last.value) {
+      return last.color;
+    }
+    for (let index = 1; index < legendColorStops.length; index += 1) {
+      const prev = legendColorStops[index - 1];
+      const next = legendColorStops[index];
+      if (value <= next.value) {
+        const span = next.value - prev.value;
+        const proportion = span === 0 ? 0 : (value - prev.value) / span;
+        return blendLegendColors(prev.color, next.color, proportion);
+      }
+    }
+    return last.color;
+  }
+
+  function clientXFromEvent(event) {
+    if (!event) {
+      return NaN;
+    }
+    if (typeof event.clientX === 'number') {
+      return event.clientX;
+    }
+    if (event.touches && event.touches.length) {
+      return event.touches[0].clientX;
+    }
+    if (event.changedTouches && event.changedTouches.length) {
+      return event.changedTouches[0].clientX;
+    }
+    return NaN;
+  }
+
+  function resetLegendTooltip() {
+    if (legendTooltipEl) {
+      legendTooltipEl.classList.remove('is-active');
+      legendTooltipEl.setAttribute('aria-hidden', 'true');
+      legendTooltipEl.style.opacity = '0';
+      legendTooltipEl.style.visibility = 'hidden';
+      legendTooltipEl.style.left = '50%';
+    }
+    if (legendTooltipValueEl) {
+      legendTooltipValueEl.textContent = '';
+    }
+    if (legendTooltipSwatchEl) {
+      legendTooltipSwatchEl.style.background = 'rgba(148, 163, 184, 1)';
+    }
+  }
+
+
+  function updateLegendTooltipFromRatio(ratio, legend) {
+    if (!legendTooltipEl || !legendTooltipValueEl || !legendBarElement || !legend) {
+      return;
+    }
+    const clamped = Math.min(Math.max(Number.isFinite(ratio) ? ratio : 0, 0), 1);
+    const min = Number(legend.min);
+    const max = Number(legend.max);
+    const hasFiniteRange = Number.isFinite(min) && Number.isFinite(max);
+    const value = hasFiniteRange ? min + (max - min) * clamped : clamped;
+    legendTooltipValueEl.textContent = formatLegendValue(value, legend) || '';
+    const color = legendColorAtValue(value);
+    const swatchColor = color ? color.css : 'rgba(148, 163, 184, 1)';
+    if (legendTooltipSwatchEl) {
+      legendTooltipSwatchEl.style.background = swatchColor;
+    }
+    const barRect = legendBarElement.getBoundingClientRect();
+    if (barRect && Number.isFinite(barRect.width) && barRect.width > 0) {
+      const parentEl = legendTooltipEl.offsetParent instanceof HTMLElement
+        ? legendTooltipEl.offsetParent
+        : (legendBarElement.offsetParent instanceof HTMLElement ? legendBarElement.offsetParent : legendBarElement.parentElement);
+      const parentRect = parentEl && parentEl.getBoundingClientRect ? parentEl.getBoundingClientRect() : barRect;
+      const relativeLeft = (barRect.left - parentRect.left) + clamped * barRect.width;
+      legendTooltipEl.style.left = `${relativeLeft}px`;
+    }
+    legendTooltipEl.setAttribute('aria-hidden', 'false');
+    legendTooltipEl.style.opacity = '1';
+    legendTooltipEl.style.visibility = 'visible';
+    legendTooltipEl.classList.add('is-active');
+  }
+
+  function handleLegendPointerMove(event) {
+    if (!legendBarElement || !legendTooltipEl) {
+      return;
+    }
+    if (!currentLegend) {
+      resetLegendTooltip();
+      return;
+    }
+    const rect = legendBarElement.getBoundingClientRect();
+    if (!rect || rect.width <= 0) {
+      return;
+    }
+    const clientX = clientXFromEvent(event);
+    if (!Number.isFinite(clientX)) {
+      return;
+    }
+    const ratio = (clientX - rect.left) / rect.width;
+    updateLegendTooltipFromRatio(ratio, currentLegend);
+  }
+
+  function handleLegendPointerLeave() {
+    resetLegendTooltip();
+  }
   function renderTooltip(state, shareLabel) {
     if (!state) {
       return '<div class="map-app__tooltip-body">No data</div>';
@@ -426,7 +713,6 @@
     const sharePrefix = shareLabel || 'Share';
     const rows = [
       ['Year', state.year ? `FY ${escapeHtml(state.year)}` : '-'],
-      ['Metric', state.metricDisplay || '-'],
       [`${sharePrefix} (cumulative)`, state.shareCumulative || '-'],
       [`${sharePrefix} (annual)`, state.shareAnnual || '-'],
       ['Per-capita (cum)', state.perCapitaCumulative || '-'],
@@ -822,8 +1108,12 @@
   legendTitle.className = 'map-app__legend-title';
   legendTitle.textContent = (currentLegend && currentLegend.label) || metricLabel || 'Legend';
 
+  const legendBarWrapper = document.createElement('div');
+  legendBarWrapper.className = 'map-app__legend-bar-wrapper';
+
   const legendBar = document.createElement('div');
   legendBar.className = 'map-app__legend-bar';
+  legendBarElement = legendBar;
 
   const legendScale = document.createElement('div');
   legendScale.className = 'map-app__legend-scale';
@@ -833,9 +1123,32 @@
   legendScale.appendChild(legendMin);
   legendScale.appendChild(legendMax);
 
+  legendTooltipEl = document.createElement('div');
+  legendTooltipEl.className = 'map-app__legend-tooltip';
+  legendTooltipEl.setAttribute('role', 'tooltip');
+  legendTooltipEl.setAttribute('aria-hidden', 'true');
+
+  legendTooltipSwatchEl = document.createElement('span');
+  legendTooltipSwatchEl.className = 'map-app__legend-tooltip-swatch';
+  legendTooltipEl.appendChild(legendTooltipSwatchEl);
+
+  legendTooltipValueEl = document.createElement('span');
+  legendTooltipValueEl.className = 'map-app__legend-tooltip-value';
+  legendTooltipEl.appendChild(legendTooltipValueEl);
+
   legendCard.appendChild(legendTitle);
-  legendCard.appendChild(legendBar);
+  legendBarWrapper.appendChild(legendBar);
+  legendBarWrapper.appendChild(legendTooltipEl);
+  legendCard.appendChild(legendBarWrapper);
   legendCard.appendChild(legendScale);
+
+  legendBar.addEventListener('mouseenter', handleLegendPointerMove);
+  legendBar.addEventListener('mousemove', handleLegendPointerMove);
+  legendBar.addEventListener('mouseleave', handleLegendPointerLeave);
+  legendBar.addEventListener('touchstart', handleLegendPointerMove, { passive: true });
+  legendBar.addEventListener('touchmove', handleLegendPointerMove, { passive: true });
+  legendBar.addEventListener('touchend', handleLegendPointerLeave);
+  legendBar.addEventListener('touchcancel', handleLegendPointerLeave);
 
   const tableCard = document.createElement('div');
   tableCard.className = 'map-app__table card';
@@ -890,14 +1203,18 @@
 
   function updateLegend(legend) {
     if (!legend) {
+      legendColorStops = [];
       legendBar.style.background = 'linear-gradient(90deg, #d1d5db, #1d4ed8)';
       legendMin.textContent = '';
       legendMax.textContent = '';
+      resetLegendTooltip();
       return;
     }
     legendBar.style.background = buildLegendGradient(legend);
     legendMin.textContent = formatLegendValue(legend.min, legend);
     legendMax.textContent = formatLegendValue(legend.max, legend);
+    prepareLegendColorStops(legend);
+    resetLegendTooltip();
   }
 
   function updateSubtitle(year) {
@@ -1262,7 +1579,6 @@
   mapInstance.on('zoomstart', hideTooltip);
 })();
 </script>
-
 
 
 
