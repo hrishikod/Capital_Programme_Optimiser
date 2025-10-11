@@ -21,6 +21,8 @@ _DIM_SHORT = {
     "Resilience and Security": "RES",
 }
 
+_SHORT_TO_DIM = {code: name for name, code in _DIM_SHORT.items()}
+
 
 def dim_short(dim: str) -> str:
     if not dim:
@@ -119,6 +121,9 @@ def _parse_surplus_from_stem(stem: str) -> Optional[float]:
 def _parse_buffer_from_stem(stem: str) -> Optional[float]:
     import re
 
+    m = re.search(r"_pm(-?\d+)", stem, flags=re.IGNORECASE)
+    if m:
+        return float(m.group(1))
     m = re.search(r"yoy(?:\+/-|\u00B1)(\d+)", stem, flags=re.IGNORECASE)
     if not m:
         m = re.search(r"yoy\+(\d+)", stem, flags=re.IGNORECASE)
@@ -130,6 +135,19 @@ def _parse_cash_from_stem(stem: str) -> Optional[float]:
 
     m = re.search(r"cash\+(\d+)", stem, flags=re.IGNORECASE)
     return float(m.group(1)) if m else None
+
+
+def _infer_dimension_from_stem(stem: str) -> Optional[str]:
+    """Infer the primary objective dimension from the cache filename stem."""
+    if not stem:
+        return None
+    token = stem.split("_")[-1].strip()
+    if not token:
+        return None
+    upper = token.upper()
+    if upper in _SHORT_TO_DIM:
+        return _SHORT_TO_DIM[upper]
+    return None
 
 
 def _parse_confidence(stem: str) -> str:
@@ -144,9 +162,9 @@ def _parse_confidence(stem: str) -> str:
 
 def _parse_mode(stem: str) -> str:
     s = stem.lower()
-    if "bencb" in s:
+    if "bencb" in s or "cash" in s:
         return "cash"
-    if "benbuf" in s:
+    if "benbuf" in s or _parse_buffer_from_stem(stem) is not None:
         return "buffered"
     if "fixedenv" in s:
         return "fixed"
@@ -336,6 +354,112 @@ def load_results(cache_dir: Path) -> Dict[str, Dict[str, Any]]:
     return results
 
 
+def _normalise_total_benefit(res: Dict[str, Any]) -> pd.DataFrame:
+    """Return a Year/BenefitFlow frame from varying solver outputs."""
+    ben = res.get("benefit_flow")
+    if isinstance(ben, pd.DataFrame) and {"Year", "BenefitFlow"}.issubset(ben.columns):
+        df = ben[["Year", "BenefitFlow"]].copy()
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+        df["BenefitFlow"] = pd.to_numeric(df["BenefitFlow"], errors="coerce").fillna(0.0)
+        df = df.dropna(subset=["Year"]).copy()
+        df["Year"] = df["Year"].astype(int)
+        return df
+
+    alt = res.get("benefits_by_year")
+    if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
+        df_alt = alt.copy()
+        df_alt["Year"] = pd.to_numeric(df_alt["Year"], errors="coerce")
+        df_alt = df_alt.dropna(subset=["Year"]).copy()
+        df_alt["Year"] = df_alt["Year"].astype(int)
+        total_col = None
+        for candidate in df_alt.columns:
+            if candidate == "Year":
+                continue
+            if str(candidate).strip().lower() == "total":
+                total_col = candidate
+                break
+        if total_col is None:
+            value_cols = [c for c in df_alt.columns if c != "Year"]
+            if not value_cols:
+                return pd.DataFrame(columns=["Year", "BenefitFlow"])
+            df_alt[value_cols] = df_alt[value_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            df_alt["BenefitFlow"] = df_alt[value_cols].sum(axis=1)
+        else:
+            df_alt["BenefitFlow"] = pd.to_numeric(df_alt[total_col], errors="coerce").fillna(0.0)
+        return df_alt[["Year", "BenefitFlow"]]
+
+    return pd.DataFrame(columns=["Year", "BenefitFlow"])
+
+
+def _benefit_dim_from_project_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert benefits_by_project_dimension_by_year into a wide Year/Dimension table."""
+    if df.empty:
+        return pd.DataFrame(columns=["Year"])
+    working = df.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    value_cols = [c for c in working.columns if str(c).isdigit()]
+    if not value_cols:
+        numeric_cols = [c for c in working.columns if pd.api.types.is_numeric_dtype(working[c])]
+        value_cols = [c for c in numeric_cols if c != "Year"]
+    if not value_cols or "Dimension" not in working.columns:
+        return pd.DataFrame(columns=["Year"])
+    melted = working.melt(
+        id_vars=[c for c in working.columns if c not in value_cols],
+        value_vars=value_cols,
+        var_name="Year",
+        value_name="BenefitFlow",
+    )
+    melted["Year"] = pd.to_numeric(melted["Year"], errors="coerce")
+    melted = melted.dropna(subset=["Year"]).copy()
+    melted["Year"] = melted["Year"].astype(int)
+    melted["BenefitFlow"] = pd.to_numeric(melted["BenefitFlow"], errors="coerce").fillna(0.0)
+    grouped = (
+        melted.groupby(["Year", "Dimension"], as_index=False)["BenefitFlow"]
+        .sum()
+        .pivot_table(index="Year", columns="Dimension", values="BenefitFlow", aggfunc="sum")
+        .reset_index()
+    )
+    return grouped
+
+
+def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
+    """Return a Year x Dimension wide table from multiple solver outputs."""
+    bendim_w = res.get("benefit_flow_by_dim_wide")
+    if isinstance(bendim_w, pd.DataFrame) and "Year" in bendim_w.columns:
+        return bendim_w.copy()
+
+    bendim_l = res.get("benefit_flow_by_dim_long")
+    if isinstance(bendim_l, pd.DataFrame) and {"Year", "Dimension", "BenefitFlow"}.issubset(bendim_l.columns):
+        df_l = bendim_l.copy()
+        df_l["Year"] = pd.to_numeric(df_l["Year"], errors="coerce")
+        df_l = df_l.dropna(subset=["Year"]).copy()
+        df_l["Year"] = df_l["Year"].astype(int)
+        df_l["BenefitFlow"] = pd.to_numeric(df_l["BenefitFlow"], errors="coerce").fillna(0.0)
+        return (
+            df_l.pivot_table(index="Year", columns="Dimension", values="BenefitFlow", aggfunc="sum")
+            .reset_index()
+        )
+
+    alt = res.get("benefits_by_year")
+    if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
+        df_alt = alt.copy()
+        df_alt["Year"] = pd.to_numeric(df_alt["Year"], errors="coerce")
+        df_alt = df_alt.dropna(subset=["Year"]).copy()
+        df_alt["Year"] = df_alt["Year"].astype(int)
+        dim_cols = [c for c in df_alt.columns if c != "Year"]
+        if dim_cols:
+            for c in dim_cols:
+                df_alt[c] = pd.to_numeric(df_alt[c], errors="coerce").fillna(0.0)
+            return df_alt[["Year"] + dim_cols]
+
+    alt_proj = res.get("benefits_by_project_dimension_by_year")
+    if isinstance(alt_proj, pd.DataFrame):
+        return _benefit_dim_from_project_table(alt_proj)
+
+    return pd.DataFrame(columns=["Year"])
+
+
 def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
     stems = sorted(results.keys())
     if not stems:
@@ -365,10 +489,35 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         yoy_buf = _parse_buffer_from_stem(stem) if mode == "buffered" else None
         cash_buf = _parse_cash_from_stem(stem) if mode == "cash" else None
         steep, horizon = _parse_benefit_scenario(stem, res)
-        obj_dim = (res.get("objective", {}) or {}).get("primary_dim", "Total")
+        obj_dim_raw = (res.get("objective", {}) or {}).get("primary_dim")
+        inferred_dim = _infer_dimension_from_stem(base_stem)
+        obj_dim = str(obj_dim_raw).strip() if obj_dim_raw else ""
+        if inferred_dim and inferred_dim.strip():
+            if not obj_dim or obj_dim.lower() != inferred_dim.strip().lower():
+                obj_dim = inferred_dim.strip()
+        if not obj_dim:
+            obj_dim = "Total"
 
         cache_file = res.get("_cache_file", f"{stem}.pkl")
         profile_label = _derive_profile_label(cache_file)
+
+        pv_by_dim_raw = res.get("benefit_pv_by_dim") or res.get("pv_by_dimension") or {}
+        pv_by_dim = {str(k): float(v) for k, v in (pv_by_dim_raw or {}).items()}
+        pv_total_raw = res.get("benefit_pv_total")
+        if pv_total_raw is None:
+            pv_total_raw = res.get("pv_total")
+            if pv_total_raw is None and pv_by_dim:
+                pv_total_raw = sum(pv_by_dim.values())
+        pv_total = float(pv_total_raw or 0.0)
+        pv_primary_raw = res.get("benefit_pv_primary")
+        if pv_primary_raw is None:
+            if obj_dim and obj_dim in pv_by_dim:
+                pv_primary_raw = pv_by_dim[obj_dim]
+            elif "Total" in pv_by_dim:
+                pv_primary_raw = pv_by_dim["Total"]
+            else:
+                pv_primary_raw = pv_total
+        pv_primary = float(pv_primary_raw or 0.0)
 
         code = _build_scenario_code(conf, steep, horizon, mode, env_val, yoy_buf, cash_buf, obj_dim, pref if is_comp else "", pref_label)
         title = _build_scenario_title(conf, steep, horizon, mode, env_val, yoy_buf, cash_buf, obj_dim)
@@ -389,6 +538,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             "BenSteep": steep,
             "BenHorizon": horizon,
             "ObjectiveDim": obj_dim,
+            "ObjectiveDimShort": dim_short(obj_dim),
             "Code": code,
             "Title": title,
             "IsComp": 1 if is_comp else 0,
@@ -401,9 +551,9 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             "StartFY": int(res.get("calendar", {}).get("start_fy", start_fy)),
             "HorizonYears": int(res.get("calendar", {}).get("years", model_years)),
             "BenRate": float(res.get("benefit_rate", benefit_rate)),
-            "BenefitPVByDim": {k: float(v) for k, v in (res.get("benefit_pv_by_dim") or {}).items()},
-            "BenefitPVTotal": float(res.get("benefit_pv_total", 0.0)),
-            "BenefitPVPrimary": float(res.get("benefit_pv_primary", 0.0)),
+            "BenefitPVByDim": pv_by_dim,
+            "BenefitPVTotal": pv_total,
+            "BenefitPVPrimary": pv_primary,
             "Profile": profile_label,
         }
 
@@ -442,6 +592,9 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         meta = scenario_meta[stem]
         code = meta["Code"]
         mode = meta["Mode"]
+        objective_dim = meta.get("ObjectiveDim")
+        if objective_dim:
+            dims_set.add(str(objective_dim))
         env_val = meta["Envelope"] if meta["Envelope"] != "" else None
         yoy_buf = meta["Buffer"] if meta["Buffer"] != "" else None
         cash_buf = meta["CashPlus"] if meta["CashPlus"] != "" else None
@@ -458,26 +611,12 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         cfd.insert(0, "Key", cfd["Code"] + "|" + cfd["Year"].astype(str))
         cf_rows.append(cfd)
 
-        ben = res.get("benefit_flow", pd.DataFrame(columns=["Year", "BenefitFlow"]))
-        if not ben.empty:
-            ben_total = ben[["Year", "BenefitFlow"]].copy()
-            ben_total["Year"] = pd.to_numeric(ben_total["Year"], errors="coerce").astype(int)
-            ben_total["BenefitFlow"] = pd.to_numeric(ben_total["BenefitFlow"], errors="coerce").fillna(0.0)
-        else:
-            ben_total = pd.DataFrame(columns=["Year", "BenefitFlow"])
+        ben_total = _normalise_total_benefit(res)
         ben_total.insert(0, "Code", code)
         ben_total.insert(0, "Key", ben_total["Code"] + "|" + ben_total["Year"].astype(str))
         ben_rows.append(ben_total)
 
-        bendim_w = res.get("benefit_flow_by_dim_wide")
-        if isinstance(bendim_w, pd.DataFrame) and "Year" in bendim_w.columns:
-            df_w = bendim_w.copy()
-        else:
-            bendim_l = res.get("benefit_flow_by_dim_long")
-            if isinstance(bendim_l, pd.DataFrame) and {"Year", "Dimension", "BenefitFlow"}.issubset(bendim_l.columns):
-                df_w = bendim_l.pivot_table(index="Year", columns="Dimension", values="BenefitFlow", aggfunc="sum").reset_index()
-            else:
-                df_w = pd.DataFrame(columns=["Year"])
+        df_w = _normalise_benefit_dim_wide(res)
         if not df_w.empty:
             df_w["Year"] = pd.to_numeric(df_w["Year"], errors="coerce").astype(int)
             dim_cols = [c for c in df_w.columns if c != "Year"]
@@ -512,9 +651,21 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
     df_scen = pd.DataFrame(
         [
             {
-                "Key": f"{meta['Conf']}|{meta['BenSteep']}|{meta['BenHorizon']}|{meta['Mode']}|"
-                f"{str(int(round(meta['Envelope']))) if meta['Envelope'] != '' else ''}|"
-                f"{('+/-' + str(int(round(meta['Buffer'])))) if (meta['Mode'] == 'buffered' and meta['Buffer'] != '') else (('cash+' + str(int(round(meta['CashPlus'])))) if (meta['Mode'] == 'cash' and meta['CashPlus'] != '') else '')}",
+                "Key": build_scenario_key(
+                    meta["Conf"],
+                    meta["BenSteep"],
+                    int(meta["BenHorizon"]),
+                    meta["Mode"],
+                    float(meta["Envelope"]) if meta["Envelope"] != "" else None,
+                    float(meta["Buffer"])
+                    if (meta["Mode"] == "buffered" and meta["Buffer"] != "")
+                    else (
+                        float(meta["CashPlus"])
+                        if (meta["Mode"] == "cash" and meta["CashPlus"] != "")
+                        else None
+                    ),
+                    objective_dim=meta.get("ObjectiveDim"),
+                ),
                 "Conf": meta["Conf"],
                 "BenSteep": meta["BenSteep"],
                 "BenHorizon": meta["BenHorizon"],
@@ -530,6 +681,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 "Buffer": meta["Buffer"],
                 "CashPlus": meta["CashPlus"],
                 "ObjectiveDim": meta["ObjectiveDim"],
+                "ObjectiveDimShort": meta.get("ObjectiveDimShort", ""),
                 "ScenarioTitle": meta["Title"],
                 "OrigStem": meta["OrigStem"],
                 "CacheStem": meta["CacheStem"],
@@ -598,6 +750,8 @@ def build_scenario_key(
     mode: str,
     envelope: Optional[float],
     buffer_value: Optional[float],
+    *,
+    objective_dim: Optional[str] = None,
 ) -> str:
     env_str = str(int(round(envelope))) if envelope is not None else ""
     if mode == "buffered":
@@ -606,7 +760,8 @@ def build_scenario_key(
         buf_str = f"cash+{int(round(buffer_value))}" if buffer_value is not None else ""
     else:
         buf_str = ""
-    return f"{conf}|{benefit_steep}|{benefit_horizon}|{mode}|{env_str}|{buf_str}"
+    dim_str = dim_short(objective_dim) if objective_dim else ""
+    return f"{conf}|{benefit_steep}|{benefit_horizon}|{mode}|{env_str}|{buf_str}|{dim_str}"
 
 
 def find_scenario_code(
@@ -618,6 +773,7 @@ def find_scenario_code(
     mode: str,
     envelope: Optional[float],
     buffer_value: Optional[float],
+    objective_dim: Optional[str] = None,
     prefer_comparison: bool = False,
     profile: Optional[str] = None,
     scenarios_df: Optional[pd.DataFrame] = None,
@@ -627,8 +783,25 @@ def find_scenario_code(
         profile_mask = df_source["Profile"] == profile
         if profile_mask.any():
             df_source = df_source[profile_mask]
-    key = build_scenario_key(conf, benefit_steep, benefit_horizon, mode, envelope, buffer_value)
+    key = build_scenario_key(
+        conf,
+        benefit_steep,
+        benefit_horizon,
+        mode,
+        envelope,
+        buffer_value,
+        objective_dim=objective_dim,
+    )
     df = df_source[df_source["Key"] == key]
+    if df.empty and objective_dim and "ObjectiveDim" in df_source.columns:
+        dim_series = df_source["ObjectiveDim"].astype(str).str.strip()
+        target = str(objective_dim).strip().lower()
+        short_target = dim_short(objective_dim).lower()
+        dim_mask = (
+            (dim_series.str.lower() == target)
+            | (dim_series.apply(dim_short).str.lower() == short_target)
+        )
+        df = df_source[dim_mask & (df_source["Key"].str.startswith(f"{conf}|{benefit_steep}|{benefit_horizon}|{mode}|"))]
     if df.empty:
         return None
     flag = 1 if prefer_comparison else 0

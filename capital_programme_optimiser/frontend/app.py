@@ -49,6 +49,14 @@ from plotly.colors import qualitative
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_option_menu import option_menu
+import inspect
+
+PREVIEW_COMPONENT_PATH = (Path(__file__).parent / "components" / "preview_nav").resolve()
+_preview_navigation_component = components.declare_component(
+    "preview_navigation",
+    path=str(PREVIEW_COMPONENT_PATH),
+)
+ENABLE_PREVIEW_NAVIGATION = False  # Toggle preview pane without removing supporting code.
 
 ROOT_CWD = Path.cwd()
 
@@ -76,20 +84,16 @@ from capital_programme_optimiser.dashboard.regions import (
 )
 
 from capital_programme_optimiser.dashboard.data import (
-
     DashboardData,
-
+    dim_short,
     extract_project_runs,
-
     find_scenario_code,
-
     load_results,
-
     prepare_dashboard_data,
-
     scenario_metadata,
-
 )
+
+_FIND_SCENARIO_SUPPORTS_DIM = "objective_dim" in inspect.signature(find_scenario_code).parameters
 
 from capital_programme_optimiser.dashboard.constants import (
     SCENARIO_PRIMARY_NAME,
@@ -763,9 +767,13 @@ def inject_powerbi_theme() -> None:
     st.markdown(css, unsafe_allow_html=True)
 
 
-
-
-def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "vertical") -> str:
+def render_powerbi_navigation(
+    active_tab: str,
+    *,
+    key: str,
+    orientation: str = "vertical",
+    previews: Dict[str, List[Dict[str, Any]]] | None = None,
+) -> str:
     styles_vertical = {
         "container": {
             "padding": "0!important",
@@ -843,25 +851,24 @@ def render_powerbi_navigation(active_tab: str, *, key: str, orientation: str = "
             "border": "1px solid rgba(25, 69, 107, 0.26)",
         },
     }
-    styles = styles_vertical if orientation == "vertical" else styles_horizontal
     icon_list = [NAV_ICON_MAP.get(tab, "dot") for tab in NAV_TABS]
+
+    if orientation == "vertical" and previews is not None:
+        selection = _render_preview_navigation_component(
+            active_tab,
+            key=key,
+            icon_list=icon_list,
+            previews=previews or {},
+        )
+        if isinstance(selection, str):
+            return selection
+        return active_tab
+
+    styles = styles_vertical if orientation == "vertical" else styles_horizontal
     container = st.container()
-    if orientation == "vertical":
-        with container:
-            selection = option_menu(
-                "Bookmarks",
-                options=NAV_TABS,
-                icons=icon_list,
-                menu_icon="",
-                default_index=NAV_TABS.index(active_tab) if active_tab in NAV_TABS else 0,
-                orientation=orientation,
-                key=key,
-                styles=styles,
-            )
-        return selection
     with container:
         return option_menu(
-            "",
+            "Bookmarks" if orientation == "vertical" else "",
             options=NAV_TABS,
             icons=icon_list,
             menu_icon="",
@@ -884,6 +891,466 @@ def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
     )
+
+
+def _json_sanitise(value: Any) -> Any:
+    """Return a JSON-serialisable structure by coercing NaN/Inf to None."""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, (np.floating,)):
+        if np.isnan(value) or np.isinf(value):
+            return None
+        return float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return [_json_sanitise(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {k: _json_sanitise(v) for k, v in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return [_json_sanitise(v) for v in value]
+    if isinstance(value, (list, tuple)):
+        return [_json_sanitise(v) for v in value]
+    if isinstance(value, pd.Series):
+        return [_json_sanitise(v) for v in value.tolist()]
+    if isinstance(value, pd.Index):
+        return [_json_sanitise(v) for v in value.tolist()]
+    if isinstance(value, pd.DataFrame):
+        return [_json_sanitise(row) for row in value.to_dict(orient="records")]
+    return value
+
+
+def _figure_title(fig: go.Figure | None, fallback: str) -> str:
+    """Extract a readable title from a Plotly figure."""
+    if fig is None:
+        return fallback
+    title = getattr(getattr(fig, "layout", None), "title", None)
+    if isinstance(title, str):
+        return title or fallback
+    if hasattr(title, "text"):
+        return title.text or fallback
+    return fallback
+
+
+def _figure_payload(fig: go.Figure | None) -> Dict[str, Any] | None:
+    """Return a JSON-safe payload for a Plotly figure."""
+    if fig is None:
+        return None
+    try:
+        json_payload = fig.to_plotly_json()
+    except Exception:
+        return None
+    return _json_sanitise(json_payload)
+
+
+def _append_preview(
+    previews: Dict[str, List[Dict[str, Any]]],
+    tab: str,
+    *,
+    title: str,
+    fig: go.Figure | None = None,
+    message: str | None = None,
+    limit: int = 4,
+) -> None:
+    """Append a preview item for a navigation tab."""
+    entries = previews.setdefault(tab, [])
+    if len(entries) >= limit:
+        return
+    payload: Dict[str, Any] = {"title": title}
+    fig_payload = _figure_payload(fig)
+    if fig_payload is not None:
+        payload["figure"] = fig_payload
+    elif message:
+        payload["message"] = message
+    else:
+        return
+    entries.append(payload)
+
+
+def collect_navigation_previews(
+    *,
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series: pd.DataFrame | None,
+    cmp_series: pd.DataFrame | None,
+    opt_label: str,
+    cmp_label: str,
+    settings: Settings,
+    cache_signature: tuple | None = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Build a mapping of navigation tab names to preview figure payloads."""
+    previews: Dict[str, List[Dict[str, Any]]] = {}
+
+    # Overview tab previews
+    eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
+    if eff_fig is not None:
+        _append_preview(
+            previews,
+            "Overview",
+            title=_figure_title(eff_fig, "Efficiency preview"),
+            fig=eff_fig,
+        )
+    waterfall_preview = benefit_waterfall_chart(
+        data,
+        opt_selection,
+        comp_selection,
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+    )
+    if waterfall_preview is not None:
+        _append_preview(
+            previews,
+            "Overview",
+            title=_figure_title(waterfall_preview, "NPV waterfall"),
+            fig=waterfall_preview,
+        )
+    bridge_preview = benefit_bridge_chart(
+        data,
+        opt_selection,
+        comp_selection,
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+    )
+    if bridge_preview is not None:
+        _append_preview(
+            previews,
+            "Overview",
+            title=_figure_title(bridge_preview, "NPV bridge"),
+            fig=bridge_preview,
+        )
+    radar_preview = benefit_radar_chart(data, opt_selection, comp_selection)
+    if radar_preview is not None:
+        _append_preview(
+            previews,
+            "Overview",
+            title=_figure_title(radar_preview, "Benefit mix"),
+            fig=radar_preview,
+        )
+
+    # Benefits tab previews
+    cumulative_toggle = bool(st.session_state.get("show_cumulative_dimension_benefits", False))
+    opt_dim_pivot = dimension_timeseries(data, opt_selection)
+    cmp_dim_pivot = dimension_timeseries(data, comp_selection)
+    opt_dim_fig = benefit_dimension_chart(
+        data,
+        opt_selection,
+        title=f"{SCENARIO_PRIMARY_NAME} dimension mix",
+        cumulative=cumulative_toggle,
+        pivot=opt_dim_pivot,
+    )
+    if opt_dim_fig is not None:
+        _append_preview(
+            previews,
+            "Benefits",
+            title=_figure_title(opt_dim_fig, f"{SCENARIO_PRIMARY_NAME} mix"),
+            fig=opt_dim_fig,
+        )
+    cmp_dim_fig = benefit_dimension_chart(
+        data,
+        comp_selection,
+        title=f"{SCENARIO_COMPARISON_NAME} dimension mix",
+        cumulative=cumulative_toggle,
+        pivot=cmp_dim_pivot,
+    )
+    if cmp_dim_fig is not None:
+        _append_preview(
+            previews,
+            "Benefits",
+            title=_figure_title(cmp_dim_fig, f"{SCENARIO_COMPARISON_NAME} mix"),
+            fig=cmp_dim_fig,
+        )
+    benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
+    if benefit_fig is not None:
+        _append_preview(
+            previews,
+            "Benefits",
+            title=_figure_title(benefit_fig, "Benefit profile"),
+            fig=benefit_fig,
+        )
+    delta_fig = benefit_delta_chart(
+        data,
+        opt_series,
+        cmp_series,
+        opt_selection,
+        comp_selection,
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+    )
+    if delta_fig is not None:
+        _append_preview(
+            previews,
+            "Benefits",
+            title=_figure_title(delta_fig, "Benefit delta"),
+            fig=delta_fig,
+        )
+
+    # Delivery tab previews
+    project_colors = project_color_map(data)
+    schedule_opt_fig = project_schedule_area_chart(
+        data,
+        opt_selection,
+        title=f"Schedule - {opt_label}",
+        color_map=project_colors,
+    )
+    if schedule_opt_fig is not None:
+        _append_preview(
+            previews,
+            "Delivery",
+            title=_figure_title(schedule_opt_fig, f"Schedule - {opt_label}"),
+            fig=schedule_opt_fig,
+        )
+    schedule_cmp_fig = project_schedule_area_chart(
+        data,
+        comp_selection,
+        title=f"Schedule - {cmp_label}",
+        color_map=project_colors,
+    )
+    if schedule_cmp_fig is not None:
+        _append_preview(
+            previews,
+            "Delivery",
+            title=_figure_title(schedule_cmp_fig, f"Schedule - {cmp_label}"),
+            fig=schedule_cmp_fig,
+        )
+    cap_opt_fig = market_capacity_indicator(data, opt_selection)
+    if cap_opt_fig is not None:
+        _append_preview(
+            previews,
+            "Delivery",
+            title=_figure_title(cap_opt_fig, "Market capacity (optimised)"),
+            fig=cap_opt_fig,
+        )
+    cap_cmp_fig = market_capacity_indicator(data, comp_selection)
+    if cap_cmp_fig is not None:
+        _append_preview(
+            previews,
+            "Delivery",
+            title=_figure_title(cap_cmp_fig, f"Market capacity ({SCENARIO_COMPARISON_NAME})"),
+            fig=cap_cmp_fig,
+        )
+
+    # Cash Flow tab previews
+    cash_opt_fig = (
+        cash_chart(
+            opt_series,
+            f"Cash flow - {opt_label}",
+            color=PRIMARY_COLOR,
+            data=data,
+            selection=opt_selection,
+            comparison_selection=comp_selection,
+        )
+        if opt_series is not None
+        else None
+    )
+    if cash_opt_fig is not None:
+        _append_preview(
+            previews,
+            "Cash Flow",
+            title=_figure_title(cash_opt_fig, f"Cash flow - {opt_label}"),
+            fig=cash_opt_fig,
+        )
+    cash_cmp_fig = (
+        cash_chart(
+            cmp_series,
+            f"Cash flow - {cmp_label}",
+            color=PRIMARY_COLOR,
+            data=data,
+            selection=comp_selection,
+            comparison_selection=opt_selection,
+        )
+        if cmp_series is not None
+        else None
+    )
+    if cash_cmp_fig is not None:
+        _append_preview(
+            previews,
+            "Cash Flow",
+            title=_figure_title(cash_cmp_fig, f"Cash flow - {cmp_label}"),
+            fig=cash_cmp_fig,
+        )
+    cum_opt_fig = (
+        cumulative_revenue_vs_cost_chart(
+            opt_series,
+            opt_selection,
+            title=f"Cumulative profile - {opt_label}",
+        )
+        if opt_series is not None
+        else None
+    )
+    if cum_opt_fig is not None:
+        _append_preview(
+            previews,
+            "Cash Flow",
+            title=_figure_title(cum_opt_fig, f"Cumulative profile - {opt_label}"),
+            fig=cum_opt_fig,
+        )
+    cum_cmp_fig = (
+        cumulative_revenue_vs_cost_chart(
+            cmp_series,
+            comp_selection,
+            title=f"Cumulative profile - {cmp_label}",
+        )
+        if cmp_series is not None
+        else None
+    )
+    if cum_cmp_fig is not None:
+        _append_preview(
+            previews,
+            "Cash Flow",
+            title=_figure_title(cum_cmp_fig, f"Cumulative profile - {cmp_label}"),
+            fig=cum_cmp_fig,
+        )
+
+    # Programme schedule preview
+    primary_for_gantt = opt_selection if getattr(opt_selection, "code", None) else comp_selection
+    comparison_for_gantt = comp_selection if primary_for_gantt is opt_selection else opt_selection
+    gantt_fig = spend_gantt_chart(
+        data,
+        primary_for_gantt,
+        comparison_selection=comparison_for_gantt,
+        show_outline=True,
+        title=f"Programme schedule - {opt_label if primary_for_gantt is opt_selection else cmp_label}",
+    )
+    if gantt_fig is not None:
+        _append_preview(
+            previews,
+            "Programme Schedule",
+            title=_figure_title(gantt_fig, "Programme schedule"),
+            fig=gantt_fig,
+        )
+
+    # Regions preview
+    preview_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
+    preview_label = opt_label if preview_selection is opt_selection else cmp_label
+    scenario_code = getattr(preview_selection, "code", None)
+    if scenario_code:
+        cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
+        cache_key = (cache_signature or "preview", scenario_code)
+        metrics_df = cache_bucket.get(cache_key)
+        if metrics_df is None:
+            try:
+                metrics_df = compute_region_metrics(data, scenario_code)
+            except Exception:
+                metrics_df = None
+            else:
+                cache_bucket[cache_key] = metrics_df
+        region_preview_added = False
+        if metrics_df is not None and not metrics_df.empty:
+            default_metric = REGION_METRIC_DEFAULT["Spend share"]
+            region_col = next(
+                (
+                    col
+                    for col in metrics_df.columns
+                    if str(col).strip().lower()
+                    in {"region", "region_name", "region label", "region_label"}
+                ),
+                None,
+            )
+            if region_col and default_metric in metrics_df.columns:
+                available_years = metrics_df["Year"].dropna()
+                if not available_years.empty:
+                    latest_year = int(available_years.max())
+                    sample_df = (
+                        metrics_df.loc[metrics_df["Year"] == latest_year]
+                        .nlargest(6, default_metric)
+                        [[region_col, default_metric]]
+                        .copy()
+                    )
+                    if not sample_df.empty:
+                        sample_df[region_col] = sample_df[region_col].astype(str)
+                        bar_fig = go.Figure()
+                        bar_fig.add_bar(
+                            x=sample_df[default_metric],
+                            y=sample_df[region_col],
+                            orientation="h",
+                            marker=dict(color=POWERBI_BLUE),
+                            hovertemplate="%{y}<br>%{x:.1%}<extra></extra>",
+                        )
+                        bar_fig.update_layout(
+                            title=f"{preview_label}: Top regions by spend share",
+                            xaxis=dict(tickformat=".0%", title="Share"),
+                            yaxis=dict(autorange="reversed", title=""),
+                            margin=dict(l=60, r=20, t=40, b=40),
+                            template=plotly_template(),
+                        )
+                        _append_preview(
+                            previews,
+                            "Regions",
+                            title="Regional spend share",
+                            fig=bar_fig,
+                        )
+                        region_preview_added = True
+        if not region_preview_added:
+            _append_preview(
+                previews,
+                "Regions",
+                title="Regional preview",
+                message=f"No regional metrics available for {preview_label}.",
+            )
+    else:
+        _append_preview(
+            previews,
+            "Regions",
+            title="Regional preview",
+            message="Select a scenario to view regional metrics.",
+        )
+
+    # Scenario manager preview placeholder
+    _append_preview(
+        previews,
+        "Scenario Manager",
+        title="Scenario workspace",
+        message="Organise optimisation batches and create new scenario folders here.",
+    )
+
+    for tab in NAV_TABS:
+        entries = previews.setdefault(tab, [])
+        if not entries:
+            entries.append(
+                {
+                    "title": f"{tab} preview unavailable",
+                    "message": "No preview is available yet for this scenario. Select the bookmark to explore it in full.",
+                }
+            )
+    return previews
+
+
+def _render_preview_navigation_component(
+    active_tab: str,
+    *,
+    key: str,
+    icon_list: List[str],
+    previews: Dict[str, List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Render the React-based navigation panel with bookmark previews."""
+    tabs_payload: List[Dict[str, Any]] = []
+    default_tabs: List[Dict[str, Any]] = []
+    for idx, tab in enumerate(NAV_TABS):
+        icon = (icon_list[idx] if idx < len(icon_list) else NAV_ICON_MAP.get(tab, "dot")) or "dot"
+        tabs_payload.append(
+            {
+                "name": tab,
+                "icon": icon,
+                "previews": previews.get(tab, []),
+            }
+        )
+        default_tabs.append({"name": tab, "icon": icon})
+
+    initial_tab = active_tab if active_tab in NAV_TABS else NAV_TABS[0]
+    component_data = _json_sanitise({"tabs": tabs_payload, "activeTab": initial_tab})
+    response = _preview_navigation_component(
+        data=component_data,
+        defaultTabs=_json_sanitise(default_tabs),
+        colors={"primary": POWERBI_BLUE, "accent": POWERBI_GREEN},
+        key=f"{key}_preview_nav",
+        default=initial_tab,
+    )
+    if isinstance(response, str) and response in NAV_TABS:
+        return response
+    return active_tab
+
 
 BRIGHT_PRIMARY_COLOR = POWERBI_BLUE
 BRIGHT_COMPARISON_COLOR = POWERBI_GREEN
@@ -1094,7 +1561,7 @@ class ScenarioSelection:
 
     metadata: Optional[Dict[str, object]] = None
 
-LOAD_DATA_SCHEMA_VERSION = 2
+LOAD_DATA_SCHEMA_VERSION = 3
 
 
 def _cache_signature(cache_path: Path) -> Tuple[Tuple[str, int, int], ...]:
@@ -2342,6 +2809,55 @@ def scenario_selector(
 
     )
 
+    dimension_label = str(dimension or "").strip()
+    dimension_lower = dimension_label.lower()
+    dimension_short_lower = dim_short(dimension_label).lower() if dimension_label else ""
+
+    def _filter_codes_to_dimension(codes: List[str]) -> List[str]:
+        if not codes or not dimension_label:
+            return codes or []
+        filtered: List[str] = []
+        for code_value in codes:
+            meta = scenario_metadata(data, code_value) if code_value else None
+            if not meta:
+                continue
+            meta_dim = str(meta.get("ObjectiveDim", "")).strip()
+            meta_dim_short = str(meta.get("ObjectiveDimShort", "")).strip()
+            if not meta_dim_short and meta_dim:
+                meta_dim_short = dim_short(meta_dim)
+            if (
+                meta_dim.lower() == dimension_lower
+                or (meta_dim_short and meta_dim_short.lower() == dimension_short_lower)
+            ):
+                filtered.append(code_value)
+        return filtered
+
+    def _call_find_scenario_code(
+        *,
+        profile_filter: Optional[str],
+        src: Optional[pd.DataFrame],
+    ) -> Optional[str]:
+        params = {
+            "data": data,
+            "conf": confidence,
+            "benefit_steep": benefit_steep,
+            "benefit_horizon": int(benefit_horizon),
+            "mode": mode_key,
+            "envelope": float(envelope) if envelope is not None else None,
+            "buffer_value": float(buffer_value) if buffer_value is not None else None,
+            "prefer_comparison": prefer_comparison,
+            "profile": profile_filter,
+        }
+        if src is not None:
+            params["scenarios_df"] = src
+        if _FIND_SCENARIO_SUPPORTS_DIM and dimension_label:
+            params["objective_dim"] = dimension
+        try:
+            return find_scenario_code(**params)
+        except TypeError:
+            params.pop("objective_dim", None)
+            return find_scenario_code(**params)
+
     def _match_mask(df: pd.DataFrame) -> pd.Series:
 
         mask = (
@@ -2388,6 +2904,17 @@ def scenario_selector(
 
                 mask = mask & comp_mask
 
+        if dimension_label and "ObjectiveDim" in df.columns:
+            dim_series = df["ObjectiveDim"].astype(str).str.strip()
+            dim_mask = dim_series.str.lower() == dimension_lower
+            if "ObjectiveDimShort" in df.columns:
+                short_series = df["ObjectiveDimShort"].astype(str).str.strip().str.lower()
+            else:
+                short_series = dim_series.apply(dim_short).str.lower()
+            if dimension_short_lower:
+                dim_mask = dim_mask | (short_series == dimension_short_lower)
+            mask = mask & dim_mask
+
         return mask
 
     subset_codes: List[str] = []
@@ -2408,6 +2935,7 @@ def scenario_selector(
 
             break
 
+    subset_codes = _filter_codes_to_dimension(subset_codes)
     codes_pool = _collect_values(
 
         lambda pref, src: scenario_code_options(
@@ -2422,35 +2950,14 @@ def scenario_selector(
 
     ) or []
 
+    codes_pool = _filter_codes_to_dimension(codes_pool)
     recommended_code: Optional[str] = None
 
     for idx, src in enumerate(sources):
 
         profile_filter = profile_name if profile_filtered and idx == 0 else None
 
-        candidate = find_scenario_code(
-
-            data,
-
-            conf=confidence,
-
-            benefit_steep=benefit_steep,
-
-            benefit_horizon=int(benefit_horizon),
-
-            mode=mode_key,
-
-            envelope=float(envelope) if envelope is not None else None,
-
-            buffer_value=float(buffer_value) if buffer_value is not None else None,
-
-            prefer_comparison=prefer_comparison,
-
-            profile=profile_filter,
-
-            scenarios_df=src,
-
-        )
+        candidate = _call_find_scenario_code(profile_filter=profile_filter, src=src)
 
         if candidate:
 
@@ -2459,36 +2966,24 @@ def scenario_selector(
             break
 
     if recommended_code is None:
+        recommended_code = _call_find_scenario_code(profile_filter=profile_name, src=None)
 
-        recommended_code = find_scenario_code(
+    code_choices_raw = subset_codes or codes_pool or scenario_code_options(data)
+    code_choices = _filter_codes_to_dimension(code_choices_raw)
 
-            data,
-
-            conf=confidence,
-
-            benefit_steep=benefit_steep,
-
-            benefit_horizon=int(benefit_horizon),
-
-            mode=mode_key,
-
-            envelope=float(envelope) if envelope is not None else None,
-
-            buffer_value=float(buffer_value) if buffer_value is not None else None,
-
-            prefer_comparison=prefer_comparison,
-
-            profile=profile_name,
-
-        )
-
-    code_choices = subset_codes or codes_pool or scenario_code_options(data)
+    if recommended_code and recommended_code not in code_choices:
+        recommended_code = None
 
     if recommended_code is None and code_choices:
-
         recommended_code = code_choices[0]
 
-    code = recommended_code if (recommended_code and recommended_code in code_choices) else (code_choices[0] if code_choices else None)
+    if not code_choices:
+        st.warning(
+            f"No scenarios found for {dimension_label or 'the selected dimension'} with the chosen settings."
+        )
+        code = None
+    else:
+        code = recommended_code
 
     meta = scenario_metadata(data, code) if code else None
 
@@ -2550,6 +3045,9 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
 
     df = base.merge(cf, on="Year", how="left").sort_values("Year").fillna(0.0)
 
+    dim_label = (selection.dimension or "").strip()
+    dim_label_lower = dim_label.lower()
+
     for col in ("Spend", "ClosingNet", "Envelope"):
 
         if col in df.columns:
@@ -2560,21 +3058,31 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
 
             df[col] = 0.0
 
-    benefit_dim = data.benefit_dim[
-
+    benefit_dim_selected = data.benefit_dim[
         (data.benefit_dim["Code"] == selection.code)
-
-        & (data.benefit_dim["Dimension"].astype(str).str.lower() == selection.dimension.lower())
-
+        & (data.benefit_dim["Dimension"].astype(str).str.lower() == dim_label_lower)
     ][["Year", "BenefitFlow"]]
 
-    if benefit_dim.empty:
+    benefit_total = data.benefit_dim[
+        (data.benefit_dim["Code"] == selection.code)
+        & (data.benefit_dim["Dimension"].astype(str).str.lower() == "total")
+    ][["Year", "BenefitFlow"]]
 
-        benefit_dim = data.benefit[data.benefit["Code"] == selection.code][["Year", "BenefitFlow"]]
+    if benefit_total.empty:
+        benefit_total = data.benefit[data.benefit["Code"] == selection.code][["Year", "BenefitFlow"]]
 
-    df = df.merge(benefit_dim, on="Year", how="left", suffixes=("", "_dim"))
+    benefit_total = benefit_total.rename(columns={"BenefitFlow": "BenefitFlowTotal"})
+    df = df.merge(benefit_total, on="Year", how="left")
 
-    df["BenefitFlow"] = pd.to_numeric(df["BenefitFlow"], errors="coerce").fillna(0.0)
+    if not benefit_dim_selected.empty:
+        benefit_dim_selected = benefit_dim_selected.rename(columns={"BenefitFlow": "BenefitFlowDimension"})
+        df = df.merge(benefit_dim_selected, on="Year", how="left")
+    else:
+        df["BenefitFlowDimension"] = np.nan
+
+    df["BenefitFlowTotal"] = pd.to_numeric(df["BenefitFlowTotal"], errors="coerce").fillna(0.0)
+    df["BenefitFlowDimension"] = pd.to_numeric(df.get("BenefitFlowDimension"), errors="coerce")
+    df["BenefitFlow"] = df["BenefitFlowTotal"]
 
     year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0)
 
@@ -2584,11 +3092,20 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
 
     discount[discount == 0] = 1.0
 
-    df["PVBenefit"] = df["BenefitFlow"] / discount
+    df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
+    df["PVBenefit"] = df["PVBenefitTotal"]
+    if "BenefitFlowDimension" in df.columns:
+        df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0) / discount
 
-    df["CumPVBenefit"] = df["PVBenefit"].cumsum()
+    df["CumPVBenefitTotal"] = df["PVBenefitTotal"].cumsum()
+    df["CumPVBenefit"] = df["CumPVBenefitTotal"]
+    if "PVBenefitDimension" in df.columns:
+        df["CumPVBenefitDimension"] = df["PVBenefitDimension"].fillna(0.0).cumsum()
 
-    df["CumBenefit"] = df["BenefitFlow"].cumsum()
+    df["CumBenefitTotal"] = df["BenefitFlowTotal"].cumsum()
+    df["CumBenefit"] = df["CumBenefitTotal"]
+    if "BenefitFlowDimension" in df.columns:
+        df["CumBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0).cumsum()
 
     df["CumSpend"] = df["Spend"].cumsum()
 
@@ -2677,6 +3194,9 @@ def scenario_metrics(
     horizon_years: Optional[int] = None,
 ) -> Dict[str, float]:
 
+    benefit_col = "BenefitFlowTotal" if "BenefitFlowTotal" in df.columns else "BenefitFlow"
+    pv_col = "PVBenefitTotal" if "PVBenefitTotal" in df.columns else "PVBenefit"
+
     window = df
 
     if horizon_years is not None:
@@ -2695,9 +3215,9 @@ def scenario_metrics(
 
         "total_spend": float(window["Spend"].sum()),
 
-        "total_benefit": float(window["BenefitFlow"].sum()),
+        "total_benefit": float(window[benefit_col].sum()),
 
-        "total_pv": float(window["PVBenefit"].sum()),
+        "total_pv": float(window[pv_col].sum()),
 
     }
 
@@ -7152,11 +7672,24 @@ def main() -> None:
                 profile_name=selected_cmp_profile,
             )
 
-
     opt_series = build_timeseries(data, opt_selection)
     cmp_series = build_timeseries(data, comp_selection)
     opt_label = opt_selection.name or SCENARIO_PRIMARY_NAME
     cmp_label = comp_selection.name or SCENARIO_COMPARISON_NAME
+
+    nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
+    if ENABLE_PREVIEW_NAVIGATION:
+        nav_previews = collect_navigation_previews(
+            data=data,
+            opt_selection=opt_selection,
+            comp_selection=comp_selection,
+            opt_series=opt_series,
+            cmp_series=cmp_series,
+            opt_label=opt_label,
+            cmp_label=cmp_label,
+            settings=settings,
+            cache_signature=cache_sig,
+        )
 
     st.session_state.setdefault("active_tab", NAV_TABS[0])
     nav_col, content_col = st.columns((2.2, 7.8), gap="large")
@@ -7166,6 +7699,7 @@ def main() -> None:
             st.session_state["active_tab"],
             key="pbi_nav",
             orientation="vertical",
+            previews=nav_previews,
         )
 
     st.session_state["active_tab"] = active_tab

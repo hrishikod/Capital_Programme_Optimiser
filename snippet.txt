@@ -1,0 +1,12 @@
+function renderPreviews(previewHost, tagEl, state) {
+          const activeTabName = state.hoverTab || state.activeTab;
+          const activeTab = state.tabMap[activeTabName] || null;
+          const previews = activeTab && Array.isArray(activeTab.previews) ? activeTab.previews : [];
+          tagEl.textContent = activeTabName || "—";
+
+          const hasAnyPreview = state.tabs.some((tab) => Array.isArray(tab.previews) && tab.previews.length);
+
+          previewHost.innerHTML = "";
+          if (!previews.length) {
+            const empty = document.createElement("div");
+            empty.c

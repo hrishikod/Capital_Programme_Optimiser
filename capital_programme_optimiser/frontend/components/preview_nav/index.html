@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Preview Navigation</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    <style>
+      :root {
+        color-scheme: light;
+        --cp-primary: #19456b;
+        --cp-accent: #afbd22;
+        --cp-surface: rgba(255, 255, 255, 0.96);
+        --cp-surface-soft: rgba(255, 255, 255, 0.9);
+        --cp-outline: rgba(25, 69, 107, 0.18);
+        --cp-shadow: rgba(15, 23, 42, 0.18);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", sans-serif;
+        background: transparent;
+        color: #0f172a;
+      }
+      #root {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+      }
+      .cp-nav-container {
+        width: 100%;
+        max-width: 420px;
+        margin: 0 auto;
+        background: linear-gradient(180deg, rgba(25, 69, 107, 0.12) 0%, rgba(175, 189, 34, 0.05) 100%);
+        border-radius: 22px;
+        border: 1px solid var(--cp-outline);
+        box-shadow: 0 18px 42px var(--cp-shadow);
+        padding: 18px 18px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .cp-nav-preview {
+        background: var(--cp-surface-soft);
+        border-radius: 18px;
+        border: 1px solid var(--cp-outline);
+        box-shadow: 0 16px 34px rgba(15, 23, 42, 0.16);
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 210px;
+      }
+      .cp-nav-preview__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .cp-nav-preview__title {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--cp-primary);
+        opacity: 0.85;
+      }
+      .cp-nav-preview__tag {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: var(--cp-primary);
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(25, 69, 107, 0.12);
+        border: 1px solid rgba(25, 69, 107, 0.2);
+      }
+      .cp-nav-preview__grid {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .cp-nav-preview__grid--empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 160px;
+        font-size: 0.92rem;
+        color: rgba(15, 23, 42, 0.6);
+        text-align: center;
+      }
+      .cp-nav-card {
+        background: linear-gradient(180deg, rgba(25, 69, 107, 0.08), rgba(255, 255, 255, 0.92));
+        border-radius: 16px;
+        border: 1px solid rgba(25, 69, 107, 0.16);
+        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.12);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        position: relative;
+        min-height: 240px;
+      }
+      .cp-nav-card::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        top: 0;
+        height: 5px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--cp-accent), rgba(25, 69, 107, 0.35));
+        transform: translateY(-3px);
+      }
+      .cp-nav-card__title {
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: var(--cp-primary);
+        line-height: 1.2;
+      }
+      .cp-nav-card__plot {
+        width: 100%;
+        flex: 1;
+        min-height: 220px;
+      }
+      .cp-nav-card--message {
+        justify-content: center;
+      }
+      .cp-nav-card__message {
+        font-size: 0.86rem;
+        color: rgba(15, 23, 42, 0.68);
+      }
+      .cp-nav-menu {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .cp-nav-button {
+        appearance: none;
+        border: 1px solid rgba(25, 69, 107, 0.22);
+        background: var(--cp-surface);
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+        color: var(--cp-primary);
+        font-size: 0.96rem;
+        font-weight: 600;
+        border-radius: 14px;
+        padding: 0.65rem 0.95rem;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+      }
+      .cp-nav-button:hover,
+      .cp-nav-button:focus-visible {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 32px rgba(15, 23, 42, 0.2);
+        outline: none;
+      }
+      .cp-nav-button--active {
+        background: linear-gradient(180deg, rgba(25, 69, 107, 0.18), rgba(25, 69, 107, 0.12));
+        color: #0f172a;
+        border: 1px solid rgba(25, 69, 107, 0.32);
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.24);
+      }
+      .cp-nav-button__icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 12px;
+        background: rgba(25, 69, 107, 0.12);
+        color: var(--cp-primary);
+        font-size: 1.05rem;
+      }
+      .cp-nav-button--active .cp-nav-button__icon {
+        background: rgba(255, 255, 255, 0.85);
+        color: var(--cp-primary);
+      }
+      .cp-nav-button__label {
+        flex: 1;
+        text-align: left;
+      }
+      @media (max-width: 820px) {
+        .cp-nav-card__plot {
+          min-height: 200px;
+        }
+        .cp-nav-preview__grid {
+          display: flex;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+    <script>
+      (function () {
+        const root = document.getElementById("root");
+
+        const showError = (message) => {
+          if (!root) {
+            return;
+          }
+          root.innerHTML = `<div style="padding:16px;border-radius:12px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;">${message}</div>`;
+        };
+
+        window.addEventListener("error", (event) => {
+          showError(`Runtime error: ${event.message}`);
+        });
+
+        window.addEventListener("unhandledrejection", (event) => {
+          const reason = event.reason && event.reason.message ? event.reason.message : String(event.reason);
+          showError(`Unhandled promise: ${reason}`);
+        });
+
+        class SimpleEventTarget {
+          constructor() {
+            this.listeners = new Map();
+          }
+
+          addEventListener(type, callback) {
+            if (!this.listeners.has(type)) {
+              this.listeners.set(type, new Set());
+            }
+            this.listeners.get(type).add(callback);
+          }
+
+          removeEventListener(type, callback) {
+            const set = this.listeners.get(type);
+            if (!set) {
+              return;
+            }
+            set.delete(callback);
+            if (!set.size) {
+              this.listeners.delete(type);
+            }
+          }
+
+          dispatchEvent(event) {
+            const set = this.listeners.get(event.type);
+            if (!set) {
+              return;
+            }
+            for (const callback of Array.from(set)) {
+              try {
+                callback.call(null, event);
+              } catch (error) {
+                console.error("Listener error", error);
+              }
+            }
+          }
+        }
+
+        const Streamlit = (() => {
+          const API_VERSION = 1;
+          const RENDER_EVENT = "streamlit:render";
+          const events = new SimpleEventTarget();
+          let registered = false;
+          let lastFrameHeight = null;
+
+          const sendBackMsg = (type, data) => {
+            window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+          };
+
+          const onMessageEvent = (event) => {
+            const data = event.data;
+            if (!data || typeof data !== "object") {
+              return;
+            }
+            if (data.type === RENDER_EVENT) {
+              const args = data.args || {};
+              const disabled = Boolean(data.disabled);
+              const theme = data.theme || null;
+              events.dispatchEvent(
+                new CustomEvent(RENDER_EVENT, {
+                  detail: { args, disabled, theme },
+                })
+              );
+            }
+          };
+
+          return {
+            RENDER_EVENT,
+            events,
+            setComponentReady() {
+              if (!registered) {
+                window.addEventListener("message", onMessageEvent);
+                registered = true;
+              }
+              sendBackMsg("streamlit:componentReady", { apiVersion: API_VERSION });
+            },
+            setFrameHeight(height) {
+              if (height === undefined) {
+                height = document.body.scrollHeight;
+              }
+              if (height === lastFrameHeight) {
+                return;
+              }
+              lastFrameHeight = height;
+              sendBackMsg("streamlit:setFrameHeight", { height });
+            },
+            setComponentValue(value) {
+              sendBackMsg("streamlit:setComponentValue", { value, dataType: "json" });
+            },
+          };
+        })();
+
+        let lastReportedValue = undefined;
+
+        function reportValue(value) {
+          if (value !== lastReportedValue) {
+            lastReportedValue = value;
+            Streamlit.setComponentValue(value);
+          }
+        }
+
+        const ensurePlotly = (() => {
+          let promise = null;
+          return () => {
+            if (window.Plotly) {
+              return Promise.resolve(window.Plotly);
+            }
+            if (!promise) {
+              promise = new Promise((resolve) => {
+                const check = () => {
+                  if (window.Plotly) {
+                    resolve(window.Plotly);
+                  } else {
+                    window.setTimeout(check, 40);
+                  }
+                };
+                check();
+              });
+            }
+            return promise;
+          };
+        })();
+
+        let currentState = {
+          tabs: [],
+          tabMap: {},
+          activeTab: null,
+          hoverTab: null,
+        };
+
+        let pendingFrameHeight = null;
+
+        function scheduleFrameHeightUpdate() {
+          if (pendingFrameHeight !== null) {
+            return;
+          }
+          pendingFrameHeight = window.requestAnimationFrame(() => {
+            pendingFrameHeight = null;
+            Streamlit.setFrameHeight(document.body.scrollHeight + 24);
+          });
+        }
+
+        function applyColors(colors) {
+          if (!colors) {
+            return;
+          }
+          const docRoot = document.documentElement;
+          if (colors.primary) {
+            docRoot.style.setProperty("--cp-primary", colors.primary);
+          }
+          if (colors.accent) {
+            docRoot.style.setProperty("--cp-accent", colors.accent);
+          }
+        }
+
+        function sanitiseTabs(dataTabs, defaultTabs) {
+          const base = Array.isArray(defaultTabs) && defaultTabs.length ? defaultTabs : [];
+          const provided = Array.isArray(dataTabs) ? dataTabs : [];
+          const tabMap = {};
+          const tabs = [];
+
+          if (base.length) {
+            for (const tab of base) {
+              const supplied = provided.find((item) => item && item.name === tab.name) || {};
+              const previews = Array.isArray(supplied.previews) ? supplied.previews : [];
+              const icon = supplied.icon || tab.icon || "dot";
+              const payload = { name: tab.name, icon, previews };
+              tabs.push(payload);
+              tabMap[tab.name] = payload;
+            }
+          } else {
+            for (const supplied of provided) {
+              if (!supplied || !supplied.name) {
+                continue;
+              }
+              const previews = Array.isArray(supplied.previews) ? supplied.previews : [];
+              const icon = supplied.icon || "dot";
+              const payload = { name: supplied.name, icon, previews };
+              tabs.push(payload);
+              tabMap[supplied.name] = payload;
+            }
+          }
+          return { tabs, tabMap };
+        }
+
+        function renderPreviews(previewHost, tagEl, state) {
+          const activeTabName = state.hoverTab || state.activeTab;
+          const activeTab = state.tabMap[activeTabName] || null;
+          const previews = activeTab && Array.isArray(activeTab.previews) ? activeTab.previews : [];
+          tagEl.textContent = activeTabName || "—";
+
+          const hasAnyPreview = state.tabs.some((tab) => Array.isArray(tab.previews) && tab.previews.length);
+
+          previewHost.innerHTML = "";
+          if (!previews.length) {
+            const empty = document.createElement("div");
+            empty.className = "cp-nav-preview__grid cp-nav-preview__grid--empty";
+            empty.textContent = hasAnyPreview ? "Hover a bookmark to preview" : "Preview unavailable";
+            previewHost.appendChild(empty);
+            return;
+          }
+
+          const firstPreview = previews[0] || null;
+          if (!firstPreview) {
+            const empty = document.createElement("div");
+            empty.className = "cp-nav-preview__grid cp-nav-preview__grid--empty";
+            empty.textContent = "Preview unavailable";
+            previewHost.appendChild(empty);
+            return;
+          }
+
+          const grid = document.createElement("div");
+          grid.className = "cp-nav-preview__grid";
+          previewHost.appendChild(grid);
+
+          const card = document.createElement("div");
+          card.className = firstPreview.figure ? "cp-nav-card" : "cp-nav-card cp-nav-card--message";
+          const title = document.createElement("div");
+          title.className = "cp-nav-card__title";
+          title.textContent = firstPreview.title || "Preview";
+          card.appendChild(title);
+          if (firstPreview.figure) {
+            const plot = document.createElement("div");
+            plot.className = "cp-nav-card__plot";
+            card.appendChild(plot);
+            ensurePlotly().then((Plotly) => {
+              const figure = JSON.parse(JSON.stringify(firstPreview.figure));
+              const layoutBase = figure.layout || {};
+              const layout = Object.assign({}, layoutBase, {
+                margin: Object.assign({ t: 20, r: 20, b: 20, l: 20 }, layoutBase.margin || {}),
+                height: 260,
+                title: undefined,
+                showlegend: false,
+              });
+              const config = { displayModeBar: false, staticPlot: true, responsive: true };
+              Plotly.react(plot, figure.data || [], layout, config).then(() => {
+                const selectors = [
+                  ".gtitle",
+                  ".legend",
+                  ".colorbar",
+                  ".annotation",
+                  ".modebar",
+                  ".xaxislayer-above text",
+                  ".yaxislayer-above text",
+                  ".xaxislayer-above .axis-title",
+                  ".yaxislayer-above .axis-title",
+                  ".xtick text",
+                  ".ytick text",
+                  ".xaxis .axis-title",
+                  ".yaxis .axis-title",
+                ];
+                selectors.forEach((selector) => {
+                  plot.querySelectorAll(selector).forEach((el) => {
+                    el.style.display = "none";
+                  });
+                });
+                scheduleFrameHeightUpdate();
+              });
+            });
+          } else if (firstPreview.message) {
+            const msg = document.createElement("div");
+            msg.className = "cp-nav-card__message";
+            msg.textContent = firstPreview.message;
+            card.appendChild(msg);
+            scheduleFrameHeightUpdate();
+          }
+
+          grid.appendChild(card);
+        }
+
+        function updateButtonStates(menu, state) {
+          const buttons = menu.querySelectorAll(".cp-nav-button");
+          buttons.forEach((btn) => {
+            const name = btn.querySelector(".cp-nav-button__label").textContent;
+            if (name === state.activeTab) {
+              btn.classList.add("cp-nav-button--active");
+            } else {
+              btn.classList.remove("cp-nav-button--active");
+            }
+          });
+        }
+
+        function updatePreview(previewWrapper, previewTag, state) {
+          renderPreviews(previewWrapper, previewTag, state);
+          scheduleFrameHeightUpdate();
+        }
+        function render(state, elements, { skipButtons } = {}) {
+          const { previewWrapper, previewTag, menu } = elements;
+
+          if (!skipButtons) {
+            menu.innerHTML = "";
+            state.tabs.forEach((tab) => {
+              const btn = document.createElement("button");
+              btn.type = "button";
+              btn.className = "cp-nav-button" + (tab.name === state.activeTab ? " cp-nav-button--active" : "");
+              btn.innerHTML = `
+                <span class="cp-nav-button__icon"><i class="bi bi-${tab.icon || "dot"}"></i></span>
+                <span class="cp-nav-button__label">${tab.name}</span>
+              `;
+              btn.addEventListener("click", () => {
+                if (state.activeTab !== tab.name) {
+                  state.activeTab = tab.name;
+                  state.hoverTab = null;
+                  reportValue(tab.name);
+                  render(state, elements);
+                }
+              });
+              btn.addEventListener("mouseenter", () => {
+                if (state.hoverTab !== tab.name) {
+                  state.hoverTab = tab.name;
+                  updatePreview(previewWrapper, previewTag, state);
+                }
+              });
+              btn.addEventListener("mouseleave", () => {
+                if (state.hoverTab !== null) {
+                  state.hoverTab = null;
+                  updatePreview(previewWrapper, previewTag, state);
+                }
+              });
+              menu.appendChild(btn);
+            });
+          }
+
+          updateButtonStates(menu, state);
+          updatePreview(previewWrapper, previewTag, state);
+
+          if (!skipButtons) {
+            reportValue(state.activeTab || null);
+          }
+        }
+        function buildUI(state, colors) {
+          applyColors(colors);
+          root.innerHTML = "";
+          const container = document.createElement("div");
+          container.className = "cp-nav-container";
+
+          const preview = document.createElement("div");
+          preview.className = "cp-nav-preview";
+          const header = document.createElement("div");
+          header.className = "cp-nav-preview__header";
+          const title = document.createElement("div");
+          title.className = "cp-nav-preview__title";
+          title.textContent = "Bookmark preview";
+          const tag = document.createElement("div");
+          tag.className = "cp-nav-preview__tag";
+          tag.textContent = state.activeTab || "\u2014";
+          header.appendChild(title);
+          header.appendChild(tag);
+          preview.appendChild(header);
+
+          const previewWrapper = document.createElement("div");
+          preview.appendChild(previewWrapper);
+
+          const menu = document.createElement("div");
+          menu.className = "cp-nav-menu";
+
+          container.appendChild(preview);
+          container.appendChild(menu);
+          root.appendChild(container);
+
+          const elements = { previewWrapper, previewTag: tag, menu };
+          render(state, elements);
+        }
+
+        function onRender(event) {
+          const args = event.detail.args || {};
+          const colors = args.colors || null;
+          const { tabs, tabMap } = sanitiseTabs(args.data?.tabs, args.defaultTabs);
+          currentState.tabs = tabs;
+          currentState.tabMap = tabMap;
+
+          const fallback = tabs.length ? tabs[0].name : null;
+          const requested = args.data?.activeTab;
+          if (!currentState.activeTab || !tabMap[currentState.activeTab]) {
+            currentState.activeTab = tabMap[requested || ""] ? requested : fallback;
+          }
+          if (!currentState.activeTab && fallback) {
+            currentState.activeTab = fallback;
+          }
+
+          lastReportedValue = currentState.activeTab || null;
+          buildUI(currentState, colors);
+        }
+
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+        Streamlit.setComponentReady();
+        Streamlit.setFrameHeight(200);
+      })();
+    </script>
+
+  </body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

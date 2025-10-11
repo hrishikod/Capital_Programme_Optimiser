@@ -736,6 +736,51 @@ def _load_benefit_table(sheet_name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _total_benefit_matrix_from_dim(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Construct a project x year table using total (or summed) benefit flows."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    working = df.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    if "Project" not in working.columns:
+        return None
+    year_candidates: List[Any] = []
+    for col in working.columns:
+        if col in {"Project", "project", "Dimension"}:
+            continue
+        if isinstance(col, (int, np.integer)):
+            year_candidates.append(col)
+            continue
+        try:
+            if str(col).strip().isdigit():
+                year_candidates.append(col)
+        except Exception:
+            continue
+    if not year_candidates:
+        return None
+    if "Dimension" in working.columns:
+        dim_series = working["Dimension"].astype(str).str.strip()
+        total_mask = dim_series.str.lower() == "total"
+        if total_mask.any():
+            working = working[total_mask].copy()
+    rename_map: Dict[Any, int] = {}
+    for col in year_candidates:
+        try:
+            rename_map[col] = int(str(col))
+        except (TypeError, ValueError):
+            continue
+    if not rename_map:
+        return None
+    working = working.rename(columns=rename_map)
+    value_cols = list(rename_map.values())
+    working[value_cols] = working[value_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    grouped = working.groupby("Project", as_index=True)[value_cols].sum()
+    grouped.index = grouped.index.map(lambda x: str(x).strip())
+    grouped = grouped.loc[:, sorted(grouped.columns)]
+    return grouped
+
+
 def _benefit_region_from_raw_result(
     raw_result: Dict[str, Any],
     mapping_df: pd.DataFrame,
@@ -744,6 +789,10 @@ def _benefit_region_from_raw_result(
 ) -> Optional[pd.DataFrame]:
     benefit_matrix = raw_result.get("benefit_by_project_total")
     if not isinstance(benefit_matrix, pd.DataFrame) or benefit_matrix.empty:
+        benefit_matrix = _total_benefit_matrix_from_dim(
+            raw_result.get("benefits_by_project_dimension_by_year")
+        )
+    if benefit_matrix is None or benefit_matrix.empty:
         return None
 
     df = benefit_matrix.copy()
