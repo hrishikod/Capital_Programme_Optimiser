@@ -1692,18 +1692,38 @@ def format_large_amount(value: float) -> str:
         return f"{value / 1_000_000_000:.1f}b"
     return f"{value / 1_000_000:.1f}m"
 
-def compute_cash_axis_ticks(values: Iterable[float]) -> Tuple[List[float], List[str], str]:
+def compute_cash_axis_ticks(
+    values: Iterable[float],
+    *,
+    force_unit: Optional[str] = None,
+) -> Tuple[List[float], List[str], str]:
+    forced = (force_unit or "").strip().lower()
+    if forced in {"b", "billion", "billions"}:
+        forced_suffix = "b"
+    elif forced in {"m", "million", "millions"}:
+        forced_suffix = "m"
+    else:
+        forced_suffix = None
+
     finite_values = [val for val in values if np.isfinite(val)]
     if not finite_values:
-        return [0.0], ["0"], "millions"
+        suffix = forced_suffix or "m"
+        unit_value = 1_000_000_000 if suffix == "b" else 1_000_000
+        unit_label = "billions" if suffix == "b" else "millions"
+        return [0.0], ["0"], unit_label
 
     min_val = min(finite_values)
     max_val = max(finite_values)
     max_abs = max(abs(min_val), abs(max_val))
 
-    unit_value = 1_000_000_000 if max_abs >= 1_000_000_000 else 1_000_000
-    unit_suffix = "b" if unit_value == 1_000_000_000 else "m"
-    unit_label = "billions" if unit_suffix == "b" else "millions"
+    if forced_suffix:
+        unit_suffix = forced_suffix
+        unit_value = 1_000_000_000 if unit_suffix == "b" else 1_000_000
+        unit_label = "billions" if unit_suffix == "b" else "millions"
+    else:
+        unit_value = 1_000_000_000 if max_abs >= 1_000_000_000 else 1_000_000
+        unit_suffix = "b" if unit_value == 1_000_000_000 else "m"
+        unit_label = "billions" if unit_suffix == "b" else "millions"
 
     min_index = math.floor(min_val / unit_value)
     max_index = math.ceil(max_val / unit_value)
@@ -3440,26 +3460,6 @@ def cash_chart(
         np.concatenate(non_empty_samples) if non_empty_samples else [0.0]
     )
 
-    context_label: Optional[str] = None
-
-    if data is not None and selection is not None:
-
-        selections: List[ScenarioSelection] = [selection]
-
-        if comparison_selection is not None:
-
-            selections.append(comparison_selection)
-
-        context_label = npv_context_label(
-
-            data,
-
-            *selections,
-
-            horizon_override=horizon_override,
-
-        )
-
     fig.add_trace(
 
         go.Bar(
@@ -3530,13 +3530,7 @@ def cash_chart(
 
     fig.add_hline(y=0, line=dict(color="#888888", dash="dot", width=1))
 
-    yaxis_context = unit_label
-
-    if context_label:
-
-        yaxis_context = f"{context_label}, {unit_label}"
-
-    yaxis_title_default = f"$ ({yaxis_context})"
+    yaxis_title_default = None
 
     fig.update_layout(
 
@@ -3587,7 +3581,7 @@ def cumulative_revenue_vs_cost_chart(
 
     # --- Axis ticks ($m / $b) ---
     sample_values = np.concatenate([cum_cost.to_numpy(), cum_revenue.to_numpy()]) if len(df) else np.array([0.0])
-    tick_vals, tick_text, unit_label = compute_cash_axis_ticks(sample_values)
+    tick_vals, tick_text, unit_label = compute_cash_axis_ticks(sample_values, force_unit="b")
 
     # --- Traces ---
     # Bars = cumulative cost
@@ -3626,7 +3620,7 @@ def cumulative_revenue_vs_cost_chart(
         barmode="overlay",  # bars overlay; we're not stacking categories, just showing cumulative height
         legend=legend_bottom(),
         xaxis_title=None,
-        yaxis_title=f"$ ({yaxis_title_suffix})",
+        yaxis_title=None,
         template=plotly_template(),
         yaxis=dict(tickmode="array", tickvals=tick_vals, ticktext=tick_text, rangemode="tozero"),
         hoverlabel=dict(namelength=-1),
@@ -3655,13 +3649,15 @@ def benefit_chart(
 
     if opt_df is not None:
 
+        series_opt = pd.to_numeric(opt_df["PVBenefit"], errors="coerce").fillna(0.0) * 1_000.0
+
         fig.add_trace(
 
             go.Scatter(
 
                 x=opt_df["Year"],
 
-                y=opt_df["PVBenefit"],
+                y=series_opt,
 
                 name=f"{primary_label} Benefit Real",
 
@@ -3671,9 +3667,9 @@ def benefit_chart(
 
                 opacity=0.85,
 
-                yaxis="y2",
+                customdata=[format_large_amount(val) for val in series_opt],
 
-                hovertemplate=f"<b>{primary_label} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+                hovertemplate=f"<b>{primary_label} Benefit Real</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
 
             )
 
@@ -3681,13 +3677,15 @@ def benefit_chart(
 
     if cmp_df is not None:
 
+        series_cmp = pd.to_numeric(cmp_df["PVBenefit"], errors="coerce").fillna(0.0) * 1_000.0
+
         fig.add_trace(
 
             go.Scatter(
 
                 x=cmp_df["Year"],
 
-                y=cmp_df["PVBenefit"],
+                y=series_cmp,
 
                 name=f"{comparison_label} Benefit Real",
 
@@ -3697,9 +3695,9 @@ def benefit_chart(
 
                 opacity=0.85,
 
-                yaxis="y2",
+                customdata=[format_large_amount(val) for val in series_cmp],
 
-                hovertemplate=f"<b>{comparison_label} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+                hovertemplate=f"<b>{comparison_label} Benefit Real</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
 
             )
 
@@ -3711,24 +3709,19 @@ def benefit_chart(
 
         xaxis_title=None,
 
-        yaxis_title="Annual benefit ($m)",
-
-        yaxis2=dict(
-
-            title="Benefit to date (real $m)",
-
-            overlaying="y",
-
-            side="right",
-
-        ),
-
         legend=legend_bottom(),
 
         template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
 
+        yaxis=dict(
+
+            title=None,
+
+            tickformat="~s",
+
+        ),
 
     )
 
@@ -3761,18 +3754,6 @@ def benefit_delta_chart(
         fig.update_layout(template=plotly_template())
 
         return fig
-
-    context_label = npv_context_label(
-
-        data,
-
-        opt_selection,
-
-        cmp_selection,
-
-        horizon_override=horizon_years,
-
-    )
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
@@ -3786,9 +3767,13 @@ def benefit_delta_chart(
 
     )
 
-    merged["DeltaBenefit"] = merged["CumBenefit_opt"] - merged["CumBenefit_cmp"]
+    benefit_opt = pd.to_numeric(merged["CumBenefit_opt"], errors="coerce").fillna(0.0)
+    benefit_cmp = pd.to_numeric(merged["CumBenefit_cmp"], errors="coerce").fillna(0.0)
+    pv_opt = pd.to_numeric(merged["CumPVBenefit_opt"], errors="coerce").fillna(0.0)
+    pv_cmp = pd.to_numeric(merged["CumPVBenefit_cmp"], errors="coerce").fillna(0.0)
 
-    merged["DeltaPV"] = merged["CumPVBenefit_opt"] - merged["CumPVBenefit_cmp"]
+    delta_benefit = (benefit_opt - benefit_cmp) * 1_000_000.0
+    delta_pv = (pv_opt - pv_cmp) * 1_000_000.0
 
     fig.add_trace(
 
@@ -3796,14 +3781,15 @@ def benefit_delta_chart(
 
             x=merged["Year"],
 
-            y=merged["DeltaBenefit"],
+            y=delta_benefit,
 
             name="Delta Cumulative Benefit Real",
 
             mode="lines",
 
             line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3.0),
-            hovertemplate="<b>Delta Cumulative Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
+            customdata=(delta_benefit / 1_000_000_000.0),
+            hovertemplate="<b>Delta Cumulative Benefit Real</b><br>FY %{x}: %{customdata:,.1f}b<extra></extra>",
 
 
 
@@ -3817,14 +3803,15 @@ def benefit_delta_chart(
 
             x=merged["Year"],
 
-            y=merged["DeltaPV"],
+            y=delta_pv,
 
             name="Delta Benefit Real",
 
             mode="lines",
 
             line=dict(color=CUMULATIVE_CMP_LINE_COLOR, dash="dot", width=2.6),
-            hovertemplate="<b>Delta Benefit Real</b><br>FY %{x}: %{y:,.1f}m<extra></extra>",
+            customdata=(delta_pv / 1_000_000_000.0),
+            hovertemplate="<b>Delta Benefit Real</b><br>FY %{x}: %{customdata:,.1f}b<extra></extra>",
 
 
 
@@ -3834,21 +3821,31 @@ def benefit_delta_chart(
 
     title_text = "Cumulative Benefits Delta Real"
 
-    yaxis_text = f"$ millions ({context_label})" if context_label else "$ millions (real)"
-
     fig.update_layout(
 
         title=title_text,
 
         xaxis_title=None,
 
-        yaxis_title=yaxis_text,
-
         legend=legend_bottom(),
 
         template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
+
+        yaxis=dict(
+
+            title=None,
+
+            showticklabels=False,
+
+            showgrid=False,
+
+            zeroline=False,
+
+            showline=False,
+
+        ),
 
 
     )
@@ -4363,9 +4360,13 @@ def efficiency_chart(
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
+    axis_samples: List[np.ndarray] = []
+
     series_opt = label_opt = None
 
     if opt_df is not None and not opt_df.empty:
+        spend_values = pd.to_numeric(opt_df["CumSpend"], errors="coerce").fillna(0.0) * 1_000_000.0
+        axis_samples.append(spend_values.to_numpy())
 
         fig.add_trace(
 
@@ -4373,7 +4374,7 @@ def efficiency_chart(
 
                 x=opt_df["Year"],
 
-                y=opt_df["CumSpend"],
+                y=spend_values,
 
                 name=f"{primary_label} cumulative spend",
 
@@ -4381,7 +4382,7 @@ def efficiency_chart(
 
                 opacity=1.0,
 
-                customdata=np.asarray(opt_df["CumSpend"], dtype=float) / 1000.0,
+                customdata=spend_values / 1_000_000_000.0,
 
                 hovertemplate=f"<b>{primary_label} cumulative spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
@@ -4390,12 +4391,18 @@ def efficiency_chart(
         )
 
         series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
+        if isinstance(series_opt, pd.Series):
+            series_opt = pd.to_numeric(series_opt, errors="coerce").fillna(0.0) * 1_000_000.0
+            axis_samples.append(series_opt.to_numpy())
 
     series_cmp = label_cmp = None
 
     if cmp_df is not None and not cmp_df.empty:
 
         series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
+        if isinstance(series_cmp, pd.Series):
+            series_cmp = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0) * 1_000_000.0
+            axis_samples.append(series_cmp.to_numpy())
 
         fig.add_trace(
 
@@ -4411,7 +4418,7 @@ def efficiency_chart(
 
                 line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=2.6, dash="dash"),
 
-                customdata=np.asarray(series_cmp, dtype=float) / 1000.0,
+                customdata=np.asarray(series_cmp, dtype=float) / 1_000_000_000.0,
 
                 hovertemplate=f"<b>{label_cmp}</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
@@ -4447,7 +4454,7 @@ def efficiency_chart(
 
                 line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=3.2),
 
-                customdata=np.asarray(series_opt, dtype=float) / 1000.0,
+                customdata=np.asarray(series_opt, dtype=float) / 1_000_000_000.0,
 
                 hovertemplate=f"<b>{label_opt}</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
@@ -4463,8 +4470,6 @@ def efficiency_chart(
 
         xaxis_title=None,
 
-        yaxis_title="$ millions",
-
         template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
@@ -4472,6 +4477,23 @@ def efficiency_chart(
         legend=legend_bottom(),
 
     )
+
+    if axis_samples:
+        combined = np.concatenate(axis_samples) if axis_samples else np.array([0.0])
+        tick_vals, tick_text, _ = compute_cash_axis_ticks(combined, force_unit="b")
+        fig.update_yaxes(
+
+            title=None,
+
+            tickmode="array",
+
+            tickvals=tick_vals,
+
+            ticktext=tick_text,
+
+            rangemode="tozero",
+
+        )
 
     return fig
 
@@ -4545,15 +4567,18 @@ def benefit_dimension_chart(
 
         pivot = pivot.cumsum()
 
+    pivot = (
+        pivot.apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .astype(float)
+        * 1_000.0
+    )
+
     dims = [dim for dim in pivot.columns if str(dim).strip().lower() != 'total']
 
     if not dims:
 
         return None
-
-    value_format = ',.1f' if cumulative else ',.0f'
-
-    yaxis_label = "Cumulative benefit ($m)" if cumulative else "Annual benefit ($m)"
 
     fig = go.Figure()
 
@@ -4575,7 +4600,9 @@ def benefit_dimension_chart(
 
                 stackgroup='benefits',
 
-                hovertemplate=f"FY %{{x}}: %{{y:{value_format}}} m<extra>{dim}</extra>",
+                customdata=[format_large_amount(val) for val in pivot[dim]],
+
+                hovertemplate="FY %{x}: %{customdata}<extra>" + f"{dim}</extra>",
 
             )
 
@@ -4587,13 +4614,19 @@ def benefit_dimension_chart(
 
         xaxis_title=None,
 
-        yaxis_title=yaxis_label,
-
         legend=legend_bottom(),
 
         margin=dict(l=40, r=40, t=80, b=60),
 
         template=plotly_template(),
+
+        yaxis=dict(
+
+            title=None,
+
+            tickformat="~s",
+
+        ),
 
     )
 
@@ -4620,23 +4653,31 @@ def benefit_dimension_overlay_chart(
 
 ) -> Optional[go.Figure]:
 
-    pivot_opt = opt_pivot if opt_pivot is not None else dimension_timeseries(data, opt_selection)
+    pivot_opt_raw = opt_pivot if opt_pivot is not None else dimension_timeseries(data, opt_selection)
 
-    pivot_cmp = cmp_pivot if cmp_pivot is not None else dimension_timeseries(data, comp_selection)
+    pivot_cmp_raw = cmp_pivot if cmp_pivot is not None else dimension_timeseries(data, comp_selection)
 
-    if pivot_opt is None and pivot_cmp is None:
+    if pivot_opt_raw is None and pivot_cmp_raw is None:
 
         return None
 
-    if cumulative:
+    def _prepare_pivot(frame: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
 
-        if pivot_opt is not None:
+        if frame is None or frame.empty:
 
-            pivot_opt = pivot_opt.cumsum()
+            return None
 
-        if pivot_cmp is not None:
+        numeric = frame.apply(pd.to_numeric, errors="coerce").fillna(0.0).astype(float)
 
-            pivot_cmp = pivot_cmp.cumsum()
+        if cumulative:
+
+            numeric = numeric.cumsum()
+
+        return numeric * 1_000.0
+
+    pivot_opt = _prepare_pivot(pivot_opt_raw)
+
+    pivot_cmp = _prepare_pivot(pivot_cmp_raw)
 
     dims_available: List[str] = []
 
@@ -4672,10 +4713,6 @@ def benefit_dimension_overlay_chart(
 
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
-
-    value_format = ',.1f' if cumulative else ',.0f'
-
-    yaxis_label = "Cumulative benefit ($m)" if cumulative else "Annual benefit ($m)"
 
     title_suffix = " (cumulative)" if cumulative else ""
 
@@ -4723,7 +4760,9 @@ def benefit_dimension_overlay_chart(
 
                     legendgroup=dim,
 
-                    hovertemplate=f"{primary_label} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+                    customdata=[format_large_amount(val) for val in opt_series],
+
+                    hovertemplate=f"{primary_label} {dim}<br>FY %{{x}}: %{{customdata}}<extra></extra>",
 
                 )
 
@@ -4753,7 +4792,9 @@ def benefit_dimension_overlay_chart(
 
                     legendgroup=dim,
 
-                    hovertemplate=f"{comparison_label} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+                    customdata=[format_large_amount(val) for val in cmp_series],
+
+                    hovertemplate=f"{comparison_label} {dim}<br>FY %{{x}}: %{{customdata}}<extra></extra>",
 
                     showlegend=True,
 
@@ -4771,8 +4812,6 @@ def benefit_dimension_overlay_chart(
 
         xaxis_title=None,
 
-        yaxis_title=yaxis_label,
-
         legend=legend_bottom(),
 
         margin=dict(l=40, r=40, t=80, b=60),
@@ -4780,6 +4819,14 @@ def benefit_dimension_overlay_chart(
         template=plotly_template(),
 
         hoverlabel=dict(namelength=-1),
+
+        yaxis=dict(
+
+            title=None,
+
+            tickformat="~s",
+
+        ),
 
     )
 
@@ -6026,7 +6073,7 @@ def render_region_map(
         st.info("No mapped regional spend for the selected inputs.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
-        st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
+        st.dataframe(summary, hide_index=True, width="stretch", height=420)
         st.markdown("</div>", unsafe_allow_html=True)
         return summary
     map_df["_metric_value"] = _scaled_region_metric(map_df, metric_key)
@@ -6034,7 +6081,7 @@ def render_region_map(
         st.info("Selected metric has no values for this year.")
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
-        st.dataframe(summary, hide_index=True, use_container_width=True)
+        st.dataframe(summary, hide_index=True, width="stretch")
         st.markdown("</div>", unsafe_allow_html=True)
         return summary
     map_col, table_col = st.columns([2, 1])
@@ -6054,7 +6101,7 @@ def render_region_map(
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
         st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
         st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
-        st.dataframe(summary, hide_index=True, use_container_width=True, height=420)
+        st.dataframe(summary, hide_index=True, width="stretch", height=420)
         st.markdown("</div>", unsafe_allow_html=True)
         if (df_year["region"] == "Unmapped").any():
             st.caption("Projects without a region mapping are grouped under 'Unmapped'.")
@@ -7615,7 +7662,7 @@ def render_scenarios_tab(
                     "Files": len(last_run.get("output_files", [])) if last_run else 0,
                 }
             )
-        table_placeholder.dataframe(pd.DataFrame(rows), use_container_width=True)
+        table_placeholder.dataframe(pd.DataFrame(rows), width="stretch")
 
     render_folder_table(scenario_folders)
 
@@ -8163,7 +8210,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
 
