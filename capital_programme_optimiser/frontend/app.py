@@ -101,6 +101,39 @@ from capital_programme_optimiser.dashboard.constants import (
     SCENARIO_PAIR_NAME,
 )
 
+CURRENT_SCENARIO_LABELS: Dict[str, str] = {
+    "primary": SCENARIO_PRIMARY_NAME,
+    "comparison": SCENARIO_COMPARISON_NAME,
+    "pair": SCENARIO_PAIR_NAME,
+}
+
+
+def scenario_primary_label() -> str:
+    """Return the display label for the primary scenario."""
+    return CURRENT_SCENARIO_LABELS.get("primary", SCENARIO_PRIMARY_NAME)
+
+
+def scenario_comparison_label() -> str:
+    """Return the display label for the comparison scenario."""
+    return CURRENT_SCENARIO_LABELS.get("comparison", SCENARIO_COMPARISON_NAME)
+
+
+def scenario_pair_label() -> str:
+    """Return the display label for the primary/comparison pair."""
+    return CURRENT_SCENARIO_LABELS.get(
+        "pair",
+        f"{scenario_primary_label()} - {scenario_comparison_label()}",
+    )
+
+
+def set_scenario_display_labels(primary: str, comparison: str) -> None:
+    """Update the global scenario labels used for display."""
+    primary_clean = (primary or "").strip() or SCENARIO_PRIMARY_NAME
+    comparison_clean = (comparison or "").strip() or SCENARIO_COMPARISON_NAME
+    CURRENT_SCENARIO_LABELS["primary"] = primary_clean
+    CURRENT_SCENARIO_LABELS["comparison"] = comparison_clean
+    CURRENT_SCENARIO_LABELS["pair"] = f"{primary_clean} - {comparison_clean}"
+
 from capital_programme_optimiser.frontend import scenarios as scenario_utils
 from capital_programme_optimiser.optimisation import solver_core
 
@@ -1037,7 +1070,7 @@ def collect_navigation_previews(
     opt_dim_fig = benefit_dimension_chart(
         data,
         opt_selection,
-        title=f"{SCENARIO_PRIMARY_NAME} dimension mix",
+        title=f"{opt_label} dimension mix",
         cumulative=cumulative_toggle,
         pivot=opt_dim_pivot,
     )
@@ -1045,13 +1078,13 @@ def collect_navigation_previews(
         _append_preview(
             previews,
             "Benefits",
-            title=_figure_title(opt_dim_fig, f"{SCENARIO_PRIMARY_NAME} mix"),
+            title=_figure_title(opt_dim_fig, f"{opt_label} mix"),
             fig=opt_dim_fig,
         )
     cmp_dim_fig = benefit_dimension_chart(
         data,
         comp_selection,
-        title=f"{SCENARIO_COMPARISON_NAME} dimension mix",
+        title=f"{cmp_label} dimension mix",
         cumulative=cumulative_toggle,
         pivot=cmp_dim_pivot,
     )
@@ -1059,7 +1092,7 @@ def collect_navigation_previews(
         _append_preview(
             previews,
             "Benefits",
-            title=_figure_title(cmp_dim_fig, f"{SCENARIO_COMPARISON_NAME} mix"),
+            title=_figure_title(cmp_dim_fig, f"{cmp_label} mix"),
             fig=cmp_dim_fig,
         )
     benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
@@ -1127,7 +1160,7 @@ def collect_navigation_previews(
         _append_preview(
             previews,
             "Delivery",
-            title=_figure_title(cap_cmp_fig, f"Market capacity ({SCENARIO_COMPARISON_NAME})"),
+            title=_figure_title(cap_cmp_fig, f"Market capacity ({cmp_label})"),
             fig=cap_cmp_fig,
         )
 
@@ -1561,6 +1594,41 @@ class ScenarioSelection:
 
     metadata: Optional[Dict[str, object]] = None
 
+
+def resolve_selection_label(
+    selection: Optional["ScenarioSelection"],
+    *,
+    fallback: str,
+    profile_choice: Optional[str] = None,
+) -> str:
+    """Return a human-friendly label for the supplied selection."""
+    candidates: List[Optional[str]] = []
+    if selection is not None:
+        candidates.extend(
+            [
+                selection.profile,
+            ]
+        )
+        meta = selection.metadata or {}
+        candidates.extend(
+            [
+                str(meta.get("Profile")) if meta.get("Profile") is not None else None,
+                str(meta.get("ScenarioLabel")) if meta.get("ScenarioLabel") is not None else None,
+                str(meta.get("ScenarioName")) if meta.get("ScenarioName") is not None else None,
+            ]
+        )
+        candidates.append(selection.name)
+        candidates.append(selection.code)
+    if profile_choice is not None:
+        candidates.append(profile_choice)
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if text:
+            return text
+    return fallback
+
 LOAD_DATA_SCHEMA_VERSION = 3
 
 
@@ -1745,6 +1813,8 @@ def prepare_efficiency_export(
     opt_selection: ScenarioSelection,
     cmp_selection: ScenarioSelection,
 ) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     years = sorted_years(opt_df, cmp_df)
     if not years:
         return None
@@ -1754,8 +1824,8 @@ def prepare_efficiency_export(
         if not cum_spend.empty:
             aligned_spend = cum_spend.reindex(index)
             if aligned_spend.notna().any():
-                export[f"{SCENARIO_PRIMARY_NAME} cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=SCENARIO_PRIMARY_NAME)
+                export[f"{primary_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
+        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
         if not series_opt.empty:
             year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
             mask = year_values.notna()
@@ -1771,8 +1841,8 @@ def prepare_efficiency_export(
         if not cum_spend_cmp.empty:
             aligned_cmp_spend = cum_spend_cmp.reindex(index)
             if aligned_cmp_spend.notna().any():
-                export[f"{SCENARIO_COMPARISON_NAME} cumulative spend ($)"] = scale_series_to_nzd(aligned_cmp_spend)
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=SCENARIO_COMPARISON_NAME)
+                export[f"{comparison_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_cmp_spend)
+        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
         if not series_cmp.empty:
             year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
             mask = year_values.notna()
@@ -1901,6 +1971,8 @@ def prepare_dimension_overlay_export(
     dimensions: List[str],
     cumulative: bool,
 ) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     selected_dims = [dim for dim in dimensions]
     if not selected_dims:
         return None
@@ -1914,7 +1986,7 @@ def prepare_dimension_overlay_export(
             opt = opt.cumsum()
         for dim in selected_dims:
             if dim in opt.columns:
-                export[f"{SCENARIO_PRIMARY_NAME} - {dim} ($)"] = scale_series_to_nzd(opt[dim])
+                export[f"{primary_label} - {dim} ($)"] = scale_series_to_nzd(opt[dim])
                 added = True
     if pivot_cmp is not None and not pivot_cmp.empty:
         cmp = pivot_cmp.reindex(index=years_list)
@@ -1923,7 +1995,7 @@ def prepare_dimension_overlay_export(
             cmp = cmp.cumsum()
         for dim in selected_dims:
             if dim in cmp.columns:
-                export[f"{SCENARIO_COMPARISON_NAME} - {dim} ($)"] = scale_series_to_nzd(cmp[dim])
+                export[f"{comparison_label} - {dim} ($)"] = scale_series_to_nzd(cmp[dim])
                 added = True
     if not added:
         return None
@@ -1938,6 +2010,8 @@ def prepare_waterfall_export(
     pv_opt: Optional[Dict[str, float]] = None,
     pv_cmp: Optional[Dict[str, float]] = None,
 ) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -1956,8 +2030,8 @@ def prepare_waterfall_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{SCENARIO_PRIMARY_NAME} NPV ($)": opt_val * 1_000_000.0,
-                f"{SCENARIO_COMPARISON_NAME} NPV ($)": cmp_val * 1_000_000.0,
+                f"{primary_label} NPV ($)": opt_val * 1_000_000.0,
+                f"{comparison_label} NPV ($)": cmp_val * 1_000_000.0,
                 "Delta ($)": (opt_val - cmp_val) * 1_000_000.0,
             }
         )
@@ -1969,8 +2043,8 @@ def prepare_waterfall_export(
     rows.append(
         {
             "Dimension": "Total",
-            f"{SCENARIO_PRIMARY_NAME} NPV ($)": total_opt * 1_000_000.0,
-            f"{SCENARIO_COMPARISON_NAME} NPV ($)": total_cmp * 1_000_000.0,
+            f"{primary_label} NPV ($)": total_opt * 1_000_000.0,
+            f"{comparison_label} NPV ($)": total_cmp * 1_000_000.0,
             "Delta ($)": (total_opt - total_cmp) * 1_000_000.0,
         }
     )
@@ -1985,6 +2059,8 @@ def prepare_bridge_export(
     pv_opt: Optional[Dict[str, float]] = None,
     pv_cmp: Optional[Dict[str, float]] = None,
 ) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2008,7 +2084,7 @@ def prepare_bridge_export(
     total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
     bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
     rows = [
-        {"Step": f"{SCENARIO_PRIMARY_NAME} NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
+        {"Step": f"{primary_label} NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
     ]
     for dim, delta in zip(dim_sequence, bridge_diffs):
         rows.append(
@@ -2019,7 +2095,7 @@ def prepare_bridge_export(
             }
         )
     rows.append(
-        {"Step": f"{SCENARIO_COMPARISON_NAME} NPV total", "Value ($)": total_cmp * 1_000_000.0, "Measure": "total"}
+        {"Step": f"{comparison_label} NPV total", "Value ($)": total_cmp * 1_000_000.0, "Measure": "total"}
     )
     return pd.DataFrame(rows)
 
@@ -2031,6 +2107,8 @@ def prepare_radar_export(
     pv_opt: Optional[Dict[str, float]] = None,
     pv_cmp: Optional[Dict[str, float]] = None,
 ) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2055,8 +2133,8 @@ def prepare_radar_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{SCENARIO_PRIMARY_NAME} NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
-                f"{SCENARIO_COMPARISON_NAME} NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
+                f"{primary_label} NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                f"{comparison_label} NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
             }
         )
     return pd.DataFrame(rows)
@@ -3572,6 +3650,8 @@ def benefit_chart(
 ) -> go.Figure:
 
     fig = go.Figure()
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
 
     if opt_df is not None:
 
@@ -3583,7 +3663,7 @@ def benefit_chart(
 
                 y=opt_df["PVBenefit"],
 
-                name=f"{SCENARIO_PRIMARY_NAME} Benefit Real",
+                name=f"{primary_label} Benefit Real",
 
                 mode="lines",
 
@@ -3593,7 +3673,7 @@ def benefit_chart(
 
                 yaxis="y2",
 
-                hovertemplate=f"<b>{SCENARIO_PRIMARY_NAME} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+                hovertemplate=f"<b>{primary_label} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
 
             )
 
@@ -3609,7 +3689,7 @@ def benefit_chart(
 
                 y=cmp_df["PVBenefit"],
 
-                name=f"{SCENARIO_COMPARISON_NAME} Benefit Real",
+                name=f"{comparison_label} Benefit Real",
 
                 mode="lines",
 
@@ -3619,7 +3699,7 @@ def benefit_chart(
 
                 yaxis="y2",
 
-                hovertemplate=f"<b>{SCENARIO_COMPARISON_NAME} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
+                hovertemplate=f"<b>{comparison_label} Benefit Real</b><br>FY %{{x}}: %{{y:,.1f}}m<extra></extra>",
 
             )
 
@@ -3693,6 +3773,8 @@ def benefit_delta_chart(
         horizon_override=horizon_years,
 
     )
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
 
     merged = opt_df[["Year", "CumBenefit", "CumPVBenefit"]].merge(
 
@@ -3850,9 +3932,11 @@ def benefit_radar_chart(
     outline_color = "rgba(148, 163, 184, 0.55)" if is_dark_theme else "rgba(100, 116, 139, 0.45)"
 
     fig = go.Figure()
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
 
     if opt_pv:
-        opt_name = opt_selection.name if opt_selection and opt_selection.name else SCENARIO_PRIMARY_NAME
+        opt_name = resolve_selection_label(opt_selection, fallback=primary_label)
         opt_custom = theta_labels + theta_labels[:1]
         fig.add_trace(
             go.Scatterpolar(
@@ -3869,7 +3953,7 @@ def benefit_radar_chart(
         )
 
     if cmp_pv:
-        cmp_name = cmp_selection.name if cmp_selection and cmp_selection.name else SCENARIO_COMPARISON_NAME
+        cmp_name = resolve_selection_label(cmp_selection, fallback=comparison_label)
         cmp_custom = theta_labels + theta_labels[:1]
         fig.add_trace(
             go.Scatterpolar(
@@ -4007,6 +4091,8 @@ def benefit_waterfall_chart(
         return fig
 
     context_label = npv_context_label(data, opt_selection, cmp_selection, horizon_override=horizon_years)
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
 
     pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years)
 
@@ -4087,7 +4173,7 @@ def benefit_waterfall_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} delta by dimension ({SCENARIO_PRIMARY_NAME} minus {SCENARIO_COMPARISON_NAME})",
+        title=f"{context_label} delta by dimension ({primary_label} minus {comparison_label})",
 
         yaxis_title=f"$ millions ({context_label})",
 
@@ -4117,6 +4203,10 @@ def benefit_bridge_chart(
 ) -> go.Figure:
 
     fig = go.Figure()
+
+    primary_label = scenario_primary_label()
+
+    comparison_label = scenario_comparison_label()
 
     context_label = npv_context_label(
 
@@ -4170,16 +4260,16 @@ def benefit_bridge_chart(
 
     bridge_diffs = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    labels = [f"{SCENARIO_PRIMARY_NAME} NPV total"] + [f"{dim} delta NPV" for dim in dim_sequence] + [f"{SCENARIO_COMPARISON_NAME} NPV total"]
+    labels = [f"{primary_label} NPV total"] + [f"{dim} delta NPV" for dim in dim_sequence] + [f"{comparison_label} NPV total"]
 
     measures = ["relative"] + ["relative"] * len(dim_sequence) + ["total"]
 
     values = [total_opt] + [-delta for delta in bridge_diffs] + [total_cmp]
 
     hovertexts = [
-        f"{SCENARIO_PRIMARY_NAME} NPV total: {total_opt:,.0f} m",
+        f"{primary_label} NPV total: {total_opt:,.0f} m",
         *[f"{dim} delta NPV: {delta:,.0f} m" for dim, delta in zip(dim_sequence, bridge_diffs)],
-        f"{SCENARIO_COMPARISON_NAME} NPV total: {total_cmp:,.0f} m",
+        f"{comparison_label} NPV total: {total_cmp:,.0f} m",
     ]
 
     fig.add_trace(
@@ -4214,7 +4304,7 @@ def benefit_bridge_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} bridge ({SCENARIO_PRIMARY_NAME} to {SCENARIO_COMPARISON_NAME})",
+        title=f"{context_label} bridge ({primary_label} to {comparison_label})",
 
         yaxis_title=f"$ millions ({context_label})",
 
@@ -4270,6 +4360,8 @@ def efficiency_chart(
 ) -> go.Figure:
 
     fig = go.Figure()
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
 
     series_opt = label_opt = None
 
@@ -4283,7 +4375,7 @@ def efficiency_chart(
 
                 y=opt_df["CumSpend"],
 
-                name=f"{SCENARIO_PRIMARY_NAME} cumulative spend",
+                name=f"{primary_label} cumulative spend",
 
                 marker_color=BRIGHT_PRIMARY_COLOR,
 
@@ -4291,19 +4383,19 @@ def efficiency_chart(
 
                 customdata=np.asarray(opt_df["CumSpend"], dtype=float) / 1000.0,
 
-                hovertemplate=f"<b>{SCENARIO_PRIMARY_NAME} cumulative spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
+                hovertemplate=f"<b>{primary_label} cumulative spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
             )
 
         )
 
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=SCENARIO_PRIMARY_NAME)
+        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
 
     series_cmp = label_cmp = None
 
     if cmp_df is not None and not cmp_df.empty:
 
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=SCENARIO_COMPARISON_NAME)
+        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
 
         fig.add_trace(
 
@@ -4578,6 +4670,9 @@ def benefit_dimension_overlay_chart(
 
         return None
 
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
     value_format = ',.1f' if cumulative else ',.0f'
 
     yaxis_label = "Cumulative benefit ($m)" if cumulative else "Annual benefit ($m)"
@@ -4614,7 +4709,7 @@ def benefit_dimension_overlay_chart(
 
                     y=opt_series,
 
-                    name=f"{dim} - {SCENARIO_PRIMARY_NAME}",
+                    name=f"{dim} - {primary_label}",
 
                     mode='lines',
 
@@ -4628,7 +4723,7 @@ def benefit_dimension_overlay_chart(
 
                     legendgroup=dim,
 
-                    hovertemplate=f"{SCENARIO_PRIMARY_NAME} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+                    hovertemplate=f"{primary_label} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
 
                 )
 
@@ -4644,7 +4739,7 @@ def benefit_dimension_overlay_chart(
 
                     y=cmp_series,
 
-                    name=f"{dim} - {SCENARIO_COMPARISON_NAME}",
+                    name=f"{dim} - {comparison_label}",
 
                     mode='lines',
 
@@ -4658,7 +4753,7 @@ def benefit_dimension_overlay_chart(
 
                     legendgroup=dim,
 
-                    hovertemplate=f"{SCENARIO_COMPARISON_NAME} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
+                    hovertemplate=f"{comparison_label} {dim}<br>FY %{{x}}: %{{y:{value_format}}} m<extra></extra>",
 
                     showlegend=True,
 
@@ -4672,7 +4767,7 @@ def benefit_dimension_overlay_chart(
 
     fig.update_layout(
 
-        title=f"Dimension benefit {SCENARIO_PRIMARY_NAME} vs {SCENARIO_COMPARISON_NAME}{title_suffix}",
+        title=f"Dimension benefit {primary_label} vs {comparison_label}{title_suffix}",
 
         xaxis_title=None,
 
@@ -4734,6 +4829,8 @@ def spend_gantt_chart(
         }
 
     comparison_available = bool(comparison_runs)
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
     shift_labels: List[str] = []
     italic_t = "<i>t</i>"
     for run in runs:
@@ -4843,9 +4940,9 @@ def spend_gantt_chart(
 
                 f"Schedule shift: {shift_label}",
 
-                f"{SCENARIO_PRIMARY_NAME} start: {run.start_year}",
+                f"{primary_label} start: {run.start_year}",
 
-                f"{SCENARIO_COMPARISON_NAME} start: {other.start_year}",
+                f"{comparison_label} start: {other.start_year}",
 
             ]
 
@@ -5518,6 +5615,10 @@ def render_programme_kpis(
     def _fmt(value: float | None) -> str:
         return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
 
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    pair_label = scenario_pair_label()
+
     opt_spend = float(stats_opt.get("total_spend")) if stats_opt and stats_opt.get("total_spend") is not None else None
     cmp_spend = float(stats_cmp.get("total_spend")) if stats_cmp and stats_cmp.get("total_spend") is not None else None
     opt_pv = float(stats_opt.get("total_pv")) if stats_opt and stats_opt.get("total_pv") is not None else None
@@ -5531,7 +5632,7 @@ def render_programme_kpis(
     else:
         sign = "▲" if delta_pv >= 0 else "▼"
         pv_chip_state = "up" if delta_pv >= 0 else "down"
-        pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {SCENARIO_COMPARISON_NAME}"
+        pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {comparison_label}"
 
     if pv_chip_text:
         delta_pv_card = _kpi_card_html(
@@ -5543,26 +5644,26 @@ def render_programme_kpis(
         delta_pv_card = _kpi_card_html(
             f"Delta total NPV benefit ({npv_label})",
             _fmt(delta_pv),
-            subtitle=SCENARIO_PAIR_NAME,
+            subtitle=pair_label,
             delta_text=pv_chip_text,
             delta_state=pv_chip_state,
         )
 
     cards = [
         '<div class="kpi-grid">',
-        _kpi_card_html(f"{SCENARIO_PRIMARY_NAME} - total spend", _fmt(opt_spend)),
-        _kpi_card_html(f"{SCENARIO_COMPARISON_NAME} - total spend", _fmt(cmp_spend)),
+        _kpi_card_html(f"{primary_label} - total spend", _fmt(opt_spend)),
+        _kpi_card_html(f"{comparison_label} - total spend", _fmt(cmp_spend)),
         _kpi_card_html(
             "Delta - total spend",
             _fmt(delta_spend),
-            subtitle=SCENARIO_PAIR_NAME,
+            subtitle=pair_label,
         ),
         _kpi_card_html(
-            f"{SCENARIO_PRIMARY_NAME} total NPV benefit ({npv_label})",
+            f"{primary_label} total NPV benefit ({npv_label})",
             _fmt(opt_pv),
         ),
         _kpi_card_html(
-            f"{SCENARIO_COMPARISON_NAME} total NPV benefit ({npv_label})",
+            f"{comparison_label} total NPV benefit ({npv_label})",
             _fmt(cmp_pv),
         ),
         delta_pv_card,
@@ -6953,10 +7054,17 @@ def render_overview_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
     st.markdown('<div class="pbi-section-title">Efficiency & net present value</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
-        st.plotly_chart(eff_fig, use_container_width=True)
+        st.plotly_chart(
+            eff_fig,
+            use_container_width=True,
+            key="overview_efficiency_chart",
+        )
         efficiency_export = prepare_efficiency_export(
             data,
             opt_series,
@@ -6994,7 +7102,11 @@ def render_overview_tab(
             data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
         )
         if waterfall_fig is not None:
-            st.plotly_chart(waterfall_fig, use_container_width=True)
+            st.plotly_chart(
+                waterfall_fig,
+                use_container_width=True,
+                key="overview_waterfall_chart",
+            )
         waterfall_export = prepare_waterfall_export(
             data,
             opt_selection,
@@ -7010,7 +7122,11 @@ def render_overview_tab(
             data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
         )
         if bridge_fig is not None:
-            st.plotly_chart(bridge_fig, use_container_width=True)
+            st.plotly_chart(
+                bridge_fig,
+                use_container_width=True,
+                key="overview_bridge_chart",
+            )
         bridge_export = prepare_bridge_export(
             data,
             opt_selection,
@@ -7023,7 +7139,12 @@ def render_overview_tab(
             export_tables["NPV Bridge"] = bridge_export
     radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
     if radar_fig is not None:
-        st.plotly_chart(radar_fig, use_container_width=True, theme=None)
+        st.plotly_chart(
+            radar_fig,
+            use_container_width=True,
+            theme=None,
+            key="overview_radar_chart",
+        )
         radar_export = prepare_radar_export(data, opt_selection, comp_selection)
         if radar_export is not None:
             export_tables["Benefit mix radar"] = radar_export
@@ -7068,7 +7189,7 @@ def render_benefits_tab(
         )
     if compare_dimension_overlays:
         if not available_dimension_labels:
-            st.info(f"No dimension data available for {SCENARIO_COMPARISON_NAME}.")
+            st.info(f"No dimension data available for {cmp_label}.")
         else:
             default_dims = available_dimension_labels[:1] or ["Total"]
             selected_dims = st.multiselect(
@@ -7090,7 +7211,11 @@ def render_benefits_tab(
                     cmp_pivot=cmp_dim_pivot,
                 )
                 if comparison_fig is not None:
-                    st.plotly_chart(comparison_fig, use_container_width=True)
+                    st.plotly_chart(
+                        comparison_fig,
+                        use_container_width=True,
+                        key="benefits_dimension_overlay_chart",
+                    )
                     overlay_export = prepare_dimension_overlay_export(
                         data.years,
                         opt_dim_pivot,
@@ -7099,21 +7224,25 @@ def render_benefits_tab(
                         show_cumulative_benefits,
                     )
                     if overlay_export is not None:
-                        export_tables[f"Dimension overlay - {SCENARIO_COMPARISON_NAME}"] = overlay_export
+                        export_tables[f"Dimension overlay - {cmp_label}"] = overlay_export
                 else:
-                    st.info(f"No overlapping dimension data available for {SCENARIO_COMPARISON_NAME}.")
+                    st.info(f"No overlapping dimension data available for {cmp_label}.")
     else:
         dim_col1, dim_col2 = st.columns(2)
         with dim_col1:
             opt_dim_fig = benefit_dimension_chart(
                 data,
                 opt_selection,
-                title=f"{SCENARIO_PRIMARY_NAME} benefit mix by dimension",
+                title=f"{opt_label} benefit mix by dimension",
                 cumulative=show_cumulative_benefits,
                 pivot=opt_dim_pivot,
             )
             if opt_dim_fig is not None:
-                st.plotly_chart(opt_dim_fig, use_container_width=True)
+                st.plotly_chart(
+                    opt_dim_fig,
+                    use_container_width=True,
+                    key="benefits_dimension_primary_chart",
+                )
                 opt_dim_export = prepare_dimension_chart_export(
                     opt_dim_pivot,
                     show_cumulative_benefits,
@@ -7124,25 +7253,33 @@ def render_benefits_tab(
             cmp_dim_fig = benefit_dimension_chart(
                 data,
                 comp_selection,
-                title=f"{SCENARIO_COMPARISON_NAME} benefit mix by dimension",
+                title=f"{cmp_label} benefit mix by dimension",
                 cumulative=show_cumulative_benefits,
                 pivot=cmp_dim_pivot,
             )
             if cmp_dim_fig is not None:
-                st.plotly_chart(cmp_dim_fig, use_container_width=True)
+                st.plotly_chart(
+                    cmp_dim_fig,
+                    use_container_width=True,
+                    key="benefits_dimension_comparison_chart",
+                )
                 cmp_dim_export = prepare_dimension_chart_export(
                     cmp_dim_pivot,
                     show_cumulative_benefits,
                 )
                 if cmp_dim_export is not None:
-                    export_tables[f"Dimension mix - {SCENARIO_COMPARISON_NAME}"] = cmp_dim_export
+                    export_tables[f"Dimension mix - {cmp_label}"] = cmp_dim_export
     st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
     horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
     benefit_cols = st.columns(2)
     with benefit_cols[0]:
         benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
         if benefit_fig is not None:
-            st.plotly_chart(benefit_fig, use_container_width=True)
+            st.plotly_chart(
+                benefit_fig,
+                use_container_width=True,
+                key="benefits_profile_chart",
+            )
     with benefit_cols[1]:
         delta_fig = benefit_delta_chart(
             data,
@@ -7153,7 +7290,11 @@ def render_benefits_tab(
             horizon_years=horizon_years,
         )
         if delta_fig is not None:
-            st.plotly_chart(delta_fig, use_container_width=True)
+            st.plotly_chart(
+                delta_fig,
+                use_container_width=True,
+                key="benefits_delta_chart",
+            )
     benefit_export = prepare_benefit_export(
         opt_series,
         cmp_series,
@@ -7184,36 +7325,44 @@ def render_delivery_tab(
     schedule_opt_fig = project_schedule_area_chart(
         data,
         opt_selection,
-        title="Project schedule - optimised",
+        title=f"Project schedule - {opt_label}",
         color_map=project_colors,
     )
     schedule_cmp_fig = project_schedule_area_chart(
         data,
         comp_selection,
-        title=f"Project schedule - {SCENARIO_COMPARISON_NAME}",
+        title=f"Project schedule - {cmp_label}",
         color_map=project_colors,
     )
     schedule_col1, schedule_col2 = st.columns(2)
     with schedule_col1:
         if schedule_opt_fig is not None:
-            st.plotly_chart(schedule_opt_fig, use_container_width=True)
+            st.plotly_chart(
+                schedule_opt_fig,
+                use_container_width=True,
+                key="project_schedule_opt_chart",
+            )
             schedule_export = prepare_schedule_export(data, opt_selection)
             if schedule_export is not None:
-                export_tables["Project schedule - optimised"] = schedule_export
+                export_tables[f"Project schedule - {opt_label}"] = schedule_export
         elif opt_selection.code:
-            st.warning("No project schedule data found for the optimised selection.")
+            st.warning(f"No project schedule data found for the {opt_label} selection.")
         else:
-            st.info("Select an optimised scenario to view the project schedule.")
+            st.info(f"Select {opt_label} to view the project schedule.")
     with schedule_col2:
         if schedule_cmp_fig is not None:
-            st.plotly_chart(schedule_cmp_fig, use_container_width=True)
+            st.plotly_chart(
+                schedule_cmp_fig,
+                use_container_width=True,
+                key="project_schedule_cmp_chart",
+            )
             schedule_export = prepare_schedule_export(data, comp_selection)
             if schedule_export is not None:
-                export_tables[f"Project schedule - {SCENARIO_COMPARISON_NAME}"] = schedule_export
+                export_tables[f"Project schedule - {cmp_label}"] = schedule_export
         elif comp_selection.code:
-            st.warning(f"No project schedule data found for the {SCENARIO_COMPARISON_NAME} selection.")
+            st.warning(f"No project schedule data found for the {cmp_label} selection.")
         else:
-            st.info(f"Select {SCENARIO_COMPARISON_NAME} to view the project schedule.")
+            st.info(f"Select {cmp_label} to view the project schedule.")
     st.markdown('<div class="pbi-section-title">Market capacity</div>', unsafe_allow_html=True)
     cap_cols = st.columns(2)
     with cap_cols[0]:
@@ -7224,9 +7373,9 @@ def render_delivery_tab(
             if cap_export is not None:
                 export_tables[f"Market capacity - {opt_label}"] = cap_export
         elif opt_selection.code:
-            st.warning("No spend data found for the optimised selection.")
+            st.warning(f"No spend data found for the {opt_label} selection.")
         else:
-            st.info("Select an optimised scenario to view the capacity profile.")
+            st.info(f"Select {opt_label} to view the capacity profile.")
     with cap_cols[1]:
         cap_fig_cmp = market_capacity_indicator(data, comp_selection)
         if cap_fig_cmp is not None:
@@ -7235,9 +7384,9 @@ def render_delivery_tab(
             if cap_export is not None:
                 export_tables[f"Market capacity - {cmp_label}"] = cap_export
         elif comp_selection.code:
-            st.warning(f"No spend data found for the {SCENARIO_COMPARISON_NAME} selection.")
+            st.warning(f"No spend data found for the {cmp_label} selection.")
         else:
-            st.info(f"Select {SCENARIO_COMPARISON_NAME} to view the capacity profile.")
+            st.info(f"Select {cmp_label} to view the capacity profile.")
     return export_tables
 
 
@@ -7263,42 +7412,44 @@ def render_cash_flow_tab(
             st.plotly_chart(
                 cash_chart(
                     opt_series,
-                    "Cash flow - optimised",
+                    f"Cash flow - {opt_label}",
                     color=PRIMARY_COLOR,
                     data=data,
                     selection=opt_selection,
                     comparison_selection=comp_selection,
                 ),
                 use_container_width=True,
+                key="cash_flow_opt_chart",
             )
             cash_export = prepare_cash_export(opt_series, label_prefix=opt_label)
             if cash_export is not None:
                 export_tables[f"Cash flow - {opt_label}"] = cash_export
         elif opt_selection.code:
-            st.warning("Cash flow data unavailable for the optimised selection.")
+            st.warning(f"Cash flow data unavailable for the {opt_label} selection.")
         else:
-            st.info("Select an optimised scenario to view the cash flow profile.")
+            st.info(f"Select {opt_label} to view the cash flow profile.")
 
     with cash_cols[1]:
         if cmp_series is not None:
             st.plotly_chart(
                 cash_chart(
                     cmp_series,
-                    f"Cash flow - {SCENARIO_COMPARISON_NAME}",
+                    f"Cash flow - {cmp_label}",
                     color=PRIMARY_COLOR,
                     data=data,
                     selection=comp_selection,
                     comparison_selection=opt_selection,
                 ),
                 use_container_width=True,
+                key="cash_flow_cmp_chart",
             )
             cash_export = prepare_cash_export(cmp_series, label_prefix=cmp_label)
             if cash_export is not None:
                 export_tables[f"Cash flow - {cmp_label}"] = cash_export
         elif comp_selection.code:
-            st.warning(f"Cash flow data unavailable for the {SCENARIO_COMPARISON_NAME} selection.")
+            st.warning(f"Cash flow data unavailable for the {cmp_label} selection.")
         else:
-            st.info(f"Select {SCENARIO_COMPARISON_NAME} to view the cash flow profile.")
+            st.info(f"Select {cmp_label} to view the cash flow profile.")
 
     # ---- Row 2: NEW charts - cumulative revenue vs cumulative cost ----
     st.markdown('<div class="pbi-section-title">Cumulative revenue vs cumulative cost</div>', unsafe_allow_html=True)
@@ -7310,14 +7461,15 @@ def render_cash_flow_tab(
                 cumulative_revenue_vs_cost_chart(
                     opt_series,
                     opt_selection,
-                    title="Cumulative revenue vs cumulative cost - optimised",
+                    title=f"Cumulative revenue vs cumulative cost - {opt_label}",
                 ),
                 use_container_width=True,
+                key="cash_cumulative_opt_chart",
             )
         elif opt_selection.code:
-            st.warning("Cumulative series unavailable for the optimised selection.")
+            st.warning(f"Cumulative series unavailable for the {opt_label} selection.")
         else:
-            st.info("Select an optimised scenario to view the cumulative profile.")
+            st.info(f"Select {opt_label} to view the cumulative profile.")
 
     with cum_cols[1]:
         if cmp_series is not None:
@@ -7325,14 +7477,15 @@ def render_cash_flow_tab(
                 cumulative_revenue_vs_cost_chart(
                     cmp_series,
                     comp_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {SCENARIO_COMPARISON_NAME}",
+                    title=f"Cumulative revenue vs cumulative cost - {cmp_label}",
                 ),
                 use_container_width=True,
+                key="cash_cumulative_cmp_chart",
             )
         elif comp_selection.code:
-            st.warning(f"Cumulative series unavailable for the {SCENARIO_COMPARISON_NAME} selection.")
+            st.warning(f"Cumulative series unavailable for the {cmp_label} selection.")
         else:
-            st.info(f"Select {SCENARIO_COMPARISON_NAME} to view the cumulative profile.")
+            st.info(f"Select {cmp_label} to view the cumulative profile.")
 
     return export_tables
 
@@ -7387,7 +7540,7 @@ def render_gantt_tab(
 
     with control_cols[1]:
         show_outline = st.checkbox(
-            f"Show {SCENARIO_COMPARISON_NAME} schedule outline",
+            f"Show {cmp_label} schedule outline",
             value=True,
             key="gantt_outline",
         )
@@ -7403,9 +7556,9 @@ def render_gantt_tab(
     _inject_gantt_hotkey_listener()
 
     if st.session_state.get("_gantt_hotkey_supported", False):
-        st.caption(f"Press **Z** to toggle the outline colour between {SCENARIO_COMPARISON_NAME.lower()} and baseline styling.")
+        st.caption(f"Press **Z** to toggle the outline colour between {cmp_label.lower()} and baseline styling.")
     else:
-        st.caption(f"Outline uses the {SCENARIO_COMPARISON_NAME.lower()} styling by default.")
+        st.caption(f"Outline uses the {cmp_label.lower()} styling by default.")
 
     gantt_fig = spend_gantt_chart(
         data,
@@ -7781,7 +7934,7 @@ def main() -> None:
     with st.expander("Scenario selection", expanded=True):
         scenario_cols = st.columns(2)
         with scenario_cols[0]:
-            st.subheader(SCENARIO_PRIMARY_NAME)
+            st.subheader(f"{SCENARIO_PRIMARY_NAME} Profile")
             opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
             opt_default_index = (
                 opt_profiles.index(DEFAULT_PROFILE_LABEL)
@@ -7793,9 +7946,10 @@ def main() -> None:
                 opt_profiles,
                 index=opt_default_index,
                 key="opt_profile_select",
+                label_visibility="collapsed",
             )
         with scenario_cols[1]:
-            st.subheader(SCENARIO_COMPARISON_NAME)
+            st.subheader(f"{SCENARIO_COMPARISON_NAME} Profile")
             cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
             cmp_default_index = next(
                 (i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"),
@@ -7806,19 +7960,24 @@ def main() -> None:
                     cmp_profiles.index(DEFAULT_PROFILE_LABEL)
                     if DEFAULT_PROFILE_LABEL in cmp_profiles
                     else 0
-                )
+            )
             selected_cmp_profile = st.selectbox(
                 f"{SCENARIO_COMPARISON_NAME} profile",
                 cmp_profiles,
                 index=cmp_default_index,
                 key="cmp_profile_select",
+                label_visibility="collapsed",
             )
 
     with st.expander("Advanced filters", expanded=False):
         adv_opt_col, adv_cmp_col = st.columns(2)
         with adv_opt_col:
             opt_selection = scenario_selector(
-                name=SCENARIO_PRIMARY_NAME,
+                name=resolve_selection_label(
+                    None,
+                    fallback=SCENARIO_PRIMARY_NAME,
+                    profile_choice=selected_opt_profile,
+                ),
                 data=data,
                 settings=settings,
                 prefer_comparison=False,
@@ -7827,7 +7986,11 @@ def main() -> None:
             )
         with adv_cmp_col:
             comp_selection = scenario_selector(
-                name=SCENARIO_COMPARISON_NAME,
+                name=resolve_selection_label(
+                    None,
+                    fallback=SCENARIO_COMPARISON_NAME,
+                    profile_choice=selected_cmp_profile,
+                ),
                 data=data,
                 settings=settings,
                 prefer_comparison=True,
@@ -7837,8 +8000,17 @@ def main() -> None:
 
     opt_series = build_timeseries(data, opt_selection)
     cmp_series = build_timeseries(data, comp_selection)
-    opt_label = opt_selection.name or SCENARIO_PRIMARY_NAME
-    cmp_label = comp_selection.name or SCENARIO_COMPARISON_NAME
+    opt_label = resolve_selection_label(
+        opt_selection,
+        fallback=SCENARIO_PRIMARY_NAME,
+        profile_choice=selected_opt_profile,
+    )
+    cmp_label = resolve_selection_label(
+        comp_selection,
+        fallback=SCENARIO_COMPARISON_NAME,
+        profile_choice=selected_cmp_profile,
+    )
+    set_scenario_display_labels(opt_label, cmp_label)
 
     nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
     if ENABLE_PREVIEW_NAVIGATION:
