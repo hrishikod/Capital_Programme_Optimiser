@@ -2061,38 +2061,136 @@ def prepare_radar_export(
         )
     return pd.DataFrame(rows)
 
+def _gantt_export_years(data: DashboardData) -> List[int]:
+    start_year = getattr(data, "start_fy", None)
+    if start_year is None:
+        years = [int(y) for y in getattr(data, "years", []) if y is not None]
+        start_year = min(years) if years else 2025
+    else:
+        start_year = int(start_year)
+    data_years = [int(y) for y in getattr(data, "years", []) if y is not None]
+    if data_years:
+        last_year = max(data_years)
+    else:
+        horizon = getattr(data, "model_years", 0)
+        last_year = start_year + int(horizon) - 1 if horizon else start_year
+    end_year = max(last_year, 2100)
+    return list(range(start_year, end_year + 1))
+
+
+def _raw_result_for_code(data: DashboardData, code: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not code:
+        return None
+    meta = data.scenario_meta_by_code.get(code)
+    if not meta:
+        return None
+    stem = meta.get("_stem") or meta.get("CacheStem") or meta.get("OrigStem")
+    if not stem:
+        return None
+    return data.raw_results.get(stem)
+
+
+def _scenario_project_cost_table(
+    data: DashboardData,
+    code: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if spend_matrix is None or spend_matrix.empty or "Code" not in spend_matrix.columns:
+        return None
+    subset = spend_matrix[spend_matrix["Code"] == code]
+    if subset.empty:
+        return None
+    working = subset.drop(columns=[c for c in ("Key", "Code") if c in subset.columns]).copy()
+    if "Project" not in working.columns:
+        return None
+    working["Project"] = working["Project"].astype(str)
+    numeric_cols = [col for col in working.columns if isinstance(col, (int, np.integer))]
+    if not numeric_cols:
+        return None
+    table = (
+        working[["Project"] + numeric_cols]
+        .set_index("Project")
+        .reindex(columns=years, fill_value=0.0)
+        .sort_index()
+    )
+    table.loc[:, years] = table.loc[:, years].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    table = table.reset_index()
+    table.columns = ["Project"] + years
+    return table
+
+
+def _scenario_project_benefit_table(
+    data: DashboardData,
+    code: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    raw = _raw_result_for_code(data, code)
+    if not raw:
+        return None
+    benefits = raw.get("benefits_by_project_dimension_by_year")
+    if not isinstance(benefits, pd.DataFrame) or benefits.empty:
+        return None
+    working = benefits.copy()
+    year_cols = [
+        int(str(col))
+        for col in working.columns
+        if isinstance(col, (int, np.integer)) or (isinstance(col, str) and col.isdigit())
+    ]
+    if not year_cols:
+        return None
+    col_map = {col: int(str(col)) for col in working.columns if str(col).isdigit()}
+    if col_map:
+        working = working.rename(columns=col_map)
+    selected_cols = [col for col in working.columns if isinstance(col, int)]
+    if not selected_cols:
+        return None
+    if isinstance(working.index, pd.MultiIndex):
+        level_names = list(working.index.names)
+        project_level = level_names.index("Project") if "Project" in level_names else 0
+        aggregated = working.groupby(level=project_level)[selected_cols].sum()
+    else:
+        project_col = None
+        for candidate in working.columns:
+            if str(candidate).strip().lower() == "project":
+                project_col = candidate
+                break
+        if project_col is None:
+            return None
+        aggregated = working.groupby(project_col)[selected_cols].sum()
+    aggregated = aggregated.astype(float)
+    aggregated = aggregated.reindex(columns=years, fill_value=0.0)
+    aggregated = aggregated.sort_index()
+    aggregated = aggregated.reset_index()
+    aggregated.columns = ["Project"] + years
+    return aggregated
+
+
 def prepare_gantt_export(
     data: DashboardData,
-    selection: ScenarioSelection,
-    comparison_selection: ScenarioSelection,
-) -> Optional[pd.DataFrame]:
-    if not selection or not selection.code:
-        return None
-    runs = extract_project_runs(data, selection.code)
-    if not runs:
-        return None
-    comparison_runs: Dict[str, scenario_utils.ProjectRun] = {}
-    if comparison_selection and comparison_selection.code:
-        comparison_runs = {
-            _normalise_project_key(run.project): run
-            for run in extract_project_runs(data, comparison_selection.code)
-        }
-    rows = []
-    for run in runs:
-        comp = comparison_runs.get(_normalise_project_key(run.project))
-        rows.append(
-            {
-                "Project": run.project,
-                "Start FY": run.start_year,
-                "End FY": run.end_year,
-                "Duration (years)": run.end_year - run.start_year + 1,
-                "Total spend ($)": float(run.total_spend) * 1_000_000.0,
-                f"{SCENARIO_COMPARISON_NAME} start FY": comp.start_year if comp else None,
-                f"{SCENARIO_COMPARISON_NAME} end FY": comp.end_year if comp else None,
-                f"{SCENARIO_COMPARISON_NAME} total spend ($)": float(comp.total_spend) * 1_000_000.0 if comp else None,
-            }
-        )
-    return pd.DataFrame(rows)
+    opt_selection: ScenarioSelection,
+    comp_selection: ScenarioSelection,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    years = _gantt_export_years(data)
+    tables: Dict[str, pd.DataFrame] = {}
+    for selection, label in (
+        (opt_selection, opt_label),
+        (comp_selection, cmp_label),
+    ):
+        code = getattr(selection, "code", None) if selection else None
+        if not code:
+            continue
+        sheet_label = label or code
+        cost_table = _scenario_project_cost_table(data, code, years)
+        if cost_table is not None and not cost_table.empty:
+            tables[f"{sheet_label} - Costs"] = cost_table
+        benefit_table = _scenario_project_benefit_table(data, code, years)
+        if benefit_table is not None and not benefit_table.empty:
+            tables[f"{sheet_label} - Benefits"] = benefit_table
+    return tables
 
 def prepare_schedule_export(
     data: DashboardData,
@@ -7318,13 +7416,15 @@ def render_gantt_tab(
     )
     if gantt_fig is not None:
         st.plotly_chart(gantt_fig, use_container_width=True)
-        gantt_export = prepare_gantt_export(
+        gantt_exports = prepare_gantt_export(
             data,
-            primary_selection,
-            comparison_selection,
+            opt_selection,
+            comp_selection,
+            opt_label=opt_label,
+            cmp_label=cmp_label,
         )
-        if gantt_export is not None:
-            export_tables[f"Programme Schedule - {primary_label}"] = gantt_export
+        if gantt_exports:
+            export_tables.update(gantt_exports)
     else:
         st.info("No spend matrix found for the selected scenario.")
 
