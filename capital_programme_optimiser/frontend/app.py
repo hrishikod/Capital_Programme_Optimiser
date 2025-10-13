@@ -8,6 +8,7 @@ import re
 import sys
 import json
 import copy
+import textwrap
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from datetime import datetime
@@ -15,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from uuid import uuid4
 
 import numpy as np
 import requests
@@ -480,12 +482,35 @@ def inject_kpi_card_theme() -> None:
         padding: 16px 18px;
         overflow: hidden;
       }}
+      .kpi-card::before {{
+        content:"";
+        position:absolute; left:14px; right:14px; top:0;
+        height:6px; border-radius:999px;
+        background: var(--kpi-top-grey);
+        transform: translateY(-3px);
+        z-index: 1;
+      }}
       .kpi-card::after {{
         content:"";
         position:absolute; left:14px; right:14px; top:0;
         height:6px; border-radius:999px;
         background: linear-gradient(90deg, var(--pbi-green), var(--kpi-top-grey));
-        transform: translateY(-3px);
+        transform: translateY(-3px) scaleX(0);
+        transform-origin: right center;
+        z-index: 2;
+        animation: none;
+      }}
+      .kpi-card.kpi-sweep-on::after {{
+        animation: kpi-sweep 0.55s ease-out forwards;
+        animation-delay: var(--kpi-sweep-delay, 0s);
+      }}
+      .kpi-card.kpi-sweep-on::after {{
+        animation: kpi-sweep 0.55s ease-out forwards;
+        animation-delay: var(--kpi-sweep-delay, 0s);
+      }}
+      @keyframes kpi-sweep {{
+        0% {{ transform: translateY(-3px) scaleX(0); }}
+        100% {{ transform: translateY(-3px) scaleX(1); }}
       }}
       .kpi-title {{
         color: var(--pbi-blue);
@@ -632,7 +657,10 @@ def inject_powerbi_theme() -> None:
                 background: rgba(175, 189, 34, 0.16) !important;
             }}
             div.stButton > button,
-            div.stDownloadButton > button {{
+            div.stDownloadButton > button,
+            div.stFormSubmitButton > button,
+            button[kind='primary'],
+            button[data-testid='baseButton-primary'] {{
                 background: var(--pbi-blue) !important;
                 color: #ffffff !important;
                 border: 1px solid var(--pbi-blue) !important;
@@ -640,14 +668,24 @@ def inject_powerbi_theme() -> None:
                 font-weight: 600;
             }}
             div.stButton > button:hover,
-            div.stDownloadButton > button:hover {{
-                background: var(--pbi-green) !important;
-                border-color: var(--pbi-green) !important;
+            div.stDownloadButton > button:hover,
+            div.stFormSubmitButton > button:hover,
+            button[kind='primary']:hover,
+            button[data-testid='baseButton-primary']:hover {{
+                background: var(--pbi-blue) !important;
+                border-color: var(--pbi-blue) !important;
+                filter: brightness(0.92);
             }}
             div.stButton > button:focus,
             div.stButton > button:active,
             div.stDownloadButton > button:focus,
             div.stDownloadButton > button:active,
+            div.stFormSubmitButton > button:focus,
+            div.stFormSubmitButton > button:active,
+            button[kind='primary']:focus,
+            button[kind='primary']:active,
+            button[data-testid='baseButton-primary']:focus,
+            button[data-testid='baseButton-primary']:active,
             button[aria-pressed='true'],
             button:active,
             button:focus {{
@@ -663,15 +701,13 @@ def inject_powerbi_theme() -> None:
             div[data-baseweb='segmented-control'] button:hover {{
                 border-color: var(--pbi-blue);
             }}
-            div[data-baseweb='segmented-control'] button[aria-pressed='true'] {{
+            div[data-baseweb='segmented-control'] button[aria-pressed='true'],
+            div[data-baseweb='segmented-control'] button[aria-pressed='true']:hover {{
                 background: var(--pbi-blue) !important;
                 color: #ffffff !important;
                 border-color: var(--pbi-blue) !important;
                 box-shadow: 0 8px 18px rgba(25, 69, 107, 0.22);
-            }}
-            div[data-baseweb='segmented-control'] button[aria-pressed='true']:hover {{
-                background: var(--pbi-green) !important;
-                border-color: var(--pbi-green) !important;
+                filter: brightness(0.92);
             }}
             div[data-baseweb='segmented-control'] span[data-baseweb='radio-mark'] {{
                 display: none !important;
@@ -761,18 +797,19 @@ def inject_powerbi_theme() -> None:
             div[data-testid='stRadio'] label[data-baseweb='radio']:has(input:checked) span {{
                 color: #ffffff !important;
             }}
-            div[data-baseweb='tag'] {{
+            *[data-baseweb='tag'] {{
                 background: var(--pbi-blue) !important;
                 color: #ffffff !important;
                 border: 1px solid var(--pbi-blue) !important;
                 border-radius: 12px;
             }}
-            div[data-baseweb='tag'] svg {{
+            *[data-baseweb='tag'] svg {{
                 fill: #ffffff !important;
             }}
-            div[data-baseweb='tag']:hover {{
-                background: var(--pbi-green) !important;
-                border-color: var(--pbi-green) !important;
+            *[data-baseweb='tag']:hover {{
+                background: var(--pbi-blue) !important;
+                border-color: var(--pbi-blue) !important;
+                filter: brightness(0.92);
             }}
             div[data-testid='stMultiSelect'] label {{
                 color: var(--pbi-blue);
@@ -4172,14 +4209,18 @@ def benefit_waterfall_chart(
 
         title=f"{context_label} delta by dimension ({primary_label} minus {comparison_label})",
 
-        yaxis_title=f"$ millions ({context_label})",
-
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
 
         waterfallgap=0.3,
 
         height=WATERFALL_CHART_HEIGHT,
+
+        yaxis=dict(
+            title=context_label,
+            showticklabels=False,
+            ticks="",
+        ),
 
     )
 
@@ -4303,13 +4344,17 @@ def benefit_bridge_chart(
 
         title=f"{context_label} bridge ({primary_label} to {comparison_label})",
 
-        yaxis_title=f"$ millions ({context_label})",
-
         template=plotly_template(),
 
         waterfallgap=0.3,
 
         height=WATERFALL_CHART_HEIGHT,
+
+        yaxis=dict(
+            title=context_label,
+            showticklabels=False,
+            ticks="",
+        ),
 
     )
 
@@ -5696,8 +5741,31 @@ def render_programme_kpis(
             delta_state=pv_chip_state,
         )
 
+    grid_token = uuid4().hex[:8]
+    anim_name = f"kpiSweep_{grid_token}"
+    style_block = textwrap.dedent(
+        f"""
+        <style>
+        @keyframes {anim_name} {{
+            0% {{ transform: translateY(-3px) scaleX(0); }}
+            100% {{ transform: translateY(-3px) scaleX(1); }}
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card::after {{
+            animation: {anim_name} 0.275s ease-out forwards;
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(1)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(2)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(3)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(4)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(5)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(6)::after {{ animation-delay: 0ms; }}
+        </style>
+        """
+    )
+    st.markdown(style_block, unsafe_allow_html=True)
+
     cards = [
-        '<div class="kpi-grid">',
+        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
         _kpi_card_html(f"{primary_label} - total spend", _fmt(opt_spend)),
         _kpi_card_html(f"{comparison_label} - total spend", _fmt(cmp_spend)),
         _kpi_card_html(
@@ -7705,53 +7773,6 @@ def render_scenarios_tab(
             index=folder_labels.index(default_folder_label),
             key="run_target_folder",
         )
-        cost_type_options = list(settings.optimisation.cost_types)
-        cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
-        scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
-        scenario_keys = st.multiselect("Benefit scenarios", scenario_key_options, default=scenario_key_options)
-        dims_options = [str(dim) for dim in getattr(data, "dims", [])] or ["Total"]
-        objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
-        col_cfg1, col_cfg2 = st.columns(2)
-        start_fy = col_cfg1.number_input(
-            "Start financial year",
-            value=int(settings.optimisation.start_fy),
-            step=1,
-        )
-        years = col_cfg2.number_input(
-            "Planning horizon (years)",
-            value=int(settings.optimisation.years),
-            min_value=1,
-            step=1,
-        )
-        run_plusminus = st.checkbox("Include buffer +/- levels", value=True)
-        st.markdown("Baseline annual envelopes ($m p.a.)")
-        envelope_defaults = pd.DataFrame(
-            [
-                {"Code": code, "AnnualMillions": value}
-                for code, value in settings.optimisation.surplus_options_m.items()
-            ]
-        )
-        envelopes_editor = st.data_editor(
-            envelope_defaults,
-            num_rows="dynamic",
-            hide_index=True,
-            key="envelope_editor",
-            column_config={
-                "Code": st.column_config.TextColumn("Code", required=True),
-                "AnnualMillions": st.column_config.NumberColumn("Annual $ (millions)", min_value=0.0),
-            },
-        )
-        st.markdown("+/- levels ($m)")
-        plus_defaults = pd.DataFrame({"LevelMillions": settings.optimisation.plusminus_levels_m})
-        plus_editor = st.data_editor(
-            plus_defaults,
-            num_rows="dynamic",
-            hide_index=True,
-            key="plus_editor",
-            column_config={
-                "LevelMillions": st.column_config.NumberColumn("Level (+/- $m)", min_value=0.0),
-            },
-        )
         st.markdown("Forced start rules")
         forced_rows = []
         for name, rule in settings.forced_start.items():
@@ -7771,8 +7792,115 @@ def render_scenarios_tab(
             key="forced_editor",
             column_config={
                 "Include": st.column_config.SelectboxColumn("Include", options=["Default", "Include", "Exclude"]),
-                "StartFY": st.column_config.NumberColumn("Forced start (FY)", help="Leave blank to let the optimiser decide."),
+                "StartFY": st.column_config.NumberColumn(
+                    "Forced start (FY)", help="Leave blank to let the optimiser decide."
+                ),
             },
+        )
+        cost_type_options = list(settings.optimisation.cost_types)
+        cost_types = st.multiselect("Cost types", cost_type_options, default=cost_type_options)
+        scenario_key_options = list(solver_core.BENEFIT_SCENARIOS.keys())
+        # Split combined benefit scenario codes (e.g., "A60") into method and duration parts.
+        scenario_method_lookup: Dict[str, str] = {}
+        scenario_year_lookup: Dict[str, str] = {}
+        scenario_methods: Set[str] = set()
+        scenario_years: Set[str] = set()
+        scenario_pattern = re.compile(r"(?P<method>[A-Za-z]+)(?P<years>\d+)$")
+        for key in scenario_key_options:
+            match = scenario_pattern.match(key)
+            if match:
+                method = match.group("method")
+                years = match.group("years")
+            else:
+                method = key
+                years = ""
+            scenario_method_lookup[key] = method
+            scenario_year_lookup[key] = years
+            scenario_methods.add(method)
+            if years:
+                scenario_years.add(years)
+        method_options = sorted(scenario_methods)
+        year_sort = lambda val: (0, int(val)) if val.isdigit() else (1, val)
+        year_options = sorted(scenario_years, key=year_sort)
+        method_labels = {
+            "A": "Method A (more aggressive accrual)",
+            "B": "Method B (less aggressive accrual)",
+        }
+        col_method, col_years = st.columns(2)
+        selected_methods = col_method.multiselect(
+            "Benefits accrual method (A = more aggressive than B)",
+            method_options,
+            default=method_options,
+            key="scenario_benefit_methods",
+            format_func=lambda code: method_labels.get(code, f"Method {code}"),
+        )
+        selected_years = col_years.multiselect(
+            "Benefit duration (years)",
+            year_options,
+            default=year_options,
+            key="scenario_benefit_years",
+            format_func=lambda years: f"{years} years" if years.isdigit() else years,
+        )
+        scenario_keys = [
+            key
+            for key in scenario_key_options
+            if scenario_method_lookup[key] in selected_methods
+            and (
+                not scenario_year_lookup[key]
+                or scenario_year_lookup[key] in selected_years
+            )
+        ]
+        dims_options_raw = [str(dim) for dim in getattr(data, "dims", [])] or ["Total"]
+        if "Total" in dims_options_raw:
+            dims_options = ["Total"] + [dim for dim in dims_options_raw if dim != "Total"]
+        else:
+            dims_options = dims_options_raw
+        objective_dims = st.multiselect("Objective dimensions", dims_options, default=dims_options)
+        col_cfg1, col_cfg2 = st.columns(2)
+        start_fy = col_cfg1.number_input(
+            "Start financial year",
+            value=int(settings.optimisation.start_fy),
+            step=1,
+        )
+        years = col_cfg2.number_input(
+            "Planning horizon (years)",
+            value=int(settings.optimisation.years),
+            min_value=1,
+            step=1,
+        )
+        st.markdown("Baseline annual envelopes & buffers ($m p.a.)")
+        surplus_items = list(settings.optimisation.surplus_options_m.items())
+        plus_defaults = list(settings.optimisation.plusminus_levels_m)
+        max_rows = max(len(surplus_items), len(plus_defaults)) or 1
+        envelope_rows: List[Dict[str, Optional[float]]] = []
+        for idx in range(max_rows):
+            code: Optional[str] = None
+            annual_val: Optional[float] = None
+            buffer_val: Optional[float] = None
+            if idx < len(surplus_items):
+                code, annual_val = surplus_items[idx]
+                annual_val = float(annual_val)
+            if idx < len(plus_defaults):
+                buffer_val = float(plus_defaults[idx])
+            envelope_rows.append(
+                {
+                    "Code": code or f"env_{idx}",
+                    "AnnualMillions": annual_val,
+                    "BufferMillions": buffer_val,
+                }
+            )
+        envelope_defaults = pd.DataFrame(envelope_rows)
+        envelopes_editor = st.data_editor(
+            envelope_defaults,
+            num_rows="dynamic",
+            hide_index=True,
+            key="envelope_editor",
+            column_config={
+                "Code": st.column_config.TextColumn("Code", disabled=True),
+                "AnnualMillions": st.column_config.NumberColumn("Annual $ (millions)", min_value=0.0),
+                "BufferMillions": st.column_config.NumberColumn("Buffer (+/- $m)", min_value=0.0),
+            },
+            column_order=["AnnualMillions", "BufferMillions"],
         )
         run_button = st.form_submit_button("Run optimiser", type="primary")
 
@@ -7785,24 +7913,27 @@ def render_scenarios_tab(
             st.warning("Select at least one benefit scenario.")
             proceed = False
         envelopes = {}
-        for row in envelopes_editor.to_dict("records"):
+        envelope_records = envelopes_editor.to_dict("records")
+        for idx, row in enumerate(envelope_records):
             code = str(row.get("Code", "")).strip()
             value = row.get("AnnualMillions")
-            if not code or pd.isna(value):
+            if pd.isna(value):
                 continue
+            if not code:
+                code = f"env_{idx}"
             envelopes[code] = float(value)
         if not envelopes:
             st.warning("Provide at least one envelope value.")
             proceed = False
         plus_levels = []
-        if isinstance(plus_editor, pd.DataFrame) and "LevelMillions" in plus_editor.columns:
-            for val in plus_editor["LevelMillions"].tolist():
-                if pd.isna(val):
-                    continue
-                plus_levels.append(float(val))
+        for row in envelope_records:
+            buffer_val = row.get("BufferMillions")
+            if pd.isna(buffer_val):
+                continue
+            plus_levels.append(float(buffer_val))
         plus_levels = sorted({round(val, 6) for val in plus_levels})
-        if run_plusminus and not plus_levels:
-            st.info("No +/- levels supplied; defaulting to [0.0].")
+        if not plus_levels:
+            st.info("No buffer values supplied; defaulting to [0.0].")
             plus_levels = [0.0]
         if not objective_dims:
             objective_dims = dims_options
@@ -7863,7 +7994,7 @@ def render_scenarios_tab(
                     plusminus_levels_m=plus_levels or [0.0],
                     start_fy=int(start_fy),
                     years=int(years),
-                    run_plusminus=run_plusminus,
+                    run_plusminus=True,
                     forced_start=forced_inputs,
                     time_limit=int(settings.optimisation.solve_seconds),
                 )
