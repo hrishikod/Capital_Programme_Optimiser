@@ -46,8 +46,6 @@ if not hasattr(pd.Index, 'clip'):
 
 
 
-from plotly.colors import qualitative
-
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_option_menu import option_menu
@@ -59,6 +57,7 @@ _preview_navigation_component = components.declare_component(
     path=str(PREVIEW_COMPONENT_PATH),
 )
 ENABLE_PREVIEW_NAVIGATION = False  # Toggle preview pane without removing supporting code.
+SHOW_REAL_BENEFIT_CHARTS = False  # Hide real benefit profile charts while keeping logic available.
 
 ROOT_CWD = Path.cwd()
 
@@ -171,6 +170,14 @@ CAPACITY_RED = POWERBI_BLUE
 
 CAPACITY_ZERO = POWERBI_TERTIARY
 
+BENEFIT_DIMENSION_PALETTE = [
+    "#19456B",
+    "#008B97",
+    "#908070",
+    "#AFBD22",
+    "#CA4142",
+    "#197D5D",
+]
 
 # --- Market capacity helpers -------------------------------------------------
 
@@ -397,7 +404,7 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Programme Schedule", "Overview", "Regions", "Benefits", "Delivery", "Cash Flow", "Scenario Manager"]
+NAV_TABS = ["Programme Schedule", "Overview", "Benefits", "Regions", "Delivery", "Scenario Manager"]
 
 NAV_ICON_MAP = {
     "Programme Schedule": "calendar-event",
@@ -405,7 +412,6 @@ NAV_ICON_MAP = {
     "Benefits": "graph-up-arrow",
     "Regions": "geo-alt",
     "Delivery": "box-seam",
-    "Cash Flow": "cash-stack",
     "Scenario Manager": "kanban",
 }
 
@@ -1201,78 +1207,6 @@ def collect_navigation_previews(
             fig=cap_cmp_fig,
         )
 
-    # Cash Flow tab previews
-    cash_opt_fig = (
-        cash_chart(
-            opt_series,
-            f"Cash flow - {opt_label}",
-            color=PRIMARY_COLOR,
-            data=data,
-            selection=opt_selection,
-            comparison_selection=comp_selection,
-        )
-        if opt_series is not None
-        else None
-    )
-    if cash_opt_fig is not None:
-        _append_preview(
-            previews,
-            "Cash Flow",
-            title=_figure_title(cash_opt_fig, f"Cash flow - {opt_label}"),
-            fig=cash_opt_fig,
-        )
-    cash_cmp_fig = (
-        cash_chart(
-            cmp_series,
-            f"Cash flow - {cmp_label}",
-            color=PRIMARY_COLOR,
-            data=data,
-            selection=comp_selection,
-            comparison_selection=opt_selection,
-        )
-        if cmp_series is not None
-        else None
-    )
-    if cash_cmp_fig is not None:
-        _append_preview(
-            previews,
-            "Cash Flow",
-            title=_figure_title(cash_cmp_fig, f"Cash flow - {cmp_label}"),
-            fig=cash_cmp_fig,
-        )
-    cum_opt_fig = (
-        cumulative_revenue_vs_cost_chart(
-            opt_series,
-            opt_selection,
-            title=f"Cumulative profile - {opt_label}",
-        )
-        if opt_series is not None
-        else None
-    )
-    if cum_opt_fig is not None:
-        _append_preview(
-            previews,
-            "Cash Flow",
-            title=_figure_title(cum_opt_fig, f"Cumulative profile - {opt_label}"),
-            fig=cum_opt_fig,
-        )
-    cum_cmp_fig = (
-        cumulative_revenue_vs_cost_chart(
-            cmp_series,
-            comp_selection,
-            title=f"Cumulative profile - {cmp_label}",
-        )
-        if cmp_series is not None
-        else None
-    )
-    if cum_cmp_fig is not None:
-        _append_preview(
-            previews,
-            "Cash Flow",
-            title=_figure_title(cum_cmp_fig, f"Cumulative profile - {cmp_label}"),
-            fig=cum_cmp_fig,
-        )
-
     # Programme schedule preview
     primary_for_gantt = opt_selection if getattr(opt_selection, "code", None) else comp_selection
     comparison_for_gantt = comp_selection if primary_for_gantt is opt_selection else opt_selection
@@ -1949,6 +1883,41 @@ def prepare_cash_export(
         if aligned.notna().any():
             export[f"{label_prefix} {label}"] = scale_series_to_nzd(aligned)
     if export.shape[1] == 0:
+        return None
+    return export.reset_index()
+
+def prepare_cumulative_cash_export(
+    df: Optional[pd.DataFrame],
+    selection: ScenarioSelection,
+    *,
+    label_prefix: str,
+) -> Optional[pd.DataFrame]:
+    if df is None or df.empty or not selection:
+        return None
+    years = sorted_years(df)
+    if not years:
+        return None
+    export, index = _create_export_table(years)
+
+    cost_series = series_from_df(df, "CumSpend")
+    if not cost_series.empty:
+        aligned_cost = cost_series.reindex(index)
+        if aligned_cost.notna().any():
+            export[f"{label_prefix} cumulative cost ($)"] = scale_series_to_nzd(aligned_cost)
+
+    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
+    if isinstance(revenue_series, pd.Series) and not revenue_series.empty:
+        aligned_revenue = pd.to_numeric(revenue_series, errors="coerce").reindex(index)
+        if aligned_revenue.notna().any():
+            is_real = "PV" in (revenue_label or "")
+            revenue_label_text = (
+                f"{label_prefix} cumulative revenue (real $)"
+                if is_real
+                else f"{label_prefix} cumulative revenue ($)"
+            )
+            export[revenue_label_text] = scale_series_to_nzd(aligned_revenue)
+
+    if export.shape[1] <= 1:
         return None
     return export.reset_index()
 
@@ -4635,7 +4604,20 @@ def benefit_dimension_chart(
         * 1_000.0
     )
 
-    dims = [dim for dim in pivot.columns if str(dim).strip().lower() != 'total']
+    preferred_order = {
+        str(dim): idx
+        for idx, dim in enumerate(data.dims)
+        if str(dim).strip().lower() != "total"
+    }
+    dims = [
+        dim for dim in pivot.columns if str(dim).strip().lower() != "total"
+    ]
+    dims.sort(
+        key=lambda dim: (
+            preferred_order.get(str(dim), len(preferred_order)),
+            str(dim),
+        )
+    )
 
     if not dims:
 
@@ -4643,52 +4625,36 @@ def benefit_dimension_chart(
 
     fig = go.Figure()
 
+    palette = BENEFIT_DIMENSION_PALETTE or ["#19456B"]
     for idx, dim in enumerate(dims):
-
+        dim_label = str(dim)
+        color = palette[idx % len(palette)]
         fig.add_trace(
-
             go.Scatter(
-
                 x=pivot.index,
-
                 y=pivot[dim],
-
-                name=str(dim),
-
-                mode='lines',
-
-                line=dict(width=1.2),
-
-                stackgroup='benefits',
-
+                name=dim_label,
+                mode="lines",
+                line=dict(color=color, width=1.4),
+                stackgroup="benefits",
+                fillcolor=rgba_from_hex(color, 0.32),
+                opacity=0.9,
+                legendgroup=dim_label,
                 customdata=[format_large_amount(val) for val in pivot[dim]],
-
-                hovertemplate="FY %{x}: %{customdata}<extra>" + f"{dim}</extra>",
-
+                hovertemplate=f"FY %{{x}}: %{{customdata}}<extra>{dim_label}</extra>",
             )
-
         )
 
     fig.update_layout(
-
         title=title,
-
         xaxis_title=None,
-
         legend=legend_bottom(),
-
         margin=dict(l=40, r=40, t=80, b=60),
-
         template=plotly_template(),
-
         yaxis=dict(
-
             title=None,
-
             tickformat="~s",
-
         ),
-
     )
 
     return fig
@@ -4779,7 +4745,7 @@ def benefit_dimension_overlay_chart(
 
     fig = go.Figure()
 
-    palette = list(qualitative.Plotly) if qualitative.Plotly else ['#1f77b4']
+    palette = BENEFIT_DIMENSION_PALETTE or ["#19456B"]
 
     def series_for(pivot: Optional[pd.DataFrame], dim_label: str) -> Optional[pd.Series]:
 
@@ -7185,10 +7151,8 @@ def render_overview_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
-    primary_label = scenario_primary_label()
-    comparison_label = scenario_comparison_label()
 
-    st.markdown('<div class="pbi-section-title">Efficiency & net present value</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
         st.plotly_chart(
@@ -7205,80 +7169,94 @@ def render_overview_tab(
         )
         if efficiency_export is not None:
             export_tables["Cumulative spend vs benefit"] = efficiency_export
-    npv_horizon_options = [50, 35]
-    selected_npv_horizon = int(
-        st.radio(
-            "NPV horizon (years)",
-            npv_horizon_options,
-            index=npv_horizon_options.index(
-                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-            ),
-            horizontal=True,
-            key="npv_horizon_selection",
-        )
+    st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
+    show_cumulative_cash = st.checkbox(
+        "Show cumulative revenue vs cost",
+        value=st.session_state.get("show_overview_cumulative_cash", False),
+        key="show_overview_cumulative_cash",
     )
-    pv_opt_horizon = (
-        pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
-        if opt_selection and opt_selection.code
-        else None
-    )
-    pv_cmp_horizon = (
-        pv_by_dimension(data, comp_selection, horizon_years=selected_npv_horizon)
-        if comp_selection and comp_selection.code
-        else None
-    )
-    pv_col1, pv_col2 = st.columns(2)
-    with pv_col1:
-        waterfall_fig = benefit_waterfall_chart(
-            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-        )
-        if waterfall_fig is not None:
+    cash_cols = st.columns(2)
+    profile_label = "cumulative profile" if show_cumulative_cash else "cash flow profile"
+    with cash_cols[0]:
+        if opt_series is not None:
+            if show_cumulative_cash:
+                opt_fig = cumulative_revenue_vs_cost_chart(
+                    opt_series,
+                    opt_selection,
+                    title=f"Cumulative revenue vs cumulative cost - {opt_label}",
+                )
+            else:
+                opt_fig = cash_chart(
+                    opt_series,
+                    f"Cash flow - {opt_label}",
+                    color=PRIMARY_COLOR,
+                    data=data,
+                    selection=opt_selection,
+                    comparison_selection=comp_selection,
+                )
             st.plotly_chart(
-                waterfall_fig,
+                opt_fig,
                 use_container_width=True,
-                key="overview_waterfall_chart",
+                key="overview_cash_flow_opt_chart",
             )
-        waterfall_export = prepare_waterfall_export(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_years=selected_npv_horizon,
-            pv_opt=pv_opt_horizon,
-            pv_cmp=pv_cmp_horizon,
-        )
-        if waterfall_export is not None:
-            export_tables["NPV Waterfall"] = waterfall_export
-    with pv_col2:
-        bridge_fig = benefit_bridge_chart(
-            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-        )
-        if bridge_fig is not None:
+            export = (
+                prepare_cumulative_cash_export(opt_series, opt_selection, label_prefix=opt_label)
+                if show_cumulative_cash
+                else prepare_cash_export(opt_series, label_prefix=opt_label)
+            )
+            if export is not None:
+                export_name = (
+                    f"Cumulative revenue vs cost - {opt_label}"
+                    if show_cumulative_cash
+                    else f"Cash flow - {opt_label}"
+                )
+                export_tables[export_name] = export
+        elif opt_selection.code:
+            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
+            st.warning(f"{issue_label} unavailable for the {opt_label} selection.")
+        else:
+            st.info(f"Select {opt_label} to view the {profile_label}.")
+
+    with cash_cols[1]:
+        if cmp_series is not None:
+            if show_cumulative_cash:
+                cmp_fig = cumulative_revenue_vs_cost_chart(
+                    cmp_series,
+                    comp_selection,
+                    title=f"Cumulative revenue vs cumulative cost - {cmp_label}",
+                )
+            else:
+                cmp_fig = cash_chart(
+                    cmp_series,
+                    f"Cash flow - {cmp_label}",
+                    color=PRIMARY_COLOR,
+                    data=data,
+                    selection=comp_selection,
+                    comparison_selection=opt_selection,
+                )
             st.plotly_chart(
-                bridge_fig,
+                cmp_fig,
                 use_container_width=True,
-                key="overview_bridge_chart",
+                key="overview_cash_flow_cmp_chart",
             )
-        bridge_export = prepare_bridge_export(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_years=selected_npv_horizon,
-            pv_opt=pv_opt_horizon,
-            pv_cmp=pv_cmp_horizon,
-        )
-        if bridge_export is not None:
-            export_tables["NPV Bridge"] = bridge_export
-    radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
-    if radar_fig is not None:
-        st.plotly_chart(
-            radar_fig,
-            use_container_width=True,
-            theme=None,
-            key="overview_radar_chart",
-        )
-        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
-        if radar_export is not None:
-            export_tables["Benefit mix radar"] = radar_export
+            export = (
+                prepare_cumulative_cash_export(cmp_series, comp_selection, label_prefix=cmp_label)
+                if show_cumulative_cash
+                else prepare_cash_export(cmp_series, label_prefix=cmp_label)
+            )
+            if export is not None:
+                export_name = (
+                    f"Cumulative revenue vs cost - {cmp_label}"
+                    if show_cumulative_cash
+                    else f"Cash flow - {cmp_label}"
+                )
+                export_tables[export_name] = export
+        elif comp_selection.code:
+            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
+            st.warning(f"{issue_label} unavailable for the {cmp_label} selection.")
+        else:
+            st.info(f"Select {cmp_label} to view the {profile_label}.")
+
     return export_tables
 
 
@@ -7400,43 +7378,119 @@ def render_benefits_tab(
                 )
                 if cmp_dim_export is not None:
                     export_tables[f"Dimension mix - {cmp_label}"] = cmp_dim_export
-    st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
-    horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
-    benefit_cols = st.columns(2)
-    with benefit_cols[0]:
-        benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
-        if benefit_fig is not None:
+    st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
+    npv_horizon_options = [50, 35]
+    selected_npv_horizon = int(
+        st.radio(
+            "NPV horizon (years)",
+            npv_horizon_options,
+            index=npv_horizon_options.index(
+                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            ),
+            horizontal=True,
+            key="npv_horizon_selection",
+        )
+    )
+    pv_opt_horizon = (
+        pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
+        if opt_selection and opt_selection.code
+        else None
+    )
+    pv_cmp_horizon = (
+        pv_by_dimension(data, comp_selection, horizon_years=selected_npv_horizon)
+        if comp_selection and comp_selection.code
+        else None
+    )
+    pv_col1, pv_col2 = st.columns(2)
+    with pv_col1:
+        waterfall_fig = benefit_waterfall_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
+        )
+        if waterfall_fig is not None:
             st.plotly_chart(
-                benefit_fig,
+                waterfall_fig,
                 use_container_width=True,
-                key="benefits_profile_chart",
+                key="benefits_waterfall_chart",
             )
-    with benefit_cols[1]:
-        delta_fig = benefit_delta_chart(
+        waterfall_export = prepare_waterfall_export(
             data,
-            opt_series,
-            cmp_series,
             opt_selection,
             comp_selection,
-            horizon_years=horizon_years,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
         )
-        if delta_fig is not None:
+        if waterfall_export is not None:
+            export_tables["NPV Waterfall"] = waterfall_export
+    with pv_col2:
+        bridge_fig = benefit_bridge_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
+        )
+        if bridge_fig is not None:
             st.plotly_chart(
-                delta_fig,
+                bridge_fig,
                 use_container_width=True,
-                key="benefits_delta_chart",
+                key="benefits_bridge_chart",
             )
-    benefit_export = prepare_benefit_export(
-        opt_series,
-        cmp_series,
-        opt_label=opt_label,
-        cmp_label=cmp_label,
-    )
-    if benefit_export is not None:
-        export_tables["Benefit trend (real)"] = benefit_export
-    benefit_delta_export = prepare_benefit_delta_export(opt_series, cmp_series)
-    if benefit_delta_export is not None:
-        export_tables["Benefit delta (real)"] = benefit_delta_export
+        bridge_export = prepare_bridge_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
+        )
+        if bridge_export is not None:
+            export_tables["NPV Bridge"] = bridge_export
+    radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
+    if radar_fig is not None:
+        st.plotly_chart(
+            radar_fig,
+            use_container_width=True,
+            theme=None,
+            key="benefits_radar_chart",
+        )
+        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
+        if radar_export is not None:
+            export_tables["Benefit mix radar"] = radar_export
+    if SHOW_REAL_BENEFIT_CHARTS:
+        st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
+        horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
+        benefit_cols = st.columns(2)
+        with benefit_cols[0]:
+            benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
+            if benefit_fig is not None:
+                st.plotly_chart(
+                    benefit_fig,
+                    use_container_width=True,
+                    key="benefits_profile_chart",
+                )
+        with benefit_cols[1]:
+            delta_fig = benefit_delta_chart(
+                data,
+                opt_series,
+                cmp_series,
+                opt_selection,
+                comp_selection,
+                horizon_years=horizon_years,
+            )
+            if delta_fig is not None:
+                st.plotly_chart(
+                    delta_fig,
+                    use_container_width=True,
+                    key="benefits_delta_chart",
+                )
+        benefit_export = prepare_benefit_export(
+            opt_series,
+            cmp_series,
+            opt_label=opt_label,
+            cmp_label=cmp_label,
+        )
+        if benefit_export is not None:
+            export_tables["Benefit trend (real)"] = benefit_export
+        benefit_delta_export = prepare_benefit_delta_export(opt_series, cmp_series)
+        if benefit_delta_export is not None:
+            export_tables["Benefit delta (real)"] = benefit_delta_export
     return export_tables
 
 
@@ -7519,109 +7573,6 @@ def render_delivery_tab(
         else:
             st.info(f"Select {cmp_label} to view the capacity profile.")
     return export_tables
-
-
-
-def render_cash_flow_tab(
-    data: DashboardData,
-    opt_selection,
-    comp_selection,
-    opt_series,
-    cmp_series,
-    *,
-    opt_label: str,
-    cmp_label: str,
-) -> Dict[str, pd.DataFrame]:
-    export_tables: Dict[str, pd.DataFrame] = {}
-
-    st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
-
-    # ---- Row 1: Original cash flow charts (unchanged) ----
-    cash_cols = st.columns(2)
-    with cash_cols[0]:
-        if opt_series is not None:
-            st.plotly_chart(
-                cash_chart(
-                    opt_series,
-                    f"Cash flow - {opt_label}",
-                    color=PRIMARY_COLOR,
-                    data=data,
-                    selection=opt_selection,
-                    comparison_selection=comp_selection,
-                ),
-                use_container_width=True,
-                key="cash_flow_opt_chart",
-            )
-            cash_export = prepare_cash_export(opt_series, label_prefix=opt_label)
-            if cash_export is not None:
-                export_tables[f"Cash flow - {opt_label}"] = cash_export
-        elif opt_selection.code:
-            st.warning(f"Cash flow data unavailable for the {opt_label} selection.")
-        else:
-            st.info(f"Select {opt_label} to view the cash flow profile.")
-
-    with cash_cols[1]:
-        if cmp_series is not None:
-            st.plotly_chart(
-                cash_chart(
-                    cmp_series,
-                    f"Cash flow - {cmp_label}",
-                    color=PRIMARY_COLOR,
-                    data=data,
-                    selection=comp_selection,
-                    comparison_selection=opt_selection,
-                ),
-                use_container_width=True,
-                key="cash_flow_cmp_chart",
-            )
-            cash_export = prepare_cash_export(cmp_series, label_prefix=cmp_label)
-            if cash_export is not None:
-                export_tables[f"Cash flow - {cmp_label}"] = cash_export
-        elif comp_selection.code:
-            st.warning(f"Cash flow data unavailable for the {cmp_label} selection.")
-        else:
-            st.info(f"Select {cmp_label} to view the cash flow profile.")
-
-    # ---- Row 2: NEW charts - cumulative revenue vs cumulative cost ----
-    st.markdown('<div class="pbi-section-title">Cumulative revenue vs cumulative cost</div>', unsafe_allow_html=True)
-    cum_cols = st.columns(2)
-
-    with cum_cols[0]:
-        if opt_series is not None:
-            st.plotly_chart(
-                cumulative_revenue_vs_cost_chart(
-                    opt_series,
-                    opt_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {opt_label}",
-                ),
-                use_container_width=True,
-                key="cash_cumulative_opt_chart",
-            )
-        elif opt_selection.code:
-            st.warning(f"Cumulative series unavailable for the {opt_label} selection.")
-        else:
-            st.info(f"Select {opt_label} to view the cumulative profile.")
-
-    with cum_cols[1]:
-        if cmp_series is not None:
-            st.plotly_chart(
-                cumulative_revenue_vs_cost_chart(
-                    cmp_series,
-                    comp_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {cmp_label}",
-                ),
-                use_container_width=True,
-                key="cash_cumulative_cmp_chart",
-            )
-        elif comp_selection.code:
-            st.warning(f"Cumulative series unavailable for the {cmp_label} selection.")
-        else:
-            st.info(f"Select {cmp_label} to view the cumulative profile.")
-
-    return export_tables
-
-
-
 
 def render_gantt_tab(
     data: DashboardData,
@@ -8332,18 +8283,6 @@ def main() -> None:
         elif active_tab == "Delivery":
             download_tables.update(
                 render_delivery_tab(
-                    data,
-                    opt_selection,
-                    comp_selection,
-                    opt_series,
-                    cmp_series,
-                    opt_label=opt_label,
-                    cmp_label=cmp_label,
-                )
-            )
-        elif active_tab == "Cash Flow":
-            download_tables.update(
-                render_cash_flow_tab(
                     data,
                     opt_selection,
                     comp_selection,
