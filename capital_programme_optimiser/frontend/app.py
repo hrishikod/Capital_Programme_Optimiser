@@ -4179,6 +4179,7 @@ def benefit_waterfall_chart(
     waterfall_labels = delta_labels + [net_delta_label]
     measures = ["relative"] * len(delta_labels) + ["total"]
     values = delta_values + [net_delta_value]
+    customdata = [[float(val)] for val in values]
 
     fig.add_trace(
 
@@ -4202,7 +4203,8 @@ def benefit_waterfall_chart(
 
             connector={"line": {"color": "#BBBBBB", "width": 0.5}},
 
-            hovertemplate="<b>%{x}</b><br>%{y:,.1f}m<extra></extra>",
+            customdata=customdata,
+            hovertemplate="<b>%{x}</b><br>%{customdata[0]:,.1f}m<extra></extra>",
         )
 
     )
