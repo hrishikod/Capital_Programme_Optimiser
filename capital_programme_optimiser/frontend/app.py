@@ -1631,6 +1631,8 @@ class ScenarioSelection:
 
     metadata: Optional[Dict[str, object]] = None
 
+    display_label: Optional[str] = None
+
 
 def resolve_selection_label(
     selection: Optional["ScenarioSelection"],
@@ -1641,6 +1643,8 @@ def resolve_selection_label(
     """Return a human-friendly label for the supplied selection."""
     candidates: List[Optional[str]] = []
     if selection is not None:
+        display_override = getattr(selection, "display_label", None)
+        candidates.append(display_override)
         candidates.extend(
             [
                 selection.profile,
@@ -4205,7 +4209,7 @@ def benefit_waterfall_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} delta by dimension ({primary_label} minus {comparison_label})",
+        title=f"{context_label} delta by dimension ({primary_label} - {comparison_label})",
 
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
@@ -8188,16 +8192,38 @@ def main() -> None:
 
     opt_series = build_timeseries(data, opt_selection)
     cmp_series = build_timeseries(data, comp_selection)
-    opt_label = resolve_selection_label(
+    raw_opt_label = resolve_selection_label(
         opt_selection,
         fallback=SCENARIO_PRIMARY_NAME,
         profile_choice=selected_opt_profile,
     )
-    cmp_label = resolve_selection_label(
+    raw_cmp_label = resolve_selection_label(
         comp_selection,
         fallback=SCENARIO_COMPARISON_NAME,
         profile_choice=selected_cmp_profile,
     )
+
+    def _normalize_label(value: Optional[str]) -> str:
+        return (value or "").strip().lower()
+
+    normalized_opt = _normalize_label(raw_opt_label)
+    normalized_cmp = _normalize_label(raw_cmp_label)
+    duplicate_labels = bool(normalized_opt) and normalized_opt == normalized_cmp
+    if duplicate_labels:
+        base_opt_label = (raw_opt_label or "").strip() or SCENARIO_PRIMARY_NAME
+        base_cmp_label = (raw_cmp_label or "").strip() or SCENARIO_COMPARISON_NAME
+        numbered_opt_label = f"{base_opt_label} (scenario 1)"
+        numbered_cmp_label = f"{base_cmp_label} (scenario 2)"
+        opt_selection.display_label = numbered_opt_label
+        comp_selection.display_label = numbered_cmp_label
+        opt_label = numbered_opt_label
+        cmp_label = numbered_cmp_label
+    else:
+        opt_selection.display_label = None
+        comp_selection.display_label = None
+        opt_label = raw_opt_label
+        cmp_label = raw_cmp_label
+
     set_scenario_display_labels(opt_label, cmp_label)
 
     nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
