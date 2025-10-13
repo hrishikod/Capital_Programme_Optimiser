@@ -4142,41 +4142,39 @@ def benefit_waterfall_chart(
 
     dims = set(pv_opt.keys()) | set(pv_cmp.keys())
 
-    ordered_dims = [dim for dim in data.dims if dim in dims]
+    ordered_non_total = [
+        dim for dim in data.dims if dim in dims and str(dim).strip().lower() != "total"
+    ]
+    remaining_non_total = [
+        dim
+        for dim in dims
+        if dim not in ordered_non_total and str(dim).strip().lower() != "total"
+    ]
 
-    remaining_dims = [dim for dim in dims if dim not in ordered_dims]
+    dim_sequence = ordered_non_total + sorted(remaining_non_total, key=str)
 
-    non_total_dims = [dim for dim in ordered_dims if str(dim).lower() != "total"] + [dim for dim in remaining_dims if str(dim).lower() != "total"]
-
-    waterfall_labels = non_total_dims[:]
-
-    measures = ["relative"] * len(waterfall_labels)
-
-    values = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in waterfall_labels]
-
-    total_dim = next((dim for dim in ordered_dims if str(dim).lower() == "total"), None)
+    total_dim = next(
+        (dim for dim in data.dims if dim in dims and str(dim).strip().lower() == "total"),
+        None,
+    )
 
     if total_dim is None:
 
         total_dim = next((dim for dim in dims if str(dim).lower() == "total"), None)
 
-    if total_dim:
+    delta_labels = [f"{dim} delta NPV" for dim in dim_sequence]
+    delta_values = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-        total_label = "Total delta" if str(total_dim).strip() == "Total" else f"{total_dim} total"
+    net_delta_label = "Net delta NPV"
+    net_delta_value = (
+        pv_opt.get(total_dim, sum(pv_opt.values())) - pv_cmp.get(total_dim, sum(pv_cmp.values()))
+        if total_dim
+        else sum(delta_values)
+    )
 
-        total_delta = pv_opt.get(total_dim, 0.0) - pv_cmp.get(total_dim, 0.0)
-
-    else:
-
-        total_label = "Total delta"
-
-        total_delta = sum(values)
-
-    waterfall_labels.append(total_label)
-
-    measures.append("total")
-
-    values.append(total_delta)
+    waterfall_labels = delta_labels + [net_delta_label]
+    measures = ["relative"] * len(delta_labels) + ["total"]
+    values = delta_values + [net_delta_value]
 
     fig.add_trace(
 
@@ -4298,9 +4296,19 @@ def benefit_bridge_chart(
 
     bridge_diffs = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    labels = [f"{primary_label} NPV total"] + [f"{dim} delta NPV" for dim in dim_sequence] + [f"{comparison_label} NPV total"]
+    bridge_labels = [f"{dim} delta NPV" for dim in dim_sequence]
+    primary_internal = f"{primary_label} NPV total"
+    comparison_internal = f"{comparison_label} NPV total"
+    tickvals: Optional[List[str]] = None
+    ticktext: Optional[List[str]] = None
+    if primary_label == comparison_label:
+        primary_internal = f"{primary_label} NPV total (1)"
+        comparison_internal = f"{comparison_label} NPV total (2)"
+        tickvals = [primary_internal, *bridge_labels, comparison_internal]
+        ticktext = [f"{primary_label} NPV total", *bridge_labels, f"{comparison_label} NPV total"]
+    labels = [primary_internal] + bridge_labels + [comparison_internal]
 
-    measures = ["relative"] + ["relative"] * len(dim_sequence) + ["total"]
+    measures = ["absolute"] + ["relative"] * len(dim_sequence) + ["total"]
 
     values = [total_opt] + [-delta for delta in bridge_diffs] + [total_cmp]
 
@@ -4347,15 +4355,17 @@ def benefit_bridge_chart(
         template=plotly_template(),
 
         waterfallgap=0.3,
-
         height=WATERFALL_CHART_HEIGHT,
-
         yaxis=dict(
             title=context_label,
             showticklabels=False,
             ticks="",
         ),
-
+        xaxis=dict(
+            categoryorder="array",
+            categoryarray=tickvals or labels,
+            **({"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext} if tickvals else {}),
+        ),
     )
 
     return fig
