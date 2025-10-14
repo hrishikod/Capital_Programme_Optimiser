@@ -10,6 +10,7 @@ import json
 import copy
 import pickle
 import textwrap
+import html
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from datetime import datetime
@@ -66,9 +67,9 @@ ROOT_FILE = Path(__file__).resolve().parents[2]
 
 ROOT_PARENT = ROOT_FILE.parent
 
-INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles.pkl"
+INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles_new.pkl"
 PCT_BAR_PATH = ROOT_FILE / "scenario_sets" / "Pct_bar.pkl"
-INTERPOLATED_PROFILE_ANIMATION_SECONDS = 8.0
+INTERPOLATED_PROFILE_ANIMATION_SECONDS = 16.0
 
 for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
 
@@ -1701,6 +1702,8 @@ def load_interpolated_profile_payload(
     metadata = payload.get("metadata") or {}
     if not isinstance(metadata, dict):
         metadata = {}
+    else:
+        metadata = dict(metadata)
 
     if not isinstance(profiles_df, pd.DataFrame):
         metadata.setdefault("load_error", "Interpolated profile payload did not contain a DataFrame.")
@@ -1724,8 +1727,22 @@ def load_interpolated_profile_payload(
 
     label_map = metadata.get("profile_labels")
     if isinstance(label_map, dict):
-        metadata = dict(metadata)
         metadata["profile_labels"] = {int(k): v for k, v in label_map.items()}
+    npv_map = metadata.get("npv_by_profile")
+    if isinstance(npv_map, dict):
+        cleaned_npv: Dict[int, float] = {}
+        for key, value in npv_map.items():
+            try:
+                key_int = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                value_float = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value_float):
+                cleaned_npv[key_int] = value_float
+        metadata["npv_by_profile"] = cleaned_npv
     metadata.setdefault("n_profiles", len(profile_frames))
     return profile_frames, metadata
 
@@ -1808,6 +1825,9 @@ def load_interpolated_profile_assets(
         label_map = {}
 
     progress_values = load_interpolated_progress()
+    npv_by_profile = metadata.get("npv_by_profile")
+    if not isinstance(npv_by_profile, dict):
+        npv_by_profile = {}
 
     assets: Dict[int, Dict[str, Any]] = {}
     for profile_idx, profile_df in profile_frames.items():
@@ -1824,7 +1844,7 @@ def load_interpolated_profile_assets(
 
         figure = cash_chart(
             chart_frame,
-            title=f"Cash flow - {label}",
+            title="",
             color=PRIMARY_COLOR,
         )
         figure.update_layout(
@@ -1833,6 +1853,7 @@ def load_interpolated_profile_assets(
             transition={"duration": 50, "easing": "cubic-in-out"},
             uirevision="interpolated_profiles",
         )
+        figure.update_layout(title=None)
         figure_json = figure.to_plotly_json()
         status_text = label
         if "–" in status_text:
@@ -1851,6 +1872,21 @@ def load_interpolated_profile_assets(
                     progress_value = float(progress_values[pos])
                 except (TypeError, ValueError):
                     progress_value = None
+        npv_value = None
+        if "NPV (m)" in profile_df.columns:
+            npv_series = pd.to_numeric(profile_df["NPV (m)"], errors="coerce").dropna()
+            if not npv_series.empty:
+                npv_value = float(npv_series.iloc[0])
+        if npv_value is None and npv_by_profile:
+            candidate = npv_by_profile.get(profile_idx)
+            if candidate is not None:
+                try:
+                    npv_value = float(candidate)
+                except (TypeError, ValueError):
+                    npv_value = None
+        if npv_value is not None and not math.isfinite(npv_value):
+            npv_value = None
+
         assets[profile_idx] = {
             "label": label,
             "status_text": status_text.strip(),
@@ -1861,9 +1897,10 @@ def load_interpolated_profile_assets(
             "title": (
                 figure_json.get("layout", {})
                 .get("title", {})
-                .get("text", f"Cash flow - {label}")
+                .get("text", "")
             ),
             "export": export_frame,
+            "npv": npv_value,
         }
 
     enriched_metadata = dict(metadata)
@@ -1879,8 +1916,8 @@ def format_currency(value: float) -> str:
 def format_large_amount(value: float) -> str:
     abs_value = abs(value)
     if abs_value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.1f}b"
-    return f"{value / 1_000_000:.1f}m"
+        return f"{value / 1_000_000_000:.1f}B"
+    return f"{value / 1_000_000:.1f}M"
 
 def compute_cash_axis_ticks(
     values: Iterable[float],
@@ -6031,6 +6068,15 @@ def _format_currency_compact(value: float) -> str:
     return f"${value:,.0f}"
 
 
+def _safe_float(value: Any) -> float | None:
+    """Return a finite float or None if coercion fails."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
 def _kpi_card_html(
     title: str,
     value: str | None,
@@ -6085,7 +6131,7 @@ def render_programme_kpis(
     if delta_pv is None:
         pv_chip_text, pv_chip_state = None, "neutral"
     else:
-        sign = "â–²" if delta_pv >= 0 else "â–¼"
+        sign = "&#9650;" if delta_pv >= 0 else "&#9660;"
         pv_chip_state = "up" if delta_pv >= 0 else "down"
         pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {comparison_label}"
 
@@ -7526,6 +7572,7 @@ def render_overview_tab(
     *,
     opt_label: str,
     cmp_label: str,
+    npv_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
 
@@ -7538,7 +7585,7 @@ def render_overview_tab(
         else:
             st.info(
                 "Interpolated profile animation is unavailable. "
-                f"Place `interpolated_profiles.pkl` in `{INTERPOLATED_PROFILES_PATH}` to enable it."
+                f"Place `{INTERPOLATED_PROFILES_PATH.name}` in `{INTERPOLATED_PROFILES_PATH.parent}` to enable it."
             )
         return export_tables
 
@@ -7550,6 +7597,36 @@ def render_overview_tab(
     total_profiles = len(playback_order)
     first_asset = profile_assets[playback_order[0]]
     final_asset = profile_assets[playback_order[-1]]
+    baseline_npv_value = _safe_float(first_asset.get("npv"))
+
+    final_chart_frame = final_asset["chart_frame"]
+    spend_actual = (final_chart_frame["Spend"].astype(float).to_numpy() * 1_000_000.0) if not final_chart_frame.empty else np.array([0.0])
+    closing_actual = (final_chart_frame["ClosingNet"].astype(float).to_numpy() * 1_000_000.0) if not final_chart_frame.empty else np.array([0.0])
+    envelope_actual = (final_chart_frame["Envelope"].astype(float).to_numpy() * 1_000_000.0) if not final_chart_frame.empty else np.array([0.0])
+    combined_values = np.concatenate([spend_actual, closing_actual, envelope_actual]) if spend_actual.size or closing_actual.size or envelope_actual.size else np.array([0.0])
+    finite_values = combined_values[np.isfinite(combined_values)]
+    if finite_values.size == 0:
+        finite_values = np.array([0.0])
+    fixed_tick_vals, fixed_tick_text, _ = compute_cash_axis_ticks(finite_values)
+    if not fixed_tick_vals:
+        fixed_tick_vals = [0.0]
+        fixed_tick_text = ["0"]
+    fixed_y_min = float(min(fixed_tick_vals))
+    fixed_y_max = float(max(fixed_tick_vals))
+    fixed_y_axis_payload = {
+        "values": fixed_tick_vals,
+        "labels": fixed_tick_text,
+        "range": [fixed_y_min, fixed_y_max],
+    }
+    final_years = final_chart_frame["Year"].dropna().astype(int).tolist()
+    if final_years:
+        fixed_x_min = int(min(final_years))
+        fixed_x_max = int(max(final_years))
+    else:
+        fixed_x_min = 0
+        fixed_x_max = 1
+    fixed_x_axis_payload = [fixed_x_min, fixed_x_max]
+
     export_tables[f"Cash flow - {final_asset['label']}"] = final_asset["export"].copy()
 
     st.markdown(
@@ -7558,6 +7635,43 @@ def render_overview_tab(
     )
 
     component_id = f"interpolated_profiles_{uuid4().hex}"
+    metrics_grid_token = uuid4().hex[:8]
+    metrics_anim_name = f"kpiSweep_{metrics_grid_token}"
+
+    progress_card_html = _kpi_card_html(
+        "Optimiser progress",
+        None,
+        body_html=(
+            f'<div class="optimiser-progress">'
+            f'  <div class="optimiser-progress__track">'
+            f'    <div id="{component_id}-progress-fill" class="optimiser-progress__fill"></div>'
+            f'  </div>'
+            f'  <div id="{component_id}-progress-label" class="optimiser-progress__label">0%</div>'
+            f'</div>'
+        ),
+    )
+    progress_card_html = progress_card_html.replace(
+        '<div class="kpi-card">',
+        '<div class="kpi-card kpi-sweep-on profile-anim__metric profile-anim__metric--progress">',
+        1,
+    )
+
+    npv_card_html = _kpi_card_html(
+        f"Optimiser NPV ({npv_label})",
+        value=f'<span id="{component_id}-npv-value">--</span>',
+        delta_text="Dartboard delivery plan",
+        delta_state="neutral",
+    )
+    npv_card_html = npv_card_html.replace(
+        '<div class="kpi-card">',
+        '<div class="kpi-card kpi-sweep-on profile-anim__metric profile-anim__metric--npv">',
+        1,
+    )
+    npv_card_html = npv_card_html.replace(
+        '<div class="kpi-delta neutral">',
+        f'<div id="{component_id}-npv-delta" class="kpi-delta neutral">',
+        1,
+    )
     frame_duration_ms = int(
         INTERPOLATED_PROFILE_ANIMATION_SECONDS * 1000.0 / max(total_profiles - 1, 1)
     )
@@ -7567,77 +7681,178 @@ def render_overview_tab(
     for idx in playback_order:
         asset = profile_assets[idx]
         chart_frame = asset["chart_frame"]
+        npv_value = _safe_float(asset.get("npv"))
         data_sequence.append(
             {
                 "label": asset["label"],
-                "title": asset.get("title") or f"Cash flow - {asset['label']}",
+                "title": "",
                 "years": [int(year) if pd.notna(year) else None for year in chart_frame["Year"].tolist()],
                 "spend": [float(val) for val in (chart_frame["Spend"] * 1_000_000.0).tolist()],
                 "closing": [float(val) for val in (chart_frame["ClosingNet"] * 1_000_000.0).tolist()],
                 "envelope": [float(val) for val in (chart_frame["Envelope"] * 1_000_000.0).tolist()],
-                "statusText": asset.get("status_text", ""),
                 "progress": asset.get("progress", None),
+                "npv": npv_value,
             }
         )
 
     data_sequence_json = json.dumps(data_sequence)
+    baseline_npv_json = json.dumps(baseline_npv_value)
+    npv_label_html = html.escape(npv_label)
+    fixed_y_axis_json = json.dumps(fixed_y_axis_payload)
+    fixed_x_axis_json = json.dumps(fixed_x_axis_payload)
 
     component_html = f"""
     <style>
       #{component_id} {{
+        --pbi-blue: {POWERBI_BLUE};
+        --pbi-green: {POWERBI_GREEN};
+        --kpi-border: rgba(25,69,107,.18);
+        --kpi-shadow: 0 10px 24px rgba(25,69,107,.08);
+        --kpi-text-1: #0F172A;
+        --kpi-text-2: #475569;
+        --kpi-top-grey: rgba(148,163,184,.45);
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        padding-bottom: 120px;
+      }}
+      #{component_id} .kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 14px;
+        padding-bottom: 18px;
+      }}
+      #{component_id} .kpi-card {{
+        position: relative;
+        background: #fff;
+        border: 1px solid var(--kpi-border);
+        border-radius: 18px;
+        box-shadow: var(--kpi-shadow);
+        padding: 16px 18px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }}
+      #{component_id} .kpi-card::before {{
+        content:"";
+        position:absolute; left:14px; right:14px; top:0;
+        height:6px; border-radius:999px;
+        background: var(--kpi-top-grey);
+        transform: translateY(-3px);
+        z-index: 1;
+      }}
+      #{component_id} .kpi-card::after {{
+        content:"";
+        position:absolute; left:14px; right:14px; top:0;
+        height:6px; border-radius:999px;
+        background: linear-gradient(90deg, var(--pbi-green), var(--kpi-top-grey));
+        transform: translateY(-3px) scaleX(0);
+        transform-origin: right center;
+        z-index: 2;
+        animation: none;
+      }}
+      @keyframes {metrics_anim_name} {{
+        0% {{ transform: translateY(-3px) scaleX(0); }}
+        100% {{ transform: translateY(-3px) scaleX(1); }}
+      }}
+      #{component_id} [data-kpi-grid-id="{metrics_grid_token}"] .kpi-card::after {{
+        animation: {metrics_anim_name} 0.55s ease-out forwards;
+        animation-delay: var(--kpi-sweep-delay, 0s);
+      }}
+      #{component_id} .profile-anim__chart-card {{
         border-radius: 18px;
         background: var(--cp-surface-soft, rgba(255,255,255,0.92));
         border: 1px solid var(--cp-outline, rgba(25,69,107,0.18));
         padding: 16px 18px 12px;
         box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+        margin-bottom: 120px;
       }}
-      #{component_id} .profile-anim__header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
+      #{component_id} .profile-anim__metrics {{
+        display: grid;
         gap: 16px;
-        margin-bottom: 12px;
-        flex-wrap: wrap;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       }}
-      #{component_id} .profile-anim__status {{
+      #{component_id} .profile-anim__metric {{
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        flex: 1 1 220px;
-        min-width: 220px;
-      }}
-      #{component_id} .profile-anim__status-text {{
-        font-weight: 600;
-        color: var(--cp-primary, #19456b);
-        font-size: 1rem;
-        letter-spacing: 0.01em;
-      }}
-      #{component_id} .profile-anim__progress {{
-        display: flex;
-        align-items: center;
+        justify-content: space-between;
         gap: 12px;
       }}
-      #{component_id} .profile-anim__progress-track {{
+      #{component_id} .kpi-title {{
+        color: var(--pbi-blue);
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-weight: 600;
+        font-size: .95rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin: 0 0 .25rem 0;
+      }}
+      #{component_id} .kpi-value {{
+        color: var(--kpi-text-1);
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-weight: 700;
+        font-size: 1.9rem;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+      }}
+      #{component_id} .kpi-delta {{
+        display:inline-flex; align-items:center; gap:6px;
+        margin-top:.55rem;
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-weight:600; font-size:.85rem;
+        padding:3px 10px; border-radius:999px;
+        border:1px solid transparent;
+      }}
+      #{component_id} .kpi-delta.up {{
+        color: var(--pbi-green);
+        background: rgba(175,189,34,.12);
+        border-color: rgba(175,189,34,.35);
+      }}
+      #{component_id} .kpi-delta.down {{
+        color: #CA4142;
+        background: rgba(202,65,66,.10);
+        border-color: rgba(202,65,66,.30);
+      }}
+      #{component_id} .kpi-delta.neutral {{
+        color: var(--pbi-blue);
+        background: rgba(25,69,107,.10);
+        border-color: rgba(25,69,107,.28);
+      }}
+      #{component_id} .optimiser-progress {{
+        margin-top: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }}
+      #{component_id} .optimiser-progress__track {{
         position: relative;
         flex: 1;
-        height: 8px;
+        height: 16px;
         border-radius: 999px;
-        background: linear-gradient(90deg, rgba(25,69,107,0.16), rgba(25,69,107,0.04));
+        border: 2px solid rgba(92, 92, 92, 0.85);
+        background: #f3f3f3;
         overflow: hidden;
       }}
-      #{component_id} .profile-anim__progress-fill {{
+      #{component_id} .optimiser-progress__fill {{
         position: absolute;
         inset: 0;
         width: 0%;
-        background: linear-gradient(90deg, var(--cp-primary, #19456b), var(--cp-accent, #afbd22));
-        box-shadow: 0 4px 18px rgba(25, 69, 107, 0.22);
-        transition: width 0.25s ease-out;
+        background: rgba(160, 160, 160, 0.95);
+        border-radius: inherit;
+        transition: width 0.28s ease-out;
       }}
-      #{component_id} .profile-anim__progress-label {{
-        font-weight: 600;
-        color: var(--cp-primary, #19456b);
-        min-width: 52px;
+      #{component_id} .optimiser-progress__label {{
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-weight: 700;
+        color: rgba(72, 72, 72, 0.95);
+        min-width: 60px;
         text-align: right;
+      }}
+      #{component_id} .profile-anim__controls {{
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 10px;
       }}
       #{component_id} .profile-anim__button {{
         background: var(--cp-primary, #19456b);
@@ -7648,6 +7863,7 @@ def render_overview_tab(
         font-weight: 600;
         cursor: pointer;
         transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+        margin-left: auto;
       }}
       #{component_id} .profile-anim__button:hover:not([disabled]) {{
         transform: translateY(-1px);
@@ -7659,23 +7875,20 @@ def render_overview_tab(
         box-shadow: none;
       }}
       #{component_id} .profile-anim__chart {{
-        min-height: 360px;
+        min-height: 540px;
       }}
     </style>
     <div id="{component_id}" class="profile-anim">
-      <div class="profile-anim__header">
-        <div id="{component_id}-status" class="profile-anim__status">
-          <div id="{component_id}-status-text" class="profile-anim__status-text"></div>
-          <div class="profile-anim__progress">
-            <div class="profile-anim__progress-track">
-              <div id="{component_id}-progress-fill" class="profile-anim__progress-fill"></div>
-            </div>
-            <div id="{component_id}-progress-label" class="profile-anim__progress-label">0%</div>
-          </div>
-        </div>
-        <button id="{component_id}-button" class="profile-anim__button" type="button">Run Optimiser</button>
+      <div class="profile-anim__metrics kpi-grid" data-kpi-grid-id="{metrics_grid_token}">
+        {progress_card_html}
+        {npv_card_html}
       </div>
-      <div id="{component_id}-chart" class="profile-anim__chart"></div>
+      <div class="profile-anim__chart-card">
+        <div class="profile-anim__controls">
+          <button id="{component_id}-button" class="profile-anim__button" type="button">Run Optimiser</button>
+        </div>
+        <div id="{component_id}-chart" class="profile-anim__chart"></div>
+      </div>
     </div>
     <script>
       (function() {{
@@ -7684,40 +7897,307 @@ def render_overview_tab(
         const totalFrames = sequence.length;
         const frameDuration = {frame_duration_ms};
         const transitionDuration = {transition_ms};
+        const FIXED_Y_AXIS = {fixed_y_axis_json};
+        const FIXED_X_RANGE = {fixed_x_axis_json};
         const component = document.getElementById("{component_id}");
         if (!component) {{
           return;
         }}
         const chart = document.getElementById("{component_id}-chart");
-        const statusTextEl = document.getElementById("{component_id}-status-text");
         const progressFillEl = document.getElementById("{component_id}-progress-fill");
         const progressLabelEl = document.getElementById("{component_id}-progress-label");
         const button = document.getElementById("{component_id}-button");
+        const npvValueEl = document.getElementById("{component_id}-npv-value");
+        const npvDeltaEl = document.getElementById("{component_id}-npv-delta");
+        const baselineNpv = {baseline_npv_json};
 
         const COLORS = {{
           primary: "{PRIMARY_COLOR}",
           closing: "{CLOSING_NET_COLOR}",
           envelope: "{ENVELOPE_COLOR}",
         }};
+        const numberFormatter0 = new Intl.NumberFormat(undefined, {{maximumFractionDigits: 0}});
+        const TRACE_NAME_TO_KEY = {{
+          "Annual spend": "spend",
+          Envelope: "envelope",
+          "Closing net": "closing",
+        }};
+        const REVEAL_SEQUENCE = ["spend", "envelope", "closing"];
+        const revealState = {{
+          spend: false,
+          envelope: false,
+          closing: false,
+        }};
+        const appliedVisibility = {{
+          spend: false,
+          envelope: false,
+          closing: false,
+        }};
+        let revealIndex = 0;
+        let revealClickHandlerAttached = false;
+        let revealAnimating = false;
+        let currentFrameIndex = 0;
+        const REVEAL_ANIMATION_DURATION = 400;
 
         function formatLargeAmount(value) {{
           const absValue = Math.abs(value);
           if (absValue >= 1_000_000_000) {{
-            return (value / 1_000_000_000).toFixed(1) + "b";
+            return (value / 1_000_000_000).toFixed(1) + "B";
           }}
           if (absValue >= 1_000_000) {{
-            return (value / 1_000_000).toFixed(1) + "m";
+            return (value / 1_000_000).toFixed(1) + "M";
           }}
           if (absValue >= 1_000) {{
-            return (value / 1_000).toFixed(1) + "k";
+            return (value / 1_000).toFixed(1) + "K";
           }}
           return value.toFixed(0);
+        }}
+
+        function computeAxisTicks() {{
+          return FIXED_Y_AXIS;
+        }}
+
+        function easeOutCubic(t) {{
+          const clamped = Math.min(Math.max(t, 0), 1);
+          return 1 - Math.pow(1 - clamped, 3);
+        }}
+
+        function getSeriesFromEntry(key, entry) {{
+          if (!entry) {{
+            return [];
+          }}
+          if (key === "spend") {{
+            return Array.isArray(entry.spend) ? entry.spend.slice() : [];
+          }}
+          if (key === "envelope") {{
+            return Array.isArray(entry.envelope) ? entry.envelope.slice() : [];
+          }}
+          if (key === "closing") {{
+            return Array.isArray(entry.closing) ? entry.closing.slice() : [];
+          }}
+          return [];
+        }}
+
+        function getCurrentEntry() {{
+          return sequence[currentFrameIndex] || sequence[0] || null;
+        }}
+
+        async function animateTrace(key, traceIndex, entry) {{
+          if (!chart || !chart.data || !chart.data[traceIndex]) {{
+            await Plotly.restyle(chart, {{visible: true}}, [traceIndex]);
+            return;
+          }}
+          const target = getSeriesFromEntry(key, entry);
+          if (!Array.isArray(target) || !target.length) {{
+            await Plotly.restyle(chart, {{visible: true}}, [traceIndex]);
+            return;
+          }}
+          const duration = REVEAL_ANIMATION_DURATION;
+          if (key === "spend") {{
+            const baseline = target.map(() => 0);
+            await Plotly.restyle(chart, {{visible: true, y: [baseline]}}, [traceIndex]);
+            await new Promise((resolve) => {{
+              const start = performance.now();
+              function step(now) {{
+                const elapsed = now - start;
+                const progress = easeOutCubic(elapsed / duration);
+                const values = target.map((val) => val * progress);
+                chart.data[traceIndex].y = elapsed >= duration ? target.slice() : values;
+                Plotly.redraw(chart);
+                if (elapsed >= duration) {{
+                  resolve();
+                }} else {{
+                  requestAnimationFrame(step);
+                }}
+              }}
+              requestAnimationFrame(step);
+            }});
+            return;
+          }}
+          const initial = target.map(() => null);
+          await Plotly.restyle(chart, {{visible: true, y: [initial]}}, [traceIndex]);
+          await new Promise((resolve) => {{
+            const start = performance.now();
+            const lastIndex = target.length - 1;
+            function step(now) {{
+              const elapsed = now - start;
+              if (elapsed >= duration) {{
+                chart.data[traceIndex].y = target.slice();
+                Plotly.redraw(chart);
+                resolve();
+                return;
+              }}
+              const eased = easeOutCubic(elapsed / duration);
+              if (target.length === 1) {{
+                chart.data[traceIndex].y = [target[0] * eased];
+                Plotly.redraw(chart);
+                requestAnimationFrame(step);
+                return;
+              }}
+              const limitPos = eased * lastIndex;
+              const baseIndex = Math.floor(limitPos);
+              const remainder = limitPos - baseIndex;
+              const values = new Array(target.length).fill(null);
+              for (let idx = 0; idx <= baseIndex && idx < target.length; idx += 1) {{
+                values[idx] = target[idx];
+              }}
+              const nextIndex = Math.min(lastIndex, baseIndex + 1);
+              if (nextIndex > baseIndex && nextIndex < target.length) {{
+                const startVal = target[baseIndex];
+                const endVal = target[nextIndex];
+                if (Number.isFinite(startVal) && Number.isFinite(endVal)) {{
+                  values[nextIndex] = startVal + (endVal - startVal) * remainder;
+                }} else {{
+                  values[nextIndex] = endVal;
+                }}
+              }}
+              chart.data[traceIndex].y = values;
+              Plotly.redraw(chart);
+              requestAnimationFrame(step);
+            }}
+            requestAnimationFrame(step);
+          }});
+        }}
+
+        function formatNpvValue(value) {{
+          if (!Number.isFinite(value)) {{
+            return "--";
+          }}
+          return `${{numberFormatter0.format(value)}} m`;
+        }}
+
+        function updateNpvCard(entry) {{
+          if (!npvValueEl && !npvDeltaEl) {{
+            return;
+          }}
+          const npvValue = Number(entry && entry.npv);
+          if (npvValueEl) {{
+            npvValueEl.textContent = formatNpvValue(npvValue);
+          }}
+          if (!npvDeltaEl) {{
+            return;
+          }}
+          const baseline =
+            typeof baselineNpv === "number" && Number.isFinite(baselineNpv)
+              ? baselineNpv
+              : NaN;
+          npvDeltaEl.classList.remove("up", "down", "neutral");
+          if (Number.isFinite(npvValue) && Number.isFinite(baseline)) {{
+            const delta = npvValue - baseline;
+            if (Math.abs(delta) < 1e-6) {{
+            npvDeltaEl.textContent = "Dartboard delivery plan";
+              npvDeltaEl.classList.add("neutral");
+            }} else {{
+              const magnitude = Math.abs(delta);
+              const sign = delta > 0 ? "+" : "-";
+              npvDeltaEl.textContent = `${{sign}}${{numberFormatter0.format(magnitude)}} m vs start`;
+              npvDeltaEl.classList.add(delta > 0 ? "up" : "down");
+            }}
+          }} else if (Number.isFinite(npvValue)) {{
+            npvDeltaEl.textContent = "NPV data available";
+            npvDeltaEl.classList.add("neutral");
+          }} else {{
+            npvDeltaEl.textContent = "No NPV data";
+            npvDeltaEl.classList.add("neutral");
+          }}
+        }}
+
+        function findTraceIndex(key) {{
+          if (!chart || !key) {{
+            return null;
+          }}
+          const traces = chart.data || [];
+          for (let i = 0; i < traces.length; i += 1) {{
+            const trace = traces[i];
+            const traceKey =
+              (trace && trace.meta && trace.meta.revealKey) ||
+              TRACE_NAME_TO_KEY[trace && trace.name ? trace.name : ""];
+            if (traceKey === key) {{
+              return i;
+            }}
+          }}
+          return null;
+        }}
+
+        function applyRevealState(options = {{}}) {{
+          if (!chart) {{
+            return Promise.resolve();
+          }}
+          const {{ animateNew = false, entry = getCurrentEntry() }} = options;
+          const tasks = [];
+          REVEAL_SEQUENCE.forEach((key) => {{
+            const traceIndex = findTraceIndex(key);
+            if (traceIndex === null || traceIndex === undefined) {{
+              return;
+            }}
+            if (revealState[key]) {{
+              if (!appliedVisibility[key]) {{
+                appliedVisibility[key] = true;
+                if (animateNew) {{
+                  tasks.push(animateTrace(key, traceIndex, entry));
+                }} else {{
+                  tasks.push(Plotly.restyle(chart, {{visible: true}}, [traceIndex]));
+                }}
+              }} else {{
+                tasks.push(Plotly.restyle(chart, {{visible: true}}, [traceIndex]));
+              }}
+            }} else {{
+              appliedVisibility[key] = false;
+              tasks.push(Plotly.restyle(chart, {{visible: "legendonly"}}, [traceIndex]));
+            }}
+          }});
+          return Promise.all(tasks);
+        }}
+
+        async function handleRevealClick(event) {{
+          if (!(event instanceof MouseEvent) || event.button !== 0) {{
+            return;
+          }}
+          if (revealAnimating) {{
+            return;
+          }}
+          if (revealIndex >= REVEAL_SEQUENCE.length) {{
+            if (revealClickHandlerAttached) {{
+              chart.removeEventListener("click", handleRevealClick);
+              revealClickHandlerAttached = false;
+            }}
+            return;
+          }}
+          const key = REVEAL_SEQUENCE[revealIndex];
+          revealState[key] = true;
+          revealIndex += 1;
+          revealAnimating = true;
+          try {{
+            await applyRevealState({{ animateNew: true, entry: getCurrentEntry() }});
+          }} finally {{
+            revealAnimating = false;
+          }}
+          if (revealIndex >= REVEAL_SEQUENCE.length && revealClickHandlerAttached) {{
+            chart.removeEventListener("click", handleRevealClick);
+            revealClickHandlerAttached = false;
+          }}
+        }}
+
+        function resetRevealWorkflow() {{
+          revealIndex = 0;
+          revealAnimating = false;
+          currentFrameIndex = 0;
+          REVEAL_SEQUENCE.forEach((key) => {{
+            revealState[key] = false;
+            appliedVisibility[key] = false;
+          }});
+          if (!revealClickHandlerAttached && chart) {{
+            chart.addEventListener("click", handleRevealClick);
+            revealClickHandlerAttached = true;
+          }}
+          return applyRevealState({{ animateNew: false, entry: getCurrentEntry() }});
         }}
 
         function buildFigure(entry) {{
           const spendHover = entry.spend.map(formatLargeAmount);
           const closingHover = entry.closing.map(formatLargeAmount);
           const envelopeHover = entry.envelope.map(formatLargeAmount);
+          const axisTicks = computeAxisTicks();
 
           const data = [
             {{
@@ -7729,16 +8209,8 @@ def render_overview_tab(
               opacity: 0.75,
               customdata: spendHover,
               hovertemplate: "<b>Annual spend</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
-            }},
-            {{
-              type: "scatter",
-              mode: "lines",
-              x: entry.years,
-              y: entry.closing,
-              name: "Closing net",
-              line: {{color: COLORS.closing, width: 3}},
-              customdata: closingHover,
-              hovertemplate: "<b>Closing net</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+              visible: "legendonly",
+              meta: {{revealKey: "spend"}},
             }},
             {{
               type: "scatter",
@@ -7750,23 +8222,46 @@ def render_overview_tab(
               marker: {{color: COLORS.envelope, size: 6}},
               customdata: envelopeHover,
               hovertemplate: "<b>Envelope</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+              visible: "legendonly",
+              meta: {{revealKey: "envelope"}},
+            }},
+            {{
+              type: "scatter",
+              mode: "lines",
+              x: entry.years,
+              y: entry.closing,
+              name: "Closing net",
+              line: {{color: COLORS.closing, width: 3}},
+              customdata: closingHover,
+              hovertemplate: "<b>Closing net</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+              visible: "legendonly",
+              meta: {{revealKey: "closing"}},
             }},
           ];
 
           const layout = {{
-            title: {{text: entry.title}},
+            title: {{text: entry.title || ""}},
             barmode: "overlay",
             legend: {{orientation: "h", y: -0.22}},
-            xaxis: {{title: ""}},
+            xaxis: {{
+              title: "",
+              range: [FIXED_X_RANGE[0] - 2, FIXED_X_RANGE[1] + 1.5],
+              automargin: true,
+              ticklen: 8
+            }},
             yaxis: {{
-              tickformat: "~s",
+              tickmode: "array",
+              tickvals: axisTicks.values,
+              ticktext: axisTicks.labels,
+              range: axisTicks.range,
+              automargin: true,
               zeroline: true,
               zerolinecolor: "#888888",
               zerolinewidth: 1,
               zerolinedash: "dot",
             }},
             hoverlabel: {{namelength: -1}},
-            margin: {{l: 60, r: 24, t: 60, b: 80}},
+            margin: {{l: 110, r: 40, t: 48, b: 140}},
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
           }};
@@ -7775,21 +8270,18 @@ def render_overview_tab(
         }}
 
 function updateStatus(idx) {{
-          const entry = sequence[idx] || {{ statusText: "", progress: 0 }};
-          const statusText = typeof entry.statusText === "string" ? entry.statusText.trim() : "";
-          const displayText = statusText || "Optimiser progress";
+          currentFrameIndex = Math.max(0, Math.min(idx, totalFrames - 1));
+          const entry = sequence[currentFrameIndex] || {{ progress: 0 }};
           const rawProgress = Number(entry.progress);
           const pct = Number.isFinite(rawProgress) ? Math.min(Math.max(rawProgress, 0), 1) : 0;
           const pctDisplay = Math.round(pct * 1000) / 10;
-          if (statusTextEl) {{
-            statusTextEl.textContent = displayText;
-          }}
           if (progressFillEl) {{
             progressFillEl.style.width = `${{pct * 100}}%`;
           }}
           if (progressLabelEl) {{
             progressLabelEl.textContent = `${{pctDisplay.toFixed(1)}}%`;
           }}
+          updateNpvCard(entry);
         }}
 
         function ensurePlotly(callback) {{
@@ -7808,7 +8300,8 @@ function updateStatus(idx) {{
           const initialEntry = sequence[0];
           const initialFigure = buildFigure(initialEntry);
           const config = {{displayModeBar: false, responsive: true}};
-          Plotly.newPlot(chart, initialFigure.data, initialFigure.layout, config).then(() => {{
+          Plotly.newPlot(chart, initialFigure.data, initialFigure.layout, config).then(async () => {{
+            await resetRevealWorkflow();
             updateStatus(0);
             if (totalFrames <= 1) {{
               button.disabled = true;
@@ -7827,6 +8320,7 @@ function updateStatus(idx) {{
               const figure = buildFigure(entry);
               await Plotly.react(chart, figure.data, figure.layout, config);
               updateStatus(i);
+              await applyRevealState({{ entry, animateNew: false }});
               const target = start + frameDuration * i;
               if (i < totalFrames - 1) {{
                 const delay = target - performance.now();
@@ -7842,7 +8336,7 @@ function updateStatus(idx) {{
     </script>
     """
 
-    components.html(component_html, height=520)
+    components.html(component_html, height=780)
 
     return export_tables
 
@@ -8794,7 +9288,7 @@ def main() -> None:
             st.error(f"Unable to load scenario cache from {selected_path}: {exc}")
             st.stop()
 
-    with st.expander("Scenario selection", expanded=True):
+    with st.expander("Scenario selection", expanded=False):
         scenario_cols = st.columns(2)
         with scenario_cols[0]:
             st.subheader(f"{SCENARIO_PRIMARY_NAME} Profile")
@@ -8957,7 +9451,7 @@ def main() -> None:
         stats_opt = _scenario_stats(opt_series)
         stats_cmp = _scenario_stats(cmp_series)
 
-        with st.expander("Programme summary", expanded=True):
+        with st.expander("Programme summary", expanded=False):
             render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)
 
         download_tables: Dict[str, pd.DataFrame] = {}
@@ -8972,6 +9466,7 @@ def main() -> None:
                     cmp_series,
                     opt_label=opt_label,
                     cmp_label=cmp_label,
+                    npv_label=npv_summary_label,
                 )
             )
         elif active_tab == "Cash Flow":
@@ -9038,17 +9533,20 @@ def main() -> None:
                 preset_root,
                 saved_root,
                 scenario_folders,
-                data,
+                opt_selection=opt_selection,
+                comp_selection=comp_selection,
+                data=data,
+                opt_label=opt_label,
+                cmp_label=cmp_label,
+                download_tables=download_tables,
             )
 
-        if download_tables:
+        if download_tables and active_tab != "Overview":
             render_export_download(download_tables)
 
 
 
 if __name__ == "__main__":
     main()
-
-
 
 
