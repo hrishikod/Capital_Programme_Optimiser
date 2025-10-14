@@ -7442,6 +7442,92 @@ def render_benefits_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
+    st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
+    npv_horizon_options = [50, 35]
+    selected_npv_horizon = int(
+        st.radio(
+            "NPV horizon (years)",
+            npv_horizon_options,
+            index=npv_horizon_options.index(
+                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            ),
+            horizontal=True,
+            key="npv_horizon_selection",
+        )
+    )
+    pv_opt_horizon = (
+        pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
+        if opt_selection and opt_selection.code
+        else None
+    )
+    pv_cmp_horizon = (
+        pv_by_dimension(data, comp_selection, horizon_years=selected_npv_horizon)
+        if comp_selection and comp_selection.code
+        else None
+    )
+    pv_col1, pv_col2 = st.columns(2)
+    with pv_col1:
+        waterfall_fig = benefit_waterfall_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
+        )
+        if waterfall_fig is not None:
+            st.plotly_chart(
+                waterfall_fig,
+                use_container_width=True,
+                key="benefits_waterfall_chart",
+            )
+        waterfall_export = prepare_waterfall_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
+        )
+        if waterfall_export is not None:
+            export_tables["NPV Waterfall"] = waterfall_export
+    with pv_col2:
+        bridge_fig = benefit_bridge_chart(
+            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
+        )
+        if bridge_fig is not None:
+            st.plotly_chart(
+                bridge_fig,
+                use_container_width=True,
+                key="benefits_bridge_chart",
+            )
+        bridge_export = prepare_bridge_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+            pv_opt=pv_opt_horizon,
+            pv_cmp=pv_cmp_horizon,
+        )
+        if bridge_export is not None:
+            export_tables["NPV Bridge"] = bridge_export
+    radar_fig = benefit_radar_chart(
+        data,
+        opt_selection,
+        comp_selection,
+        horizon_years=selected_npv_horizon,
+    )
+    if radar_fig is not None:
+        st.plotly_chart(
+            radar_fig,
+            use_container_width=True,
+            theme=None,
+            key="benefits_radar_chart",
+        )
+        radar_export = prepare_radar_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+        )
+        if radar_export is not None:
+            export_tables["Benefit mix radar"] = radar_export
+
     st.markdown('<div class="pbi-section-title">Benefit dimensions</div>', unsafe_allow_html=True)
     opt_dim_pivot = dimension_timeseries(data, opt_selection)
     cmp_dim_pivot = dimension_timeseries(data, comp_selection)
@@ -7549,91 +7635,6 @@ def render_benefits_tab(
                 )
                 if cmp_dim_export is not None:
                     export_tables[f"Dimension mix - {cmp_label}"] = cmp_dim_export
-    st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
-    npv_horizon_options = [50, 35]
-    selected_npv_horizon = int(
-        st.radio(
-            "NPV horizon (years)",
-            npv_horizon_options,
-            index=npv_horizon_options.index(
-                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-            ),
-            horizontal=True,
-            key="npv_horizon_selection",
-        )
-    )
-    pv_opt_horizon = (
-        pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
-        if opt_selection and opt_selection.code
-        else None
-    )
-    pv_cmp_horizon = (
-        pv_by_dimension(data, comp_selection, horizon_years=selected_npv_horizon)
-        if comp_selection and comp_selection.code
-        else None
-    )
-    pv_col1, pv_col2 = st.columns(2)
-    with pv_col1:
-        waterfall_fig = benefit_waterfall_chart(
-            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-        )
-        if waterfall_fig is not None:
-            st.plotly_chart(
-                waterfall_fig,
-                use_container_width=True,
-                key="benefits_waterfall_chart",
-            )
-        waterfall_export = prepare_waterfall_export(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_years=selected_npv_horizon,
-            pv_opt=pv_opt_horizon,
-            pv_cmp=pv_cmp_horizon,
-        )
-        if waterfall_export is not None:
-            export_tables["NPV Waterfall"] = waterfall_export
-    with pv_col2:
-        bridge_fig = benefit_bridge_chart(
-            data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
-        )
-        if bridge_fig is not None:
-            st.plotly_chart(
-                bridge_fig,
-                use_container_width=True,
-                key="benefits_bridge_chart",
-            )
-        bridge_export = prepare_bridge_export(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_years=selected_npv_horizon,
-            pv_opt=pv_opt_horizon,
-            pv_cmp=pv_cmp_horizon,
-        )
-        if bridge_export is not None:
-            export_tables["NPV Bridge"] = bridge_export
-    radar_fig = benefit_radar_chart(
-        data,
-        opt_selection,
-        comp_selection,
-        horizon_years=selected_npv_horizon,
-    )
-    if radar_fig is not None:
-        st.plotly_chart(
-            radar_fig,
-            use_container_width=True,
-            theme=None,
-            key="benefits_radar_chart",
-        )
-        radar_export = prepare_radar_export(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_years=selected_npv_horizon,
-        )
-        if radar_export is not None:
-            export_tables["Benefit mix radar"] = radar_export
     if SHOW_REAL_BENEFIT_CHARTS:
         st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
         horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
