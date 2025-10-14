@@ -12,6 +12,21 @@ import numpy as np
 import requests
 import pandas as pd
 
+try:
+    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, mapping, shape
+    from shapely.geometry.polygon import orient
+    from shapely.ops import unary_union
+    try:
+        from shapely.validation import make_valid as _shapely_make_valid
+    except ImportError:
+        _shapely_make_valid = None
+    _HAS_SHAPELY = True
+except Exception:  # pragma: no cover - optional dependency
+    GeometryCollection = MultiPolygon = Polygon = None  # type: ignore
+    mapping = shape = orient = unary_union = None  # type: ignore
+    _shapely_make_valid = None
+    _HAS_SHAPELY = False
+
 from .data import DashboardData
 from ..config import load_project_region_mapping, load_settings
 
@@ -217,6 +232,87 @@ def simplify_geojson_precision_inplace(geojson: Dict[str, Any], *, decimals: int
         geom = feature.get("geometry")
         if isinstance(geom, dict) and "coordinates" in geom:
             geom["coordinates"] = _round_coords_inplace(geom["coordinates"], decimals)
+
+
+def _collect_polygon_parts(geom) -> List[Polygon]:
+    """Return oriented polygon parts from any Shapely geometry."""
+    parts: List[Polygon] = []
+    if not _HAS_SHAPELY:
+        return parts
+    if geom is None or getattr(geom, "is_empty", True):
+        return parts
+    if isinstance(geom, Polygon):
+        oriented = orient(geom, sign=1.0)
+        if not oriented.is_empty:
+            parts.append(oriented)
+    elif isinstance(geom, MultiPolygon):
+        for poly in geom.geoms:
+            parts.extend(_collect_polygon_parts(poly))
+    elif isinstance(geom, GeometryCollection):
+        for sub in geom.geoms:
+            parts.extend(_collect_polygon_parts(sub))
+    return parts
+
+
+def _make_valid_oriented(geom):
+    """Return a valid polygon/multipolygon with consistent ring orientation."""
+    if not _HAS_SHAPELY:
+        return None
+    if geom is None or getattr(geom, "is_empty", True):
+        return None
+    candidate = geom
+    if not candidate.is_valid:
+        if _shapely_make_valid is not None:
+            candidate = _shapely_make_valid(candidate)
+        else:
+            candidate = candidate.buffer(0)
+        if candidate is None or getattr(candidate, "is_empty", True):
+            return None
+    parts = _collect_polygon_parts(candidate)
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    merged = unary_union(parts)
+    if isinstance(merged, Polygon):
+        return orient(merged, sign=1.0)
+    if isinstance(merged, MultiPolygon):
+        return MultiPolygon([orient(poly, sign=1.0) for poly in merged.geoms if not poly.is_empty])
+    # Fallback: stitch parts into a MultiPolygon
+    return MultiPolygon(parts)
+
+
+def _repair_geojson_geometry(geojson: Dict[str, Any]) -> bool:
+    """Ensure GeoJSON polygons are valid and consistently oriented."""
+    if not _HAS_SHAPELY or not isinstance(geojson, dict):
+        return False
+    changed = False
+    for feature in geojson.get("features", []):
+        geom = feature.get("geometry")
+        if not isinstance(geom, dict):
+            continue
+        try:
+            shaped = shape(geom)
+        except Exception:
+            continue
+        repaired = _make_valid_oriented(shaped)
+        if repaired is None or getattr(repaired, "is_empty", True):
+            continue
+        original_type = geom.get("type")
+        if original_type == "MultiPolygon" and isinstance(repaired, Polygon):
+            repaired = MultiPolygon([repaired])
+        if not repaired.is_valid and _shapely_make_valid is not None:
+            repaired_valid = _shapely_make_valid(repaired)
+            if repaired_valid and not repaired_valid.is_empty:
+                repaired = _make_valid_oriented(repaired_valid) or repaired
+        try:
+            repaired_mapping = mapping(repaired)
+        except Exception:
+            continue
+        if repaired_mapping != geom:
+            feature["geometry"] = repaired_mapping
+            changed = True
+    return changed
 
 
 def _resolve_geojson_name_fields(geojson: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -466,6 +562,7 @@ def fetch_region_geojson(
         r.raise_for_status()
         data = r.json()
         _ensure_official_geojson_fields(data)
+        _repair_geojson_geometry(data)
         # ↓ New: shrink payload written to disk + sent to browser
         simplify_geojson_precision_inplace(data, decimals=5)
         return data
@@ -478,6 +575,7 @@ def fetch_region_geojson(
             geojson = json.load(fh)
         if geojson:
             changed = _ensure_official_geojson_fields(geojson)
+            geometry_fixed = _repair_geojson_geometry(geojson)
             # ↓ New: ensure the cached file also uses simplified precision
             simplify_geojson_precision_inplace(geojson, decimals=5)
             if not _geojson_has_official_field(geojson):
@@ -496,7 +594,7 @@ def fetch_region_geojson(
                     except Exception:
                         pass
                 return geojson
-            if changed:
+            if changed or geometry_fixed:
                 try:
                     lp.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
                 except Exception:

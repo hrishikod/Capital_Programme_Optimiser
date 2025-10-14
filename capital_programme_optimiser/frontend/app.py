@@ -1097,7 +1097,12 @@ def collect_navigation_previews(
             title=_figure_title(bridge_preview, "NPV bridge"),
             fig=bridge_preview,
         )
-    radar_preview = benefit_radar_chart(data, opt_selection, comp_selection)
+    radar_preview = benefit_radar_chart(
+        data,
+        opt_selection,
+        comp_selection,
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+    )
     if radar_preview is not None:
         _append_preview(
             previews,
@@ -2136,13 +2141,20 @@ def prepare_radar_export(
     *,
     pv_opt: Optional[Dict[str, float]] = None,
     pv_cmp: Optional[Dict[str, float]] = None,
+    horizon_years: Optional[int] = None,
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
-    if pv_opt is None:
-        pv_opt = pv_by_dimension(data, opt_selection) if opt_selection and opt_selection.code else None
-    if pv_cmp is None:
-        pv_cmp = pv_by_dimension(data, cmp_selection) if cmp_selection and cmp_selection.code else None
+    if pv_opt is None and opt_selection and opt_selection.code:
+        kwargs = {}
+        if horizon_years is not None:
+            kwargs["horizon_years"] = horizon_years
+        pv_opt = pv_by_dimension(data, opt_selection, **kwargs)
+    if pv_cmp is None and cmp_selection and cmp_selection.code:
+        kwargs = {}
+        if horizon_years is not None:
+            kwargs["horizon_years"] = horizon_years
+        pv_cmp = pv_by_dimension(data, cmp_selection, **kwargs)
     if not pv_opt and not pv_cmp:
         return None
     dims = [dim for dim in data.dims if str(dim).strip().lower() != "total"]
@@ -3864,214 +3876,373 @@ def benefit_delta_chart(
 
 
 def benefit_radar_chart(
-    data: DashboardData,
-    opt_selection: ScenarioSelection,
-    cmp_selection: ScenarioSelection,
+    data,
+    opt_selection,
+    cmp_selection,
+    *,
+    horizon_years: Optional[int] = None,
 ) -> Optional[go.Figure]:
-    opt_pv = pv_by_dimension(data, opt_selection) if opt_selection and opt_selection.code else None
-    cmp_pv = pv_by_dimension(data, cmp_selection) if cmp_selection and cmp_selection.code else None
 
+    # ---------------------------
+    # Safe wrappers for app APIs
+    # ---------------------------
+    def pv_by_dimension_safe(d, sel):
+        try:
+            if not sel or not getattr(sel, "code", None):
+                return None
+            kwargs = {}
+            if horizon_years is not None:
+                kwargs["horizon_years"] = horizon_years
+            return pv_by_dimension(d, sel, **kwargs)
+        except NameError:
+            return (getattr(sel, "pv_by_dim", None) or None) if sel else None
+
+    def resolve_label_safe(sel, fallback):
+        try:
+            return resolve_selection_label(sel, fallback=fallback)
+        except NameError:
+            return getattr(sel, "label", None) or fallback
+
+    def scenario_primary_label_safe():
+        try:
+            return scenario_primary_label()
+        except NameError:
+            return "Primary"
+
+    def scenario_comparison_label_safe():
+        try:
+            return scenario_comparison_label()
+        except NameError:
+            return "Comparison"
+
+    # ---------------------------
+    # Theme / color helpers
+    # ---------------------------
+    def get_theme():
+        # Defaults
+        bg_light = "#FFFFFF"
+        bg_dark = "#0E1117"
+        text_light = "#1F2937"  # slate-800
+        text_dark = "#E5E7EB"   # gray-200
+        try:
+            is_dark = is_dark_mode()
+        except NameError:
+            is_dark = False
+        try:
+            import streamlit as st  # type: ignore
+            theme_base = (st.get_option("theme.base") or "").lower()
+            bg = (st.get_option("theme.backgroundColor") or "").strip() or (bg_dark if theme_base == "dark" else bg_light)
+            txt = (st.get_option("theme.textColor") or "").strip() or (text_dark if theme_base == "dark" else text_light)
+            if theme_base == "dark":
+                is_dark = True
+        except Exception:
+            bg = bg_dark if is_dark else bg_light
+            txt = text_dark if is_dark else text_light
+        grid = "rgba(148,163,184,0.33)" if is_dark else "rgba(100,116,139,0.28)"
+        axis = "rgba(203,213,225,0.80)" if is_dark else "rgba(71,85,105,0.70)"
+        return is_dark, bg, txt, grid, axis
+
+    def hex_to_rgba(hex_color: str, alpha: float) -> str:
+        hc = hex_color.strip().lstrip("#")
+        if len(hc) == 3:
+            hc = "".join([c * 2 for c in hc])
+        r = int(hc[0:2], 16)
+        g = int(hc[2:4], 16)
+        b = int(hc[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
+    def nice_scale(max_value: float, target_steps: int = 5):
+        if max_value <= 0:
+            return 1.0, [0.2, 0.4, 0.6, 0.8, 1.0]
+        raw = float(max_value)
+        mag = 10 ** math.floor(math.log10(raw))
+        residual = raw / mag
+        if residual <= 1.2:
+            nice = 1.2
+        elif residual <= 1.5:
+            nice = 1.5
+        elif residual <= 2:
+            nice = 2
+        elif residual <= 2.5:
+            nice = 2.5
+        elif residual <= 3:
+            nice = 3
+        elif residual <= 4:
+            nice = 4
+        elif residual <= 5:
+            nice = 5
+        elif residual <= 6:
+            nice = 6
+        elif residual <= 7.5:
+            nice = 7.5
+        else:
+            nice = 10
+        upper = nice * mag
+        # choose tick count close to target_steps
+        best = None
+        err = 1e9
+        for n in [4, 5, 6]:
+            this_err = abs(n - target_steps)
+            if this_err < err:
+                err = this_err
+                best = n
+        ticks = [upper * (i / best) for i in range(1, best + 1)]
+        return upper, ticks
+
+    # ---------------------------
+    # Data prep
+    # ---------------------------
+    opt_pv = pv_by_dimension_safe(data, opt_selection)
+    cmp_pv = pv_by_dimension_safe(data, cmp_selection)
     if not opt_pv and not cmp_pv:
         return None
 
-    dims = [dim for dim in data.dims if str(dim).strip().lower() != "total"]
-
+    dims: List[str] = [str(dim) for dim in getattr(data, "dims", []) if str(dim).strip().lower() != "total"]
     extras = set()
     if opt_pv:
         extras.update(opt_pv.keys())
     if cmp_pv:
         extras.update(cmp_pv.keys())
-
     for dim in sorted(extras, key=str):
-        if str(dim).strip().lower() == "total":
+        s = str(dim)
+        if s.strip().lower() == "total":
             continue
-        if dim not in dims:
-            dims.append(dim)
-
+        if s not in dims:
+            dims.append(s)
     if not dims:
         return None
 
-    def value_list(pv_dict: Optional[Dict[str, float]]) -> List[float]:
-        if not pv_dict:
-            return [0.0 for _ in dims]
-        return [float(pv_dict.get(dim, 0.0)) for dim in dims]
+    def to_values(pv: Optional[Dict[str, float]]) -> List[float]:
+        return [float((pv or {}).get(d, 0.0)) for d in dims]
 
-    theta_labels = [str(dim) for dim in dims]
-    n_dims = max(len(dims), 1)
-    theta_positions = [(idx / n_dims) * 360.0 for idx in range(len(dims))]
-    theta_closed = theta_positions + theta_positions[:1]
+    labels = [str(d) for d in dims]
+    n = len(labels)
+    thetas = [(i / n) * 360.0 for i in range(n)]
+    thetas_closed = thetas + thetas[:1]
 
-    opt_values = value_list(opt_pv)
-    cmp_values = value_list(cmp_pv)
+    opt_vals = to_values(opt_pv)
+    cmp_vals = to_values(cmp_pv)
+    opt_closed = opt_vals + opt_vals[:1]
+    cmp_closed = cmp_vals + cmp_vals[:1]
 
-    opt_closed = opt_values + opt_values[:1]
-    cmp_closed = cmp_values + cmp_values[:1]
+    # Colors (keep BLUE + GREEN)
+    try:
+        blue = CUMULATIVE_OPT_LINE_COLOR
+    except NameError:
+        blue = "#2563EB"   # blue-600
+    try:
+        green = CUMULATIVE_CMP_LINE_COLOR
+    except NameError:
+        green = "#10B981"  # emerald-500
 
-    max_val = max(opt_values + cmp_values + [1.0])
-    value_scale = max(max_val, 1.0)
+    # Theme
+    is_dark, bg_color, text_color, grid_color, axis_color = get_theme()
 
-    theme_base = (st.get_option("theme.base") or "").lower()
-    background_setting = (st.get_option("theme.backgroundColor") or "").strip()
-    text_setting = (st.get_option("theme.textColor") or "").strip()
-    dark_toggle_active = is_dark_mode()
+    # Scale
+    max_val = max(opt_vals + cmp_vals + [1.0])
+    radial_max, tick_vals = nice_scale(max_val, target_steps=5)
+    radial_range = [0, radial_max * 1.18]  # baseline spacing with light padding
 
-    if dark_toggle_active:
-        background_color = "#0E1117"
-        text_color = "#E2E8F0"
-        is_dark_theme = True
-    else:
-        background_color = background_setting or ("#0E1117" if theme_base == "dark" else "#FFFFFF")
-        background_luminance = relative_luminance(background_color)
-        is_dark_theme = theme_base == "dark"
-        if background_luminance is not None:
-            is_dark_theme = background_luminance < 0.45
-
-        text_color = text_setting or ("#E2E8F0" if is_dark_theme else "#1F2933")
-        text_luminance = relative_luminance(text_color)
-        if text_luminance is not None:
-            if is_dark_theme and text_luminance < 0.6:
-                text_color = "#E2E8F0"
-            elif not is_dark_theme and text_luminance > 0.4:
-                text_color = "#1F2933"
-
-    figure_background = "rgba(0, 0, 0, 0)" if is_dark_theme else background_color
-    grid_color = "rgba(148, 163, 184, 0.35)" if is_dark_theme else "rgba(148, 163, 184, 0.28)"
-    outline_color = "rgba(148, 163, 184, 0.55)" if is_dark_theme else "rgba(100, 116, 139, 0.45)"
-
+    # ---------------------------
+    # Figure
+    # ---------------------------
     fig = go.Figure()
-    primary_label = scenario_primary_label()
-    comparison_label = scenario_comparison_label()
 
-    if opt_pv:
-        opt_name = resolve_selection_label(opt_selection, fallback=primary_label)
-        opt_custom = theta_labels + theta_labels[:1]
+    # Subtle alternating bands (very light so no "busy" look)
+    band_fill = "rgba(148,163,184,0.06)" if is_dark else "rgba(100,116,139,0.05)"
+    for i, r in enumerate(tick_vals):
+        if i % 2 == 0:
+            fig.add_trace(
+                go.Scatterpolar(
+                    r=[r] * (n + 1),
+                    theta=thetas_closed,
+                    fill="toself",
+                    fillcolor=band_fill,
+                    line=dict(width=0),
+                    hoverinfo="skip",
+                    showlegend=False,
+            )
+        )
+
+    # Primary (BLUE) — crisp, thin stroke; translucent fill
+    if any(v > 0 for v in opt_vals):
+        primary_label = resolve_label_safe(opt_selection, fallback=scenario_primary_label_safe())
         fig.add_trace(
             go.Scatterpolar(
                 r=opt_closed,
-                theta=theta_closed,
-                name=opt_name,
-                line=dict(color=CUMULATIVE_OPT_LINE_COLOR, width=3),
+                theta=thetas_closed,
+                name=primary_label,
+                mode="lines",
+                line=dict(color=blue, width=2.25),  # thinner, sharper
                 fill="toself",
-                fillcolor=rgba_from_hex(CUMULATIVE_OPT_LINE_COLOR, 0.26 if is_dark_theme else 0.18),
-                opacity=0.9,
-                customdata=opt_custom,
-                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{name}</extra>",
+                fillcolor=hex_to_rgba(blue, 0.16 if not is_dark else 0.22),
+                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{fullData.name}</extra>",
+                customdata=labels + labels[:1],
+            )
+        )
+        # Vertex markers + small values (above)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=opt_vals,
+                theta=thetas,
+                mode="markers+text",
+                marker=dict(size=7, color=blue, line=dict(width=1.1, color="white" if not is_dark else "#0B1220")),
+                text=[f"{v:,.0f}" if v > 0 else "" for v in opt_vals],
+                textfont=dict(size=14, color=blue),
+                textposition="top center",
+                hoverinfo="skip",
+                name=f"{primary_label} values",
+                showlegend=False,
+                cliponaxis=False,
             )
         )
 
-    if cmp_pv:
-        cmp_name = resolve_selection_label(cmp_selection, fallback=comparison_label)
-        cmp_custom = theta_labels + theta_labels[:1]
+    # Comparison (GREEN) — crisp dashed stroke; lighter fill
+    if any(v > 0 for v in cmp_vals):
+        comparison_label = resolve_label_safe(cmp_selection, fallback=scenario_comparison_label_safe())
         fig.add_trace(
             go.Scatterpolar(
                 r=cmp_closed,
-                theta=theta_closed,
-                name=cmp_name,
-                line=dict(color=CUMULATIVE_CMP_LINE_COLOR, width=2, dash="dash"),
+                theta=thetas_closed,
+                name=comparison_label,
+                mode="lines",
+                line=dict(color=green, width=2.0, dash="dot"),
                 fill="toself",
-                fillcolor=rgba_from_hex(CUMULATIVE_CMP_LINE_COLOR, 0.22 if is_dark_theme else 0.16),
-                opacity=0.78,
-                customdata=cmp_custom,
-                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{name}</extra>",
+                fillcolor=hex_to_rgba(green, 0.12 if not is_dark else 0.18),
+                hovertemplate="<b>%{customdata}</b><br>%{r:,.0f}<extra>%{fullData.name}</extra>",
+                customdata=labels + labels[:1],
+            )
+        )
+        # Vertex markers + values (below)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=cmp_vals,
+                theta=thetas,
+                mode="markers+text",
+                marker=dict(size=6.5, color=green, line=dict(width=1.0, color="white" if not is_dark else "#0B1220")),
+                text=[f"{v:,.0f}" if v > 0 else "" for v in cmp_vals],
+                textfont=dict(size=13, color=green),
+                textposition="bottom center",
+                hoverinfo="skip",
+                name=f"{comparison_label} values",
+                showlegend=False,
+                cliponaxis=False,
             )
         )
 
-    series_configs = []
-    if opt_pv:
-        series_configs.append((opt_values, CUMULATIVE_OPT_LINE_COLOR, -1))
-    if cmp_pv:
-        direction = 1 if opt_pv else -1
-        series_configs.append((cmp_values, CUMULATIVE_CMP_LINE_COLOR, direction))
-
-    def _text_anchor(base_angle_deg: float) -> str:
-        cos_a = math.cos(math.radians(base_angle_deg))
-        sin_a = math.sin(math.radians(base_angle_deg))
-        if abs(cos_a) >= 0.4:
-            return "middle right" if cos_a >= 0 else "middle left"
+    # Leader lines and dimension labels (custom, larger text)
+    def label_position(angle_deg: float) -> str:
+        rad = math.radians(angle_deg)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+        if cos_a >= 0.4:
+            return "middle left"
+        if cos_a <= -0.4:
+            return "middle right"
         if sin_a >= 0:
             return "bottom center"
         return "top center"
 
-    label_padding = max(value_scale * 0.06, 2.0)
-    angle_base = max(10.0, 8.0 * (len(theta_labels) / max(len(theta_labels), 3)))
+    for theta_deg, label, opt_val, cmp_val in zip(thetas, labels, opt_vals, cmp_vals):
+        anchor_value = max(opt_val, cmp_val, radial_max * 0.12)
+        line_end = max(anchor_value * 1.08, radial_max * 0.92)
+        line_end = min(line_end, radial_max * 1.05)
+        text_radius = min(radial_max * 1.12, line_end * 1.04)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[anchor_value, line_end, text_radius],
+                theta=[theta_deg, theta_deg, theta_deg],
+                mode="lines+text",
+                line=dict(color=axis_color, width=1.4),
+                text=["", "", label],
+                textfont=dict(size=16, color=text_color, family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif"),
+                textposition=label_position(theta_deg),
+                hoverinfo="skip",
+                showlegend=False,
+                cliponaxis=False,
+            )
+        )
 
-    for idx, base_angle in enumerate(theta_positions):
-        for values, color, direction in series_configs:
-            if idx >= len(values):
-                continue
-            value = float(values[idx])
-            if value <= 0:
-                continue
-            angle_adjust = angle_base * direction
-            cos_a = math.cos(math.radians(base_angle))
-            if abs(cos_a) < 0.35:
-                angle_adjust *= 0.7
-            leader_end = min(value_scale * 1.15, value + max(label_padding, value * 0.12))
-            final_theta = (base_angle + angle_adjust) % 360.0
-            anchor = _text_anchor(final_theta)
-            fig.add_trace(
-                go.Scatterpolar(
-                    r=[value, (value + leader_end) / 2.0, leader_end],
-                    theta=[base_angle, base_angle + angle_adjust * 0.4, final_theta],
-                    mode="lines",
-                    line=dict(color=color, width=1.4, dash="dot"),
-                    showlegend=False,
-                    hoverinfo="skip",
-                    cliponaxis=False,
-                )
-            )
-            fig.add_trace(
-                go.Scatterpolar(
-                    r=[leader_end],
-                    theta=[final_theta],
-                    mode="text",
-                    text=[f"{value:,.0f}"],
-                    textposition=anchor,
-                    textfont=dict(color=color, size=11),
-                    showlegend=False,
-                    hoverinfo="skip",
-                    cliponaxis=False,
-                )
-            )
+    # Axes & layout — stronger outer line, more top spacing to avoid overlap
+    tick_texts = [
+        f"{v:,.0f}" if idx >= max(len(tick_vals) - 3, 0) else ""
+        for idx, v in enumerate(tick_vals)
+    ]
+
     fig.update_layout(
-        title="Benefit mix radar",
         polar=dict(
-            bgcolor="rgba(0, 0, 0, 0)",
+            domain=dict(x=[0.0, 1.0], y=[0.12, 0.92]),  # more room for larger canvas
+            bgcolor="rgba(0,0,0,0)",
             radialaxis=dict(
-                visible=True,
-                range=[0, value_scale * 1.12],
-                title="",
+                range=radial_range,
                 tickmode="array",
-                tickvals=[],
-                ticktext=[],
+                tickvals=tick_vals,
+                ticktext=tick_texts,
+                ticks="outside",
+                tickfont=dict(size=11, color=text_color),
+                angle=90,
                 gridcolor=grid_color,
-                linecolor=outline_color,
-                gridwidth=1,
+                gridwidth=0.9,
+                showline=True,
+                linecolor=axis_color,
+                linewidth=2.4,  # thicker, single crisp outer ring
             ),
             angularaxis=dict(
+                tickmode="array",
+                tickvals=thetas,
+                ticktext=[""] * len(thetas),  # hide default labels; custom leaders handle text
                 direction="clockwise",
                 rotation=90,
-                tickmode="array",
-                tickvals=theta_positions,
-                ticktext=theta_labels,
-                thetaunit="degrees",
+                tickfont=dict(size=12, color=text_color),
                 gridcolor=grid_color,
-                linecolor=outline_color,
-                tickfont=dict(color=text_color, size=11),
+                gridwidth=0.8,
+                linecolor=axis_color,
+                linewidth=2.0,
             ),
         ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=80, r=80, t=80, b=90),
+        height=900,
+        font=dict(color=text_color, size=13, family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.06,
+            x=0.5,
+            xanchor="center",
+            bgcolor="rgba(0,0,0,0)",
+            itemclick="toggleothers",
+            itemdoubleclick="toggle",
+            font=dict(size=12, color=text_color),
+        ),
         showlegend=True,
-        legend=legend_bottom(font=dict(color=text_color, size=11), bgcolor="rgba(0, 0, 0, 0)"),
-        template=None,
-        paper_bgcolor=figure_background,
-        plot_bgcolor="rgba(0, 0, 0, 0)",
-        margin=dict(l=40, r=40, t=80, b=90),
-        font=dict(color=text_color, size=12),
     )
 
-    fig.layout.paper_bgcolor = figure_background
+    fig.update_layout(
+        title=dict(
+            text="<b>Benefit Mix by Dimension</b>",
+            x=0.5, xanchor="center",
+            y=0.99, yanchor="top",
+            font=dict(size=22, color=text_color),
+        ),
+    )
 
     return fig
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def benefit_waterfall_chart(
 
@@ -7442,7 +7613,12 @@ def render_benefits_tab(
         )
         if bridge_export is not None:
             export_tables["NPV Bridge"] = bridge_export
-    radar_fig = benefit_radar_chart(data, opt_selection, comp_selection)
+    radar_fig = benefit_radar_chart(
+        data,
+        opt_selection,
+        comp_selection,
+        horizon_years=selected_npv_horizon,
+    )
     if radar_fig is not None:
         st.plotly_chart(
             radar_fig,
@@ -7450,7 +7626,12 @@ def render_benefits_tab(
             theme=None,
             key="benefits_radar_chart",
         )
-        radar_export = prepare_radar_export(data, opt_selection, comp_selection)
+        radar_export = prepare_radar_export(
+            data,
+            opt_selection,
+            comp_selection,
+            horizon_years=selected_npv_horizon,
+        )
         if radar_export is not None:
             export_tables["Benefit mix radar"] = radar_export
     if SHOW_REAL_BENEFIT_CHARTS:
