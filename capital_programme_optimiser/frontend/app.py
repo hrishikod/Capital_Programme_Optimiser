@@ -8,6 +8,7 @@ import re
 import sys
 import json
 import copy
+import pickle
 import textwrap
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -64,6 +65,10 @@ ROOT_CWD = Path.cwd()
 ROOT_FILE = Path(__file__).resolve().parents[2]
 
 ROOT_PARENT = ROOT_FILE.parent
+
+INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles.pkl"
+PCT_BAR_PATH = ROOT_FILE / "scenario_sets" / "Pct_bar.pkl"
+INTERPOLATED_PROFILE_ANIMATION_SECONDS = 8.0
 
 for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
 
@@ -404,11 +409,12 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Programme Schedule", "Overview", "Benefits", "Regions", "Delivery", "Scenario Manager"]
+NAV_TABS = ["Overview", "Programme Schedule", "Cash Flow", "Benefits", "Regions", "Delivery", "Scenario Manager"]
 
 NAV_ICON_MAP = {
-    "Programme Schedule": "calendar-event",
     "Overview": "speedometer",
+    "Programme Schedule": "calendar-event",
+    "Cash Flow": "cash-coin",
     "Benefits": "graph-up-arrow",
     "Regions": "geo-alt",
     "Delivery": "box-seam",
@@ -1061,13 +1067,28 @@ def collect_navigation_previews(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Build a mapping of navigation tab names to preview figure payloads."""
     previews: Dict[str, List[Dict[str, Any]]] = {}
+    profile_assets, profile_meta = load_interpolated_profile_assets()
 
     # Overview tab previews
+    if profile_assets:
+        order = profile_meta.get("profile_order") or sorted(profile_assets)
+        if order:
+            asset = profile_assets.get(order[0])
+            if asset:
+                overview_fig = go.Figure(asset["plot_json"])
+                _append_preview(
+                    previews,
+                    "Overview",
+                    title=_figure_title(overview_fig, asset.get("title", f"Cash flow - {asset['label']}")),
+                    fig=overview_fig,
+                )
+
+    # Cash Flow tab previews
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
         _append_preview(
             previews,
-            "Overview",
+            "Cash Flow",
             title=_figure_title(eff_fig, "Efficiency preview"),
             fig=eff_fig,
         )
@@ -1080,7 +1101,7 @@ def collect_navigation_previews(
     if waterfall_preview is not None:
         _append_preview(
             previews,
-            "Overview",
+            "Cash Flow",
             title=_figure_title(waterfall_preview, "NPV waterfall"),
             fig=waterfall_preview,
         )
@@ -1093,7 +1114,7 @@ def collect_navigation_previews(
     if bridge_preview is not None:
         _append_preview(
             previews,
-            "Overview",
+            "Cash Flow",
             title=_figure_title(bridge_preview, "NPV bridge"),
             fig=bridge_preview,
         )
@@ -1106,7 +1127,7 @@ def collect_navigation_previews(
     if radar_preview is not None:
         _append_preview(
             previews,
-            "Overview",
+            "Cash Flow",
             title=_figure_title(radar_preview, "Benefit mix"),
             fig=radar_preview,
         )
@@ -1661,6 +1682,195 @@ def load_dashboard_data(
     data = prepare_dashboard_data(results)
 
     return data
+
+
+@st.cache_resource(show_spinner=False)
+def load_interpolated_profile_payload(
+    path: Path = INTERPOLATED_PROFILES_PATH,
+) -> Tuple[Dict[int, pd.DataFrame], Dict[str, Any]]:
+    """Load the interpolated profile states used for the animated cash flow chart."""
+    try:
+        with path.open("rb") as fh:
+            payload = pickle.load(fh)
+    except FileNotFoundError:
+        return {}, {}
+    except Exception as exc:  # pragma: no cover - defensive guard for unexpected pickle issues
+        return {}, {"load_error": str(exc)}
+
+    profiles_df = payload.get("profiles_long")
+    metadata = payload.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    if not isinstance(profiles_df, pd.DataFrame):
+        metadata.setdefault("load_error", "Interpolated profile payload did not contain a DataFrame.")
+        return {}, metadata
+
+    profiles_df = profiles_df.copy()
+    profiles_df.columns = [str(col).strip() for col in profiles_df.columns]
+    profiles_df["Profile"] = pd.to_numeric(profiles_df.get("Profile"), errors="coerce")
+    profiles_df["Year"] = pd.to_numeric(profiles_df.get("Year"), errors="coerce")
+    profiles_df = profiles_df.dropna(subset=["Profile"]).sort_values(["Profile", "Year"])
+
+    profile_frames: Dict[int, pd.DataFrame] = {}
+    for profile_value, group in profiles_df.groupby("Profile"):
+        if pd.isna(profile_value):
+            continue
+        frame = group.copy()
+        for column in ("Annual spend", "Envelope", "Closing net"):
+            if column in frame.columns:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        profile_frames[int(profile_value)] = frame.reset_index(drop=True)
+
+    label_map = metadata.get("profile_labels")
+    if isinstance(label_map, dict):
+        metadata = dict(metadata)
+        metadata["profile_labels"] = {int(k): v for k, v in label_map.items()}
+    metadata.setdefault("n_profiles", len(profile_frames))
+    return profile_frames, metadata
+
+
+@st.cache_resource(show_spinner=False)
+def load_interpolated_progress(path: Path = PCT_BAR_PATH) -> List[float]:
+    """Load cumulative progress percentages for each interpolated tick."""
+    try:
+        with path.open("rb") as fh:
+            payload = pickle.load(fh)
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+    if isinstance(payload, pd.DataFrame):
+        df = payload.copy()
+    else:
+        try:
+            df = pd.DataFrame(payload)
+        except Exception:
+            return []
+
+    df.columns = [str(col).strip() for col in df.columns]
+    tick_col = next((col for col in df.columns if str(col).strip().lower() in {"tick", "ticks"}), None)
+    pct_col = next(
+        (
+            col
+            for col in df.columns
+            if "pct" in str(col).strip().lower()
+            or "percent" in str(col).strip().lower()
+        ),
+        None,
+    )
+    if pct_col is None:
+        return []
+
+    if tick_col is not None:
+        df[tick_col] = pd.to_numeric(df[tick_col], errors="coerce")
+        df = df.sort_values(tick_col, na_position="last")
+
+    pct_series = pd.to_numeric(df[pct_col], errors="coerce").fillna(method="ffill").fillna(0.0)
+    if pct_series.max() > 1.0 + 1e-6:
+        pct_series = pct_series / 100.0
+    pct_series = pct_series.clip(lower=0.0, upper=1.0)
+    return pct_series.tolist()
+
+
+def _prepare_interpolated_profile_chart(profile_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Return a chart-ready DataFrame for the interpolated profile animation."""
+    required_cols = {"Year", "Annual spend", "Envelope", "Closing net"}
+    if not required_cols.issubset(profile_df.columns):
+        return None
+
+    chart_frame = profile_df.loc[:, ["Year", "Annual spend", "Closing net", "Envelope"]].copy()
+    chart_frame.rename(
+        columns={"Annual spend": "Spend", "Closing net": "ClosingNet"},
+        inplace=True,
+    )
+    chart_frame["Year"] = pd.to_numeric(chart_frame["Year"], errors="coerce")
+    for column in ("Spend", "ClosingNet", "Envelope"):
+        chart_frame[column] = (
+            pd.to_numeric(chart_frame[column], errors="coerce").fillna(0.0) / 1_000_000.0
+        )
+    chart_frame = chart_frame.dropna(subset=["Year"])
+    return chart_frame
+
+
+@st.cache_resource(show_spinner=False)
+def load_interpolated_profile_assets(
+    path: Path = INTERPOLATED_PROFILES_PATH,
+) -> Tuple[Dict[int, Dict[str, Any]], Dict[str, Any]]:
+    """Prepare chart-ready assets for each interpolated profile state."""
+    profile_frames, metadata = load_interpolated_profile_payload(path)
+    if not profile_frames:
+        return {}, metadata
+
+    label_map = metadata.get("profile_labels")
+    if not isinstance(label_map, dict):
+        label_map = {}
+
+    progress_values = load_interpolated_progress()
+
+    assets: Dict[int, Dict[str, Any]] = {}
+    for profile_idx, profile_df in profile_frames.items():
+        chart_frame = _prepare_interpolated_profile_chart(profile_df)
+        if chart_frame is None or chart_frame.empty:
+            continue
+        export_frame = profile_df.loc[:, ["Year", "Annual spend", "Envelope", "Closing net"]].copy()
+        label = label_map.get(profile_idx)
+        if not label and "ProfileLabel" in profile_df.columns:
+            label_series = profile_df["ProfileLabel"].dropna()
+            if not label_series.empty:
+                label = str(label_series.iloc[0])
+        label = label or f"Profile {profile_idx}"
+
+        figure = cash_chart(
+            chart_frame,
+            title=f"Cash flow - {label}",
+            color=PRIMARY_COLOR,
+        )
+        figure.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            transition={"duration": 50, "easing": "cubic-in-out"},
+            uirevision="interpolated_profiles",
+        )
+        figure_json = figure.to_plotly_json()
+        status_text = label
+        if "–" in status_text:
+            status_text = status_text.split("–", 1)[1].strip()
+        elif "-" in status_text:
+            status_text = status_text.split("-", 1)[1].strip()
+        try:
+            idx_int = int(profile_idx)
+        except (TypeError, ValueError):
+            idx_int = None
+        progress_value = None
+        if idx_int is not None and progress_values:
+            pos = idx_int - 1
+            if 0 <= pos < len(progress_values):
+                try:
+                    progress_value = float(progress_values[pos])
+                except (TypeError, ValueError):
+                    progress_value = None
+        assets[profile_idx] = {
+            "label": label,
+            "status_text": status_text.strip(),
+            "progress": progress_value,
+            "chart_frame": chart_frame,
+            "figure": go.Figure(figure_json),
+            "plot_json": figure_json,
+            "title": (
+                figure_json.get("layout", {})
+                .get("title", {})
+                .get("text", f"Cash flow - {label}")
+            ),
+            "export": export_frame,
+        }
+
+    enriched_metadata = dict(metadata)
+    enriched_metadata.setdefault("n_profiles", len(assets))
+    enriched_metadata["profile_order"] = sorted(assets)
+    return assets, enriched_metadata
+
 
 def format_currency(value: float) -> str:
 
@@ -4064,7 +4274,7 @@ def benefit_radar_chart(
             )
         )
 
-    # Primary (BLUE) — crisp, thin stroke; translucent fill
+    # Primary (BLUE) â€” crisp, thin stroke; translucent fill
     if any(v > 0 for v in opt_vals):
         primary_label = resolve_label_safe(opt_selection, fallback=scenario_primary_label_safe())
         fig.add_trace(
@@ -4097,7 +4307,7 @@ def benefit_radar_chart(
             )
         )
 
-    # Comparison (GREEN) — crisp dashed stroke; lighter fill
+    # Comparison (GREEN) â€” crisp dashed stroke; lighter fill
     if any(v > 0 for v in cmp_vals):
         comparison_label = resolve_label_safe(cmp_selection, fallback=scenario_comparison_label_safe())
         fig.add_trace(
@@ -4163,7 +4373,7 @@ def benefit_radar_chart(
             )
         )
 
-    # Axes & layout — stronger outer line, more top spacing to avoid overlap
+    # Axes & layout â€” stronger outer line, more top spacing to avoid overlap
     tick_texts = [
         f"{v:,.0f}" if idx >= max(len(tick_vals) - 3, 0) else ""
         for idx, v in enumerate(tick_vals)
@@ -5875,7 +6085,7 @@ def render_programme_kpis(
     if delta_pv is None:
         pv_chip_text, pv_chip_state = None, "neutral"
     else:
-        sign = "▲" if delta_pv >= 0 else "▼"
+        sign = "â–²" if delta_pv >= 0 else "â–¼"
         pv_chip_state = "up" if delta_pv >= 0 else "down"
         pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {comparison_label}"
 
@@ -7307,11 +7517,337 @@ def render_region_tab(
         export_tables[f"Regional summary - {selected_label}"] = summary
     return export_tables
 
-
-
-
-
 def render_overview_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+
+    profile_assets, metadata = load_interpolated_profile_assets()
+    load_error = metadata.get("load_error")
+
+    if not profile_assets:
+        if load_error:
+            st.warning(f"Unable to load interpolated profiles: {load_error}")
+        else:
+            st.info(
+                "Interpolated profile animation is unavailable. "
+                f"Place `interpolated_profiles.pkl` in `{INTERPOLATED_PROFILES_PATH}` to enable it."
+            )
+        return export_tables
+
+    playback_order: List[int] = list(metadata.get("profile_order") or sorted(profile_assets))
+    if not playback_order:
+        st.info("No interpolated profiles were found in the supplied data.")
+        return export_tables
+
+    total_profiles = len(playback_order)
+    first_asset = profile_assets[playback_order[0]]
+    final_asset = profile_assets[playback_order[-1]]
+    export_tables[f"Cash flow - {final_asset['label']}"] = final_asset["export"].copy()
+
+    st.markdown(
+        '<div class="pbi-section-title">Cash flow optimiser</div>',
+        unsafe_allow_html=True,
+    )
+
+    component_id = f"interpolated_profiles_{uuid4().hex}"
+    frame_duration_ms = int(
+        INTERPOLATED_PROFILE_ANIMATION_SECONDS * 1000.0 / max(total_profiles - 1, 1)
+    )
+    transition_ms = 80
+
+    data_sequence: List[Dict[str, Any]] = []
+    for idx in playback_order:
+        asset = profile_assets[idx]
+        chart_frame = asset["chart_frame"]
+        data_sequence.append(
+            {
+                "label": asset["label"],
+                "title": asset.get("title") or f"Cash flow - {asset['label']}",
+                "years": [int(year) if pd.notna(year) else None for year in chart_frame["Year"].tolist()],
+                "spend": [float(val) for val in (chart_frame["Spend"] * 1_000_000.0).tolist()],
+                "closing": [float(val) for val in (chart_frame["ClosingNet"] * 1_000_000.0).tolist()],
+                "envelope": [float(val) for val in (chart_frame["Envelope"] * 1_000_000.0).tolist()],
+                "statusText": asset.get("status_text", ""),
+                "progress": asset.get("progress", None),
+            }
+        )
+
+    data_sequence_json = json.dumps(data_sequence)
+
+    component_html = f"""
+    <style>
+      #{component_id} {{
+        border-radius: 18px;
+        background: var(--cp-surface-soft, rgba(255,255,255,0.92));
+        border: 1px solid var(--cp-outline, rgba(25,69,107,0.18));
+        padding: 16px 18px 12px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+      }}
+      #{component_id} .profile-anim__header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }}
+      #{component_id} .profile-anim__status {{
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1 1 220px;
+        min-width: 220px;
+      }}
+      #{component_id} .profile-anim__status-text {{
+        font-weight: 600;
+        color: var(--cp-primary, #19456b);
+        font-size: 1rem;
+        letter-spacing: 0.01em;
+      }}
+      #{component_id} .profile-anim__progress {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }}
+      #{component_id} .profile-anim__progress-track {{
+        position: relative;
+        flex: 1;
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(25,69,107,0.16), rgba(25,69,107,0.04));
+        overflow: hidden;
+      }}
+      #{component_id} .profile-anim__progress-fill {{
+        position: absolute;
+        inset: 0;
+        width: 0%;
+        background: linear-gradient(90deg, var(--cp-primary, #19456b), var(--cp-accent, #afbd22));
+        box-shadow: 0 4px 18px rgba(25, 69, 107, 0.22);
+        transition: width 0.25s ease-out;
+      }}
+      #{component_id} .profile-anim__progress-label {{
+        font-weight: 600;
+        color: var(--cp-primary, #19456b);
+        min-width: 52px;
+        text-align: right;
+      }}
+      #{component_id} .profile-anim__button {{
+        background: var(--cp-primary, #19456b);
+        color: #fff;
+        border: none;
+        border-radius: 999px;
+        padding: 8px 20px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+      }}
+      #{component_id} .profile-anim__button:hover:not([disabled]) {{
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(25, 69, 107, 0.26);
+      }}
+      #{component_id} .profile-anim__button[disabled] {{
+        opacity: 0.6;
+        cursor: not-allowed;
+        box-shadow: none;
+      }}
+      #{component_id} .profile-anim__chart {{
+        min-height: 360px;
+      }}
+    </style>
+    <div id="{component_id}" class="profile-anim">
+      <div class="profile-anim__header">
+        <div id="{component_id}-status" class="profile-anim__status">
+          <div id="{component_id}-status-text" class="profile-anim__status-text"></div>
+          <div class="profile-anim__progress">
+            <div class="profile-anim__progress-track">
+              <div id="{component_id}-progress-fill" class="profile-anim__progress-fill"></div>
+            </div>
+            <div id="{component_id}-progress-label" class="profile-anim__progress-label">0%</div>
+          </div>
+        </div>
+        <button id="{component_id}-button" class="profile-anim__button" type="button">Run Optimiser</button>
+      </div>
+      <div id="{component_id}-chart" class="profile-anim__chart"></div>
+    </div>
+    <script>
+      (function() {{
+        const PLOTLY_URL = "https://cdn.plot.ly/plotly-2.27.0.min.js";
+        const sequence = {data_sequence_json};
+        const totalFrames = sequence.length;
+        const frameDuration = {frame_duration_ms};
+        const transitionDuration = {transition_ms};
+        const component = document.getElementById("{component_id}");
+        if (!component) {{
+          return;
+        }}
+        const chart = document.getElementById("{component_id}-chart");
+        const statusTextEl = document.getElementById("{component_id}-status-text");
+        const progressFillEl = document.getElementById("{component_id}-progress-fill");
+        const progressLabelEl = document.getElementById("{component_id}-progress-label");
+        const button = document.getElementById("{component_id}-button");
+
+        const COLORS = {{
+          primary: "{PRIMARY_COLOR}",
+          closing: "{CLOSING_NET_COLOR}",
+          envelope: "{ENVELOPE_COLOR}",
+        }};
+
+        function formatLargeAmount(value) {{
+          const absValue = Math.abs(value);
+          if (absValue >= 1_000_000_000) {{
+            return (value / 1_000_000_000).toFixed(1) + "b";
+          }}
+          if (absValue >= 1_000_000) {{
+            return (value / 1_000_000).toFixed(1) + "m";
+          }}
+          if (absValue >= 1_000) {{
+            return (value / 1_000).toFixed(1) + "k";
+          }}
+          return value.toFixed(0);
+        }}
+
+        function buildFigure(entry) {{
+          const spendHover = entry.spend.map(formatLargeAmount);
+          const closingHover = entry.closing.map(formatLargeAmount);
+          const envelopeHover = entry.envelope.map(formatLargeAmount);
+
+          const data = [
+            {{
+              type: "bar",
+              x: entry.years,
+              y: entry.spend,
+              name: "Annual spend",
+              marker: {{color: COLORS.primary}},
+              opacity: 0.75,
+              customdata: spendHover,
+              hovertemplate: "<b>Annual spend</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            }},
+            {{
+              type: "scatter",
+              mode: "lines",
+              x: entry.years,
+              y: entry.closing,
+              name: "Closing net",
+              line: {{color: COLORS.closing, width: 3}},
+              customdata: closingHover,
+              hovertemplate: "<b>Closing net</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            }},
+            {{
+              type: "scatter",
+              mode: "lines+markers",
+              x: entry.years,
+              y: entry.envelope,
+              name: "Envelope",
+              line: {{color: COLORS.envelope, width: 3}},
+              marker: {{color: COLORS.envelope, size: 6}},
+              customdata: envelopeHover,
+              hovertemplate: "<b>Envelope</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            }},
+          ];
+
+          const layout = {{
+            title: {{text: entry.title}},
+            barmode: "overlay",
+            legend: {{orientation: "h", y: -0.22}},
+            xaxis: {{title: ""}},
+            yaxis: {{
+              tickformat: "~s",
+              zeroline: true,
+              zerolinecolor: "#888888",
+              zerolinewidth: 1,
+              zerolinedash: "dot",
+            }},
+            hoverlabel: {{namelength: -1}},
+            margin: {{l: 60, r: 24, t: 60, b: 80}},
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+          }};
+
+          return {{data, layout}};
+        }}
+
+function updateStatus(idx) {{
+          const entry = sequence[idx] || {{ statusText: "", progress: 0 }};
+          const statusText = typeof entry.statusText === "string" ? entry.statusText.trim() : "";
+          const displayText = statusText || "Optimiser progress";
+          const rawProgress = Number(entry.progress);
+          const pct = Number.isFinite(rawProgress) ? Math.min(Math.max(rawProgress, 0), 1) : 0;
+          const pctDisplay = Math.round(pct * 1000) / 10;
+          if (statusTextEl) {{
+            statusTextEl.textContent = displayText;
+          }}
+          if (progressFillEl) {{
+            progressFillEl.style.width = `${{pct * 100}}%`;
+          }}
+          if (progressLabelEl) {{
+            progressLabelEl.textContent = `${{pctDisplay.toFixed(1)}}%`;
+          }}
+        }}
+
+        function ensurePlotly(callback) {{
+          if (window.Plotly) {{
+            callback();
+            return;
+          }}
+          const script = document.createElement("script");
+          script.src = PLOTLY_URL;
+          script.async = true;
+          script.onload = callback;
+          document.head.appendChild(script);
+        }}
+
+        ensurePlotly(() => {{
+          const initialEntry = sequence[0];
+          const initialFigure = buildFigure(initialEntry);
+          const config = {{displayModeBar: false, responsive: true}};
+          Plotly.newPlot(chart, initialFigure.data, initialFigure.layout, config).then(() => {{
+            updateStatus(0);
+            if (totalFrames <= 1) {{
+              button.disabled = true;
+              return;
+            }}
+          }});
+
+          button.addEventListener("click", async () => {{
+            if (button.disabled) {{
+              return;
+            }}
+            button.disabled = true;
+            const start = performance.now();
+            for (let i = 1; i < totalFrames; i++) {{
+              const entry = sequence[i];
+              const figure = buildFigure(entry);
+              await Plotly.react(chart, figure.data, figure.layout, config);
+              updateStatus(i);
+              const target = start + frameDuration * i;
+              if (i < totalFrames - 1) {{
+                const delay = target - performance.now();
+                if (delay > 0) {{
+                  await new Promise((resolve) => setTimeout(resolve, delay));
+                }}
+              }}
+            }}
+            button.disabled = false;
+          }});
+        }});
+      }})();
+    </script>
+    """
+
+    components.html(component_html, height=520)
+
+    return export_tables
+
+
+def render_cash_flow_tab(
     data: DashboardData,
     opt_selection,
     comp_selection,
@@ -8429,6 +8965,18 @@ def main() -> None:
         if active_tab == "Overview":
             download_tables.update(
                 render_overview_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
+            )
+        elif active_tab == "Cash Flow":
+            download_tables.update(
+                render_cash_flow_tab(
                     data,
                     opt_selection,
                     comp_selection,
