@@ -8886,6 +8886,12 @@ def render_scenarios_tab(
     saved_root: Path,
     scenario_folders: List[scenario_utils.ScenarioFolder],
     data: DashboardData,
+    *,
+    opt_selection: Optional[ScenarioSelection] = None,
+    comp_selection: Optional[ScenarioSelection] = None,
+    opt_label: str = "",
+    cmp_label: str = "",
+    download_tables: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> None:
     st.markdown('<div class="pbi-section-title">Scenario workspace</div>', unsafe_allow_html=True)
     st.write("Use this workspace to create scenario folders and run new optimisation batches.")
