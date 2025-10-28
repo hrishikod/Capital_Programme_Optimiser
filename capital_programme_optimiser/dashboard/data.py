@@ -507,6 +507,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
 
     scenario_meta: Dict[str, Dict[str, Any]] = {}
     used_codes: set[str] = set()
+    profile_label_registry: Dict[str, str] = {}
 
     for stem in stems:
         res = results[stem]
@@ -531,6 +532,14 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
 
         cache_file = res.get("_cache_file", f"{stem}.pkl")
         profile_label = _derive_profile_label(cache_file)
+        profile_key = profile_label.strip().lower()
+        if profile_key:
+            canonical = profile_label_registry.get(profile_key)
+            if canonical is None:
+                canonical = profile_label
+                profile_label_registry[profile_key] = canonical
+            else:
+                profile_label = canonical
 
         pv_by_dim_raw = res.get("benefit_pv_by_dim") or res.get("pv_by_dimension") or {}
         pv_by_dim = {str(k): float(v) for k, v in (pv_by_dim_raw or {}).items()}
