@@ -52,7 +52,9 @@ def _derive_profile_label(cache_name: str) -> str:
     stem = str(cache_name or "").strip()
     if not stem:
         return DEFAULT_PROFILE_LABEL
-    name = stem.split(".", 1)[0]
+    from pathlib import Path
+
+    name = Path(stem).name.split(".", 1)[0]
     upper = name.upper()
     if any(upper.startswith(prefix) for prefix in DEFAULT_PROFILE_PREFIXES):
         return DEFAULT_PROFILE_LABEL
@@ -85,7 +87,8 @@ def _detect_comparison_prefixes(stems: Iterable[str]) -> Dict[str, Any]:
         if pref:
             counts[pref] = counts.get(pref, 0) + 1
 
-    ordered = sorted(counts.keys(), key=lambda p: (-counts[p], p))
+    comparison_counts = {pref: count for pref, count in counts.items() if count >= 2}
+    ordered = sorted(comparison_counts.keys(), key=lambda p: (-comparison_counts[p], p))
 
     import re
 
@@ -338,14 +341,22 @@ def load_results(cache_dir: Path) -> Dict[str, Dict[str, Any]]:
     if not cache_dir.exists():
         raise FileNotFoundError(f"Cache dir not found: {cache_dir}")
     results: Dict[str, Dict[str, Any]] = {}
-    for f in sorted(cache_dir.glob("*.pkl")):
+    files = sorted(
+        (p for p in cache_dir.rglob("*.pkl") if p.is_file()),
+        key=lambda p: str(p.relative_to(cache_dir)).lower(),
+    )
+    for f in files:
         if f.stem.endswith("_noSol"):
             continue
         import pickle
 
         with f.open("rb") as fh:
             res = pickle.load(fh)
-        res["_cache_file"] = f.name
+        try:
+            rel_path = f.relative_to(cache_dir)
+        except ValueError:
+            rel_path = f.name
+        res["_cache_file"] = str(rel_path)
         res["_cache_stem"] = f.stem
         res["_cache_path"] = str(f)
         results[f.stem] = res
@@ -356,18 +367,9 @@ def load_results(cache_dir: Path) -> Dict[str, Dict[str, Any]]:
 
 def _normalise_total_benefit(res: Dict[str, Any]) -> pd.DataFrame:
     """Return a Year/BenefitFlow frame from varying solver outputs."""
-    ben = res.get("benefit_flow")
-    if isinstance(ben, pd.DataFrame) and {"Year", "BenefitFlow"}.issubset(ben.columns):
-        df = ben[["Year", "BenefitFlow"]].copy()
-        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
-        df["BenefitFlow"] = pd.to_numeric(df["BenefitFlow"], errors="coerce").fillna(0.0)
-        df = df.dropna(subset=["Year"]).copy()
-        df["Year"] = df["Year"].astype(int)
-        return df
 
-    alt = res.get("benefits_by_year")
-    if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
-        df_alt = alt.copy()
+    def _coerce_year_table(source: pd.DataFrame) -> pd.DataFrame:
+        df_alt = source.copy()
         df_alt["Year"] = pd.to_numeric(df_alt["Year"], errors="coerce")
         df_alt = df_alt.dropna(subset=["Year"]).copy()
         df_alt["Year"] = df_alt["Year"].astype(int)
@@ -387,6 +389,23 @@ def _normalise_total_benefit(res: Dict[str, Any]) -> pd.DataFrame:
         else:
             df_alt["BenefitFlow"] = pd.to_numeric(df_alt[total_col], errors="coerce").fillna(0.0)
         return df_alt[["Year", "BenefitFlow"]]
+
+    ben = res.get("benefit_flow")
+    if isinstance(ben, pd.DataFrame) and {"Year", "BenefitFlow"}.issubset(ben.columns):
+        df = ben[["Year", "BenefitFlow"]].copy()
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+        df["BenefitFlow"] = pd.to_numeric(df["BenefitFlow"], errors="coerce").fillna(0.0)
+        df = df.dropna(subset=["Year"]).copy()
+        df["Year"] = df["Year"].astype(int)
+        return df
+
+    full = res.get("benefits_by_year_full")
+    if isinstance(full, pd.DataFrame) and "Year" in full.columns:
+        return _coerce_year_table(full)
+
+    alt = res.get("benefits_by_year")
+    if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
+        return _coerce_year_table(alt)
 
     return pd.DataFrame(columns=["Year", "BenefitFlow"])
 
@@ -441,6 +460,18 @@ def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
             .reset_index()
         )
 
+    alt_full = res.get("benefits_by_year_full")
+    if isinstance(alt_full, pd.DataFrame) and "Year" in alt_full.columns:
+        df_full = alt_full.copy()
+        df_full["Year"] = pd.to_numeric(df_full["Year"], errors="coerce")
+        df_full = df_full.dropna(subset=["Year"]).copy()
+        df_full["Year"] = df_full["Year"].astype(int)
+        dim_cols_full = [c for c in df_full.columns if c != "Year"]
+        if dim_cols_full:
+            for c in dim_cols_full:
+                df_full[c] = pd.to_numeric(df_full[c], errors="coerce").fillna(0.0)
+            return df_full[["Year"] + dim_cols_full]
+
     alt = res.get("benefits_by_year")
     if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
         df_alt = alt.copy()
@@ -471,7 +502,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
 
     first = results[stems[0]]
     start_fy = int(first.get("calendar", {}).get("start_fy", 2025))
-    model_years = int(first.get("calendar", {}).get("years", 50))
+    model_years = int(first.get("calendar", {}).get("years", 60))
     benefit_rate = float(first.get("benefit_rate", 0.02))
 
     scenario_meta: Dict[str, Dict[str, Any]] = {}
@@ -598,6 +629,34 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         env_val = meta["Envelope"] if meta["Envelope"] != "" else None
         yoy_buf = meta["Buffer"] if meta["Buffer"] != "" else None
         cash_buf = meta["CashPlus"] if meta["CashPlus"] != "" else None
+
+        calendar_info = res.get("calendar") or {}
+        cal_start = calendar_info.get("start_fy")
+        cal_years = calendar_info.get("years")
+        try:
+            cal_start_int = int(cal_start)
+            cal_years_int = int(cal_years)
+        except (TypeError, ValueError):
+            cal_start_int = None
+            cal_years_int = None
+        if cal_start_int is not None and cal_years_int is not None and cal_years_int > 0:
+            years_union.update(cal_start_int + i for i in range(cal_years_int))
+
+        meta_window = (res.get("meta") or {}).get("pv_window") or {}
+        base_year = meta_window.get("base_year")
+        last_year = meta_window.get("last_pv_year")
+        try:
+            base_year_int = int(base_year)
+            last_year_int = int(last_year)
+        except (TypeError, ValueError):
+            base_year_int = None
+            last_year_int = None
+        if (
+            base_year_int is not None
+            and last_year_int is not None
+            and last_year_int >= base_year_int
+        ):
+            years_union.update(range(base_year_int, last_year_int + 1))
 
         cf = res.get("cash_flow", pd.DataFrame(columns=["Year", "Spend", "ClosingNet", "Envelope"]))
         if not cf.empty:

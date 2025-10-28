@@ -1097,7 +1097,7 @@ def collect_navigation_previews(
         data,
         opt_selection,
         comp_selection,
-        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 60)),
     )
     if waterfall_preview is not None:
         _append_preview(
@@ -1110,7 +1110,7 @@ def collect_navigation_previews(
         data,
         opt_selection,
         comp_selection,
-        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 60)),
     )
     if bridge_preview is not None:
         _append_preview(
@@ -1123,7 +1123,7 @@ def collect_navigation_previews(
         data,
         opt_selection,
         comp_selection,
-        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 60)),
     )
     if radar_preview is not None:
         _append_preview(
@@ -1179,7 +1179,7 @@ def collect_navigation_previews(
         cmp_series,
         opt_selection,
         comp_selection,
-        horizon_years=int(st.session_state.get("npv_horizon_selection", 50)),
+        horizon_years=int(st.session_state.get("npv_horizon_selection", 60)),
     )
     if delta_fig is not None:
         _append_preview(
@@ -1879,6 +1879,8 @@ def load_interpolated_profile_assets(
                 npv_value = float(npv_series.iloc[0])
         if npv_value is None and npv_by_profile:
             candidate = npv_by_profile.get(profile_idx)
+            if candidate is None:
+                candidate = npv_by_profile.get(str(profile_idx))
             if candidate is not None:
                 try:
                     npv_value = float(candidate)
@@ -2515,15 +2517,36 @@ def _scenario_project_benefit_table(
     if isinstance(working.index, pd.MultiIndex):
         level_names = list(working.index.names)
         project_level = level_names.index("Project") if "Project" in level_names else 0
-        aggregated = working.groupby(level=project_level)[selected_cols].sum()
+        dimension_level = level_names.index("Dimension") if "Dimension" in level_names else None
+
+        if dimension_level is not None:
+            try:
+                totals_only = working.xs("Total", level=dimension_level, drop_level=True)
+            except KeyError:
+                totals_only = None
+            if totals_only is not None and not totals_only.empty:
+                aggregated = totals_only[selected_cols]
+            else:
+                aggregated = working.groupby(level=project_level)[selected_cols].sum()
+        else:
+            aggregated = working.groupby(level=project_level)[selected_cols].sum()
     else:
         project_col = None
+        dimension_col = None
         for candidate in working.columns:
-            if str(candidate).strip().lower() == "project":
+            normalized = str(candidate).strip().lower()
+            if normalized == "project":
                 project_col = candidate
-                break
+            elif normalized == "dimension":
+                dimension_col = candidate
         if project_col is None:
             return None
+        if dimension_col is not None:
+            totals_only = working[
+                working[dimension_col].astype(str).str.strip().str.lower() == "total"
+            ]
+            if not totals_only.empty:
+                working = totals_only
         aggregated = working.groupby(project_col)[selected_cols].sum()
     aggregated = aggregated.astype(float)
     aggregated = aggregated.reindex(columns=years, fill_value=0.0)
@@ -8473,7 +8496,7 @@ def render_benefits_tab(
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
     st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
-    npv_horizon_options = [50, 35]
+    npv_horizon_options = [60, 50, 35]
     selected_npv_horizon = int(
         st.radio(
             "NPV horizon (years)",
@@ -8667,7 +8690,7 @@ def render_benefits_tab(
                     export_tables[f"Dimension mix - {cmp_label}"] = cmp_dim_export
     if SHOW_REAL_BENEFIT_CHARTS:
         st.markdown('<div class="pbi-section-title">Benefit profile</div>', unsafe_allow_html=True)
-        horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
+        horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
         benefit_cols = st.columns(2)
         with benefit_cols[0]:
             benefit_fig = benefit_chart(opt_series, cmp_series, dimension=opt_selection.dimension)
@@ -9425,7 +9448,7 @@ def main() -> None:
     st.session_state["active_tab"] = active_tab
 
     with content_col:
-        summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 50))
+        summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
         npv_summary_label = npv_context_label(
             data,
             opt_selection,
