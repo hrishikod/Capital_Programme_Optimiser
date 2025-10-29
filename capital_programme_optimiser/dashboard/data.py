@@ -682,6 +682,8 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         ben_total = _normalise_total_benefit(res)
         ben_total.insert(0, "Code", code)
         ben_total.insert(0, "Key", ben_total["Code"] + "|" + ben_total["Year"].astype(str))
+        if not ben_total.empty:
+            years_union.update(pd.to_numeric(ben_total["Year"], errors="coerce").dropna().astype(int).tolist())
         ben_rows.append(ben_total)
 
         df_w = _normalise_benefit_dim_wide(res)
@@ -696,11 +698,24 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             long["BenefitFlow"] = pd.to_numeric(long["BenefitFlow"], errors="coerce").fillna(0.0)
             long.insert(0, "Code", code)
             long.insert(0, "Key", long["Code"] + "|" + long["Dimension"].astype(str) + "|" + long["Year"].astype(str))
+            if not long.empty:
+                years_union.update(pd.to_numeric(long["Year"], errors="coerce").dropna().astype(int).tolist())
             bendim_rows.append(long[["Key", "Code", "Dimension", "Year", "BenefitFlow"]])
 
         sched = res.get("schedule", pd.DataFrame())
         if not sched.empty:
             sched_rows.append(sched[["Project", "StartFY", "EndFY", "Dur"]].assign(Code=code))
+            if {"StartFY", "EndFY"}.issubset(sched.columns):
+                start_vals = pd.to_numeric(sched["StartFY"], errors="coerce")
+                end_vals = pd.to_numeric(sched["EndFY"], errors="coerce")
+                mask_sched = start_vals.notna() & end_vals.notna()
+                if mask_sched.any():
+                    for start_year, end_year in zip(
+                        start_vals[mask_sched].astype(int),
+                        end_vals[mask_sched].astype(int),
+                    ):
+                        if end_year >= start_year:
+                            years_union.update(range(start_year, end_year + 1))
 
         spend = res.get("spend", pd.DataFrame())
         if not spend.empty:
