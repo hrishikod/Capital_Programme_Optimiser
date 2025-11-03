@@ -1191,11 +1191,13 @@ def collect_navigation_previews(
 
     # Delivery tab previews
     project_colors = project_color_map(data)
+    schedule_year_range = _effective_year_range([opt_series, cmp_series], value_column="Spend")
     schedule_opt_fig = project_schedule_area_chart(
         data,
         opt_selection,
         title=f"Schedule - {opt_label}",
         color_map=project_colors,
+        display_year_range=schedule_year_range,
     )
     if schedule_opt_fig is not None:
         _append_preview(
@@ -1209,6 +1211,7 @@ def collect_navigation_previews(
         comp_selection,
         title=f"Schedule - {cmp_label}",
         color_map=project_colors,
+        display_year_range=schedule_year_range,
     )
     if schedule_cmp_fig is not None:
         _append_preview(
@@ -2966,6 +2969,8 @@ def scenario_selector(
 
     profile_name: Optional[str] = None,
 
+    show_benefit_controls: bool = True,
+
 ) -> ScenarioSelection:
 
     base_df = data.scenarios
@@ -3008,33 +3013,45 @@ def scenario_selector(
 
     )
 
-    steep_index = options.benefit_steep.index(options.benefit_steep[0]) if options.benefit_steep else 0
+    if show_benefit_controls and options.benefit_steep:
 
-    benefit_steep = st.selectbox(
+        steep_index = options.benefit_steep.index(options.benefit_steep[0]) if options.benefit_steep else 0
 
-        f"{name} benefit steepness (aggressive <-> conservative)",
+        benefit_steep = st.selectbox(
 
-        options.benefit_steep,
+            f"{name} benefit steepness (aggressive <-> conservative)",
 
-        index=steep_index,
+            options.benefit_steep,
 
-        key=f"{key_prefix}_steep",
+            index=steep_index,
 
-    )
+            key=f"{key_prefix}_steep",
 
-    horizon_index = 0
+        )
 
-    benefit_horizon = st.selectbox(
+    else:
 
-        f"{name} benefit horizon (years)",
+        benefit_steep = options.benefit_steep[0] if options.benefit_steep else ""
 
-        options.benefit_horizon,
+    if show_benefit_controls and options.benefit_horizon:
 
-        index=horizon_index,
+        horizon_index = 0
 
-        key=f"{key_prefix}_horizon",
+        benefit_horizon = st.selectbox(
 
-    )
+            f"{name} benefit horizon (years)",
+
+            options.benefit_horizon,
+
+            index=horizon_index,
+
+            key=f"{key_prefix}_horizon",
+
+        )
+
+    else:
+
+        benefit_horizon = int(options.benefit_horizon[0]) if options.benefit_horizon else 0
 
     preferred_modes_order = ["buffered", "fixed", "cash"]
 
@@ -3715,6 +3732,43 @@ def scenario_metrics(
 
     }
 
+
+def _effective_year_range(
+    frames: Iterable[Optional[pd.DataFrame]],
+    *,
+    value_column: str = "Spend",
+    threshold: float = 1e-9,
+) -> Optional[Tuple[int, int]]:
+    min_year: Optional[int] = None
+    max_year: Optional[int] = None
+    for frame in frames:
+        if frame is None or frame.empty:
+            continue
+        years = pd.to_numeric(frame.get("Year"), errors="coerce")
+        if years.isnull().all():
+            continue
+        valid_years = years.dropna()
+        if valid_years.empty:
+            continue
+        year_min = int(valid_years.min())
+        min_year = year_min if min_year is None else min(min_year, year_min)
+        values_raw = frame.get(value_column)
+        if values_raw is None:
+            values = pd.Series(np.zeros(len(frame)), index=frame.index)
+        else:
+            values = pd.to_numeric(values_raw, errors="coerce").fillna(0.0)
+        active_mask = years.notna() & (values.abs() > threshold)
+        if active_mask.any():
+            year_max = int(years[active_mask].max())
+        else:
+            year_max = int(valid_years.max())
+        max_year = year_max if max_year is None else max(max_year, year_max)
+    if max_year is None:
+        return None
+    if min_year is None:
+        min_year = max_year
+    return (min_year, max_year)
+
 def cash_chart(
 
     df: pd.DataFrame,
@@ -3732,6 +3786,8 @@ def cash_chart(
     comparison_selection: Optional[ScenarioSelection] = None,
 
     horizon_override: Optional[int] = None,
+
+    x_axis_year_range: Optional[Tuple[int, int]] = None,
 
 ) -> go.Figure:
 
@@ -3824,6 +3880,13 @@ def cash_chart(
 
     yaxis_title_default = None
 
+    xaxis_config: Dict[str, Any] = {"title": None}
+    if x_axis_year_range:
+        start_year, end_year = x_axis_year_range
+        if start_year is not None and end_year is not None and end_year >= start_year:
+            padding = 0.4
+            xaxis_config["range"] = [start_year - padding, end_year + padding]
+
     fig.update_layout(
 
         title=title,
@@ -3832,7 +3895,7 @@ def cash_chart(
 
         legend=legend_bottom(),
 
-        xaxis_title=None,
+        xaxis=xaxis_config,
 
         yaxis_title=yaxis_title_default,
 
@@ -5648,6 +5711,8 @@ def project_schedule_area_chart(
 
     color_map: Dict[str, str],
 
+    display_year_range: Optional[Tuple[int, int]] = None,
+
 ) -> Optional[go.Figure]:
 
     if not selection.code:
@@ -5670,12 +5735,22 @@ def project_schedule_area_chart(
 
     base_palette = PROJECT_COLOR_POOL if PROJECT_COLOR_POOL else ("#1f77b4",)
 
+    display_years = list(years)
+    if display_year_range:
+        start_year, end_year = display_year_range
+        display_years = [
+            year for year in years
+            if (start_year is None or year >= start_year) and (end_year is None or year <= end_year)
+        ]
+        if not display_years:
+            display_years = list(years)
+
     tick_step = 1
-    if len(years) > 40:
+    if len(display_years) > 40:
         tick_step = 4
-    elif len(years) > 25:
+    elif len(display_years) > 25:
         tick_step = 2
-    tick_vals = years[::tick_step]
+    tick_vals = display_years[::tick_step]
     tick_text = [str(v) for v in tick_vals]
 
     for idx, run in enumerate(runs):
@@ -5741,9 +5816,9 @@ def project_schedule_area_chart(
 
         return None
 
-    min_year = years[0]
+    min_year = display_years[0]
 
-    max_year = years[-1]
+    max_year = display_years[-1]
 
     fig.update_layout(
 
@@ -8399,6 +8474,12 @@ def render_cash_flow_tab(
         value=st.session_state.get("show_overview_cumulative_cash", False),
         key="show_overview_cumulative_cash",
     )
+    cash_axis_range = None
+    if not show_cumulative_cash:
+        cash_axis_range = _effective_year_range(
+            [opt_series, cmp_series],
+            value_column="Spend",
+        )
     cash_cols = st.columns(2)
     profile_label = "cumulative profile" if show_cumulative_cash else "cash flow profile"
     with cash_cols[0]:
@@ -8417,6 +8498,7 @@ def render_cash_flow_tab(
                     data=data,
                     selection=opt_selection,
                     comparison_selection=comp_selection,
+                    x_axis_year_range=cash_axis_range,
                 )
             st.plotly_chart(
                 opt_fig,
@@ -8457,6 +8539,7 @@ def render_cash_flow_tab(
                     data=data,
                     selection=comp_selection,
                     comparison_selection=opt_selection,
+                    x_axis_year_range=cash_axis_range,
                 )
             st.plotly_chart(
                 cmp_fig,
@@ -8741,18 +8824,24 @@ def render_delivery_tab(
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
     project_colors = project_color_map(data)
+    schedule_year_range = _effective_year_range(
+        [opt_series, cmp_series],
+        value_column="Spend",
+    )
     st.markdown('<div class="pbi-section-title">Delivery schedule</div>', unsafe_allow_html=True)
     schedule_opt_fig = project_schedule_area_chart(
         data,
         opt_selection,
         title=f"Project schedule - {opt_label}",
         color_map=project_colors,
+        display_year_range=schedule_year_range,
     )
     schedule_cmp_fig = project_schedule_area_chart(
         data,
         comp_selection,
         title=f"Project schedule - {cmp_label}",
         color_map=project_colors,
+        display_year_range=schedule_year_range,
     )
     schedule_col1, schedule_col2 = st.columns(2)
     with schedule_col1:
@@ -9369,6 +9458,7 @@ def main() -> None:
                 prefer_comparison=False,
                 key_prefix="opt",
                 profile_name=selected_opt_profile,
+                show_benefit_controls=False,
             )
         with adv_cmp_col:
             comp_selection = scenario_selector(
@@ -9382,6 +9472,7 @@ def main() -> None:
                 prefer_comparison=True,
                 key_prefix="cmp",
                 profile_name=selected_cmp_profile,
+                show_benefit_controls=False,
             )
 
     opt_series = build_timeseries(data, opt_selection)

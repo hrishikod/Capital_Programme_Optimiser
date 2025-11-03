@@ -521,7 +521,10 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         yoy_buf = _parse_buffer_from_stem(stem) if mode == "buffered" else None
         cash_buf = _parse_cash_from_stem(stem) if mode == "cash" else None
         steep, horizon = _parse_benefit_scenario(stem, res)
-        obj_dim_raw = (res.get("objective", {}) or {}).get("primary_dim")
+        objective_meta = res.get("objective", {}) or {}
+        if not isinstance(objective_meta, dict):
+            objective_meta = {}
+        obj_dim_raw = objective_meta.get("primary_dim")
         inferred_dim = _infer_dimension_from_stem(base_stem)
         obj_dim = str(obj_dim_raw).strip() if obj_dim_raw else ""
         if inferred_dim and inferred_dim.strip():
