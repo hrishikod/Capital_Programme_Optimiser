@@ -46,14 +46,35 @@ import pandas as pd
 
 # --- Cardinal Optimizer (COPT) -----------------------------------------------
 try:
-    import coptpy as co
-except Exception as e:
-    raise RuntimeError(
-        "Failed to import coptpy. Ensure the COPT binary and licence are installed "
-        "and COPT_HOME is configured. Original error: " + str(e)
-    ) from e
+    import coptpy as co  # type: ignore[import]
+except Exception as e:  # pragma: no cover - fallback for non-COPT environments
+    co = None  # type: ignore[assignment]
 
-COPT = co.COPT
+    class _MissingCoptModule:
+        """Raise a helpful error whenever the code tries to touch COPT."""
+
+        def __init__(self, err: Exception) -> None:
+            self._err = err
+
+        def __getattr__(self, name: str):
+            raise RuntimeError(
+                "COPT runtime is not available in this environment. "
+                "Install the Cardinal Optimizer (coptpy) and configure COPT_HOME. "
+                f"Original import error: {self._err}"
+            ) from self._err
+
+        def __call__(self, *args, **kwargs):
+            return self.__getattr__("__call__")
+
+    _missing_copt = _MissingCoptModule(e)
+    co = _missing_copt  # type: ignore[assignment]
+    COPT = _missing_copt  # type: ignore[assignment]
+    COPT_AVAILABLE = False
+    COPT_IMPORT_ERROR = e
+else:
+    COPT = co.COPT
+    COPT_AVAILABLE = True
+    COPT_IMPORT_ERROR = None
 
 from capital_programme_optimiser.config import load_settings
 
