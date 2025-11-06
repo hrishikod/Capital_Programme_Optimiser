@@ -1,31 +1,26 @@
 # Dependency Guide
 
-Install the project dependencies with your preferred package manager. Examples below assume a fresh virtual environment (conda or venv).
+Install dependencies into a fresh virtual environment (conda or venv recommended).
 
 ## Core runtime
 
 ```bash
 pip install --upgrade pip
-pip install numpy pandas highspy xlsxwriter openpyxl pyyaml
+pip install -r requirements.txt
 ```
 
-## Front end & CLI extras
+## Optimiser engine
+
+`coptpy` provides the COPT bindings used by the optimiser. Ensure the COPT binary and licence are available on your machine and then install the Python wheel:
 
 ```bash
-pip install streamlit typer rich plotly
+pip install coptpy
 ```
+
+Refer to [Cardinal Operations](https://www.cardinaloperations.com/) for licence provisioning.
 
 ## Optional developer tooling
 
 ```bash
 pip install black isort mypy pytest
 ```
-
-HighsPy binaries are platform specific. On Windows, install via the pre-built wheel:
-
-```bash
-pip install highspy --index-url=https://pypi.org/simple/
-```
-
-If installation fails, consult the [HiGHS documentation](https://www.highs.dev/) for platform guidance.
-

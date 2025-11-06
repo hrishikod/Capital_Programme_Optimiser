@@ -52,6 +52,7 @@ class OptimiserRunConfig:
     run_plusminus: bool = True
     forced_start: Dict[str, ForcedStartInput] = field(default_factory=dict)
     time_limit: Optional[int] = None
+    run_prefix: Optional[str] = None
 
     def serializable(self) -> Dict[str, object]:
         return {
@@ -67,6 +68,7 @@ class OptimiserRunConfig:
                 name: fs.to_solver_spec() for name, fs in self.forced_start.items() if fs.to_solver_spec()
             },
             "time_limit": self.time_limit,
+            "run_prefix": self.run_prefix,
         }
 
 
@@ -317,11 +319,30 @@ def run_optimiser_for_scenario(
     original_cfg = dict(solver_core.CFG)
     original_time_limit = solver_core.SOLVE_SECONDS
     original_dims = list(solver_core.PRIMARY_OBJECTIVE_DIMS_TO_RUN)
+    original_prefix = solver_core.PKL_PREFIX
 
     started_at = datetime.now(timezone.utc)
 
-    if clean:
-        for existing in target.glob("*.pkl"):
+    scenario_label = None
+    if folder.metadata is not None:
+        scenario_label = folder.metadata.get("name")
+    if not scenario_label:
+        scenario_label = folder.name
+    folder_slug = _slugify(scenario_label or "")
+
+    custom_prefix_raw = (run_config.run_prefix or "").strip()
+    if custom_prefix_raw:
+        custom_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", custom_prefix_raw).strip("_")
+        run_prefix = f"{custom_slug}_" if custom_slug else f"{folder_slug}_"
+    else:
+        run_prefix = f"{folder_slug}_"
+
+    if clean and folder.kind == "saved":
+        if run_prefix:
+            pattern = f"{run_prefix}*.pkl"
+        else:
+            pattern = "*.pkl"
+        for existing in target.glob(pattern):
             try:
                 existing.unlink()
             except OSError:
@@ -329,6 +350,8 @@ def run_optimiser_for_scenario(
 
     solver_core.CACHE = target
     target.mkdir(parents=True, exist_ok=True)
+
+    solver_core.PKL_PREFIX = run_prefix
 
     solver_core.SURPLUS_OPTIONS_M = {str(k): float(v) for k, v in run_config.surplus_options_m.items()}
     solver_core.PLUSMINUS_LEVELS_M = [float(v) for v in run_config.plusminus_levels_m]
@@ -375,6 +398,7 @@ def run_optimiser_for_scenario(
         solver_core.CFG.update(original_cfg)
         solver_core.SOLVE_SECONDS = original_time_limit
         solver_core.PRIMARY_OBJECTIVE_DIMS_TO_RUN = original_dims
+        solver_core.PKL_PREFIX = original_prefix
         if error is not None:
             tracker.finalize("run_error")
 

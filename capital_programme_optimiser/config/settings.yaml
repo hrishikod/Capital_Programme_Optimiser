@@ -1,6 +1,6 @@
 root: .
 data:
-  scoring_workbook: Scoring_latest.xlsx
+  scoring_workbook: "C:/Users/Adrian Desilvestro/Documents/NZTA/Project_Rons_optimisation/Scoring_latest_nonnegative.xlsx"
   costs_sheet: Costs
   benefit_scenarios:
     A60: Benefits-A60

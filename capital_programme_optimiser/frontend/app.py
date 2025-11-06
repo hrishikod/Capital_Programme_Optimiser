@@ -141,6 +141,11 @@ def set_scenario_display_labels(primary: str, comparison: str) -> None:
     CURRENT_SCENARIO_LABELS["comparison"] = comparison_clean
     CURRENT_SCENARIO_LABELS["pair"] = f"{primary_clean} - {comparison_clean}"
 
+
+def _slugify_label(label: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9]+", str(label or ""))
+    return "_".join(tokens)
+
 from capital_programme_optimiser.frontend import scenarios as scenario_utils
 from capital_programme_optimiser.optimisation import solver_core
 
@@ -2795,130 +2800,75 @@ def profile_options(
     return _sorted_profile_labels(subset["Profile"].dropna().astype(str).tolist())
 
 def available_envelopes(
-
     data: DashboardData,
-
     *,
-
     confidence: str,
-
     steep: str,
-
     horizon: int,
-
     mode: str,
-
     prefer_comparison: Optional[bool] = None,
-
     scenarios_df: Optional[pd.DataFrame] = None,
-
+    slug_prefix: Optional[str] = None,
 ) -> List[int]:
-
     df = scenarios_df if scenarios_df is not None else data.scenarios
-
     if df.empty:
-
         return []
-
     mask = (
-
         (df["Conf"] == confidence)
-
         & (df["BenSteep"] == steep)
-
         & (pd.to_numeric(df["BenHorizon"], errors="coerce") == int(horizon))
-
         & (df["Mode"] == mode)
-
     )
-
     if prefer_comparison is not None and "IsComp" in df.columns:
-
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
-
+    if slug_prefix and "CacheStem" in df.columns:
+        stems_lower = df["CacheStem"].astype(str).str.lower()
+        mask = mask & stems_lower.str.startswith(slug_prefix.lower())
     subset = df.loc[mask]
-
     if subset.empty or mode not in {"fixed", "buffered", "cash"}:
-
         return []
-
     values = pd.to_numeric(subset["Envelope"], errors="coerce").dropna()
-
     return sorted({int(v) for v in values.tolist()})
 
 
 
+
 def available_buffer_levels(
-
     data: DashboardData,
-
     *,
-
     confidence: str,
-
     steep: str,
-
     horizon: int,
-
     mode: str,
-
     envelope: Optional[int] = None,
-
     prefer_comparison: Optional[bool] = None,
-
     scenarios_df: Optional[pd.DataFrame] = None,
-
+    slug_prefix: Optional[str] = None,
 ) -> List[int]:
-
     df = scenarios_df if scenarios_df is not None else data.scenarios
-
     if df.empty:
-
         return []
-
     mask = (
-
         (df["Conf"] == confidence)
-
         & (df["BenSteep"] == steep)
-
         & (pd.to_numeric(df["BenHorizon"], errors="coerce") == int(horizon))
-
         & (df["Mode"] == mode)
-
     )
-
     if prefer_comparison is not None and "IsComp" in df.columns:
-
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
-
     if envelope is not None and "Envelope" in df.columns:
-
-        env_series = pd.to_numeric(df["Envelope"], errors="coerce")
-
-        env_match = np.isclose(env_series.to_numpy(), float(envelope), atol=1e-6, equal_nan=False)
-
-        mask = mask & pd.Series(env_match, index=df.index)
-
+        mask = mask & (pd.to_numeric(df["Envelope"], errors="coerce") == float(envelope))
+    if slug_prefix and "CacheStem" in df.columns:
+        stems_lower = df["CacheStem"].astype(str).str.lower()
+        mask = mask & stems_lower.str.startswith(slug_prefix.lower())
     subset = df.loc[mask]
-
-    if subset.empty:
-
+    if subset.empty or mode not in {"buffered", "cash"}:
         return []
-
-    if mode == "buffered":
-
-        values = pd.to_numeric(subset["Buffer"], errors="coerce").dropna()
-
-        return sorted({int(v) for v in values.tolist()})
-
-    if mode == "cash":
-
-        values = pd.to_numeric(subset["CashPlus"], errors="coerce").dropna()
-
-        return sorted({int(v) for v in values.tolist()})
-
-    return []
+    values = pd.to_numeric(
+        subset["Buffer"] if mode == "buffered" else subset["CashPlus"],
+        errors="coerce",
+    ).dropna()
+    return sorted({int(v) for v in values.tolist()})
 
 
 
@@ -3104,6 +3054,14 @@ def scenario_selector(
 
         sources.append(base_df)
 
+    profile_prefix = (profile_name or "").strip().lower()
+
+    slug_filter: Optional[str] = None
+
+    if profile_prefix and profile_prefix != DEFAULT_PROFILE_LABEL.lower():
+
+        slug_filter = profile_prefix
+
     def _collect_values(fetcher, allow_none_pref: bool = True):
 
         prefs: List[Optional[bool]] = []
@@ -3153,6 +3111,8 @@ def scenario_selector(
             prefer_comparison=pref,
 
             scenarios_df=src,
+
+            slug_prefix=slug_filter,
 
         )
 
@@ -3211,6 +3171,8 @@ def scenario_selector(
                 prefer_comparison=pref,
 
                 scenarios_df=src,
+
+                slug_prefix=slug_filter,
 
             )
 
@@ -3298,13 +3260,51 @@ def scenario_selector(
 
             st.warning("No cash uplift levels available for this combination.")
 
-    dimension_options = data.dims
-    if dimension_options:
-        try:
-            # Ensure "Total" is the first option, with other dimensions preserving order.
-            dimension_options = ["Total"] + [dim for dim in dimension_options if str(dim).strip() != "Total"]
-        except Exception:
-            dimension_options = data.dims
+    dimension_options: List[str] = []
+    dim_source = profile_df if profile_filtered else base_df
+    if dim_source.empty:
+        dim_source = data.scenarios
+    if not dim_source.empty:
+        dim_mask = (
+            (dim_source["Conf"] == confidence)
+            & (dim_source["BenSteep"] == benefit_steep)
+            & (pd.to_numeric(dim_source["BenHorizon"], errors="coerce") == int(benefit_horizon))
+            & (dim_source["Mode"] == mode_key)
+        )
+        if prefer_comparison is not None and "IsComp" in dim_source.columns:
+            dim_mask = dim_mask & (dim_source["IsComp"] == (1 if prefer_comparison else 0))
+        if mode_key in {"fixed", "buffered", "cash"} and envelope is not None:
+            dim_mask = dim_mask & (
+                pd.to_numeric(dim_source["Envelope"], errors="coerce") == float(envelope)
+            )
+        if mode_key == "buffered" and buffer_value is not None:
+            dim_mask = dim_mask & (
+                pd.to_numeric(dim_source["Buffer"], errors="coerce") == float(buffer_value)
+            )
+        if mode_key == "cash" and buffer_value is not None:
+            dim_mask = dim_mask & (
+                pd.to_numeric(dim_source["CashPlus"], errors="coerce") == float(buffer_value)
+            )
+        if slug_filter and "CacheStem" in dim_source.columns:
+            stems = dim_source["CacheStem"].astype(str).str.lower()
+            dim_mask = dim_mask & stems.str.startswith(slug_filter)
+        subset_dims = (
+            dim_source.loc[dim_mask, "ObjectiveDim"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+        dimension_options = sorted({dim for dim in subset_dims if dim})
+    if not dimension_options:
+        dimension_options = [str(dim).strip() for dim in (data.dims or ["Total"]) if str(dim).strip()]
+        if not dimension_options:
+            dimension_options = ["Total"]
+    try:
+        dimension_options = ["Total"] + [dim for dim in dimension_options if dim.lower() != "total"]
+    except Exception:
+        pass
 
     default_dim_index = dimension_options.index("Total") if "Total" in dimension_options else 0
 
@@ -9070,6 +9070,24 @@ def render_scenarios_tab(
             index=folder_labels.index(default_folder_label),
             key="run_target_folder",
         )
+        selected_folder = folder_lookup[target_label]
+        default_run_name = ""
+        if selected_folder.metadata:
+            default_run_name = str(selected_folder.metadata.get("name") or "")
+        if not default_run_name:
+            default_run_name = selected_folder.name
+        run_name_key = "scenario_run_name"
+        run_name_folder_key = "scenario_run_name_folder"
+        if (
+            run_name_key not in st.session_state
+            or st.session_state.get(run_name_folder_key) != selected_folder.name
+        ):
+            st.session_state[run_name_key] = default_run_name
+            st.session_state[run_name_folder_key] = selected_folder.name
+        run_name = st.text_input(
+            "Run name (used for file prefix)",
+            key=run_name_key,
+        )
         st.markdown("Forced start rules")
         forced_rows = []
         for name, rule in settings.forced_start.items():
@@ -9171,17 +9189,21 @@ def render_scenarios_tab(
         max_rows = max(len(surplus_items), len(plus_defaults)) or 1
         envelope_rows: List[Dict[str, Optional[float]]] = []
         for idx in range(max_rows):
-            code: Optional[str] = None
+            code_value: Optional[str] = None
             annual_val: Optional[float] = None
             buffer_val: Optional[float] = None
             if idx < len(surplus_items):
-                code, annual_val = surplus_items[idx]
+                raw_code, annual_val = surplus_items[idx]
                 annual_val = float(annual_val)
+                if annual_val is not None:
+                    code_value = f"s{int(round(annual_val))}"
+                if not code_value and raw_code:
+                    code_value = str(raw_code)
             if idx < len(plus_defaults):
                 buffer_val = float(plus_defaults[idx])
             envelope_rows.append(
                 {
-                    "Code": code or f"env_{idx}",
+                    "Code": code_value or f"env_{idx}",
                     "AnnualMillions": annual_val,
                     "BufferMillions": buffer_val,
                 }
@@ -9209,16 +9231,20 @@ def render_scenarios_tab(
         if not scenario_keys:
             st.warning("Select at least one benefit scenario.")
             proceed = False
-        envelopes = {}
+        envelopes: Dict[str, float] = {}
         envelope_records = envelopes_editor.to_dict("records")
         for idx, row in enumerate(envelope_records):
-            code = str(row.get("Code", "")).strip()
             value = row.get("AnnualMillions")
             if pd.isna(value):
                 continue
-            if not code:
-                code = f"env_{idx}"
-            envelopes[code] = float(value)
+            value_f = float(value)
+            base_key = f"s{int(round(value_f))}"
+            code = base_key
+            suffix = 2
+            while code in envelopes:
+                code = f"{base_key}_{suffix}"
+                suffix += 1
+            envelopes[code] = value_f
         if not envelopes:
             st.warning("Provide at least one envelope value.")
             proceed = False
@@ -9294,6 +9320,7 @@ def render_scenarios_tab(
                     run_plusminus=True,
                     forced_start=forced_inputs,
                     time_limit=int(settings.optimisation.solve_seconds),
+                    run_prefix=(run_name or "").strip(),
                 )
                 summary = scenario_utils.run_optimiser_for_scenario(
                     settings,
@@ -9309,7 +9336,7 @@ def render_scenarios_tab(
                 st.session_state["last_run_summary"] = summary.serializable()
                 st.session_state["selected_cache_label"] = target_label
                 load_dashboard_data.clear()
-                st.experimental_rerun()
+                st.rerun()
 
 
 

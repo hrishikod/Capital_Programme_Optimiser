@@ -117,8 +117,13 @@ def _strip_detected_prefix(stem: str, prefix: str) -> str:
 def _parse_surplus_from_stem(stem: str) -> Optional[float]:
     import re
 
-    m = re.search(r"_s(\d+)", stem, flags=re.IGNORECASE)
-    return float(m.group(1)) if m else None
+    m = re.search(r"_(?:s|m)(\d+(?:\.\d+)?)", stem, flags=re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_buffer_from_stem(stem: str) -> Optional[float]:
@@ -517,7 +522,46 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
 
         conf = _parse_confidence(stem)
         mode = _parse_mode(stem)
-        env_val = _parse_surplus_from_stem(stem) if mode in {"fixed", "buffered", "cash"} else None
+        meta_info = (res.get("meta") or {})
+        env_val_meta = meta_info.get("baseline_envelope_M")
+        baseline_known = env_val_meta is not None
+        full_env_meta = meta_info.get("full_envelope_M")
+        plus_meta = meta_info.get("plusminus_M")
+        if env_val_meta is None and full_env_meta is not None:
+            try:
+                full_env_val = float(full_env_meta)
+            except (TypeError, ValueError):
+                full_env_val = None
+            else:
+                plus_val: Optional[float] = None
+                if plus_meta is not None:
+                    try:
+                        plus_val = float(plus_meta)
+                    except (TypeError, ValueError):
+                        plus_val = None
+                if plus_val is None:
+                    if mode == "buffered":
+                        plus_val = _parse_buffer_from_stem(stem)
+                    elif mode == "cash":
+                        plus_val = _parse_cash_from_stem(stem)
+                if plus_val is not None:
+                    env_val_meta = full_env_val - float(plus_val)
+                else:
+                    env_val_meta = full_env_val
+        if env_val_meta is None:
+            env_val_meta = full_env_meta
+        env_val: Optional[float] = None
+        if env_val_meta is not None:
+            try:
+                env_val = float(env_val_meta)
+            except (TypeError, ValueError):
+                env_val = None
+        if mode in {"buffered", "cash"} and not baseline_known and env_val is None:
+            parsed = _parse_surplus_from_stem(stem)
+            if parsed is not None:
+                env_val = parsed
+        if env_val is None and mode in {"fixed", "buffered", "cash"}:
+            env_val = _parse_surplus_from_stem(stem)
         yoy_buf = _parse_buffer_from_stem(stem) if mode == "buffered" else None
         cash_buf = _parse_cash_from_stem(stem) if mode == "cash" else None
         steep, horizon = _parse_benefit_scenario(stem, res)
