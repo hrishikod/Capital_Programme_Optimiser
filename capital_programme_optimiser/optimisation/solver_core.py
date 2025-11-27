@@ -8,19 +8,21 @@
 
 
 """
-NZTA envelope-first optimiser  COPT multi-objective (PV  net)
-v60.1  (DETERMINISTIC TIME-CAP: from a fixed year onward, ClosingNet  10%FULL; fatal validator)
+NZTA envelope-first optimiser - COPT multi-objective (PV -> sum net)
+v60.3  (DETERMINISTIC TIME-CAP: from a fixed year onward, ClosingNet <= 10% of FULL; fatal validator)
 
 WHAT THIS VERSION GUARANTEES (Proof of Concept)
-   Let CAP_YEAR = START_FY + TIME_CAP_AFTER_YEARS (default: 2025 + 8 = FY2033).
-   For all years Y  CAP_YEAR: ClosingNet[Y]  FULL ( = 10%).
-   The cap is hard, applies every year from CAP_YEAR to the horizon, and is validated postsolve.
-   Envelope governance unchanged: flat (FULL) while ON in early/middle years; taper allowed only on a
-    contiguous suffix ( TAPER_SUFFIX_MAX). Once taper starts, y[t] cannot rebound.
+  - Let CAP_YEAR = START_FY + TIME_CAP_AFTER_YEARS (default: 2025 + 8 = FY2033).
+  - For all years Y >= CAP_YEAR: ClosingNet[Y] <= alpha * FULL (alpha = 10%).
+  - The cap is hard, applies every year from CAP_YEAR to the horizon, and is validated post-solve.
+  - Envelope governance unchanged: flat (FULL) while ON in early/middle years; taper allowed only on a
+    contiguous suffix (<= TAPER_SUFFIX_MAX). Once taper starts, y[t] cannot rebound.
 
-New in v60.1:
-   Removed all draft PKL autosaving.
-   Added DIMENSION_INCLUSIONS to choose which non-Total dimensions to run (case-insensitive).
+New in v60.3 (relative to the original script):
+  - Removed draft Total PKL autosaves entirely.
+  - Added DIMENSION_INCLUSIONS to choose which non-Total dimensions to run (case-insensitive).
+  - Explicit registry reset at the start of main() to avoid stale cross-buffer floors between runs.
+  - Otherwise mechanics remain identical to your original script.
 """
 
 from __future__ import annotations
@@ -2077,10 +2079,15 @@ def optimise_family_for(ct: str, scenario_key: str, scenario_sheet: str) -> None
 def main():
     random.seed(SOLVER_SEED_DEFAULT); np.random.seed(SOLVER_SEED_DEFAULT)
 
+    # Ensure clean slate if running multiple times in a warm process
+    global _BEST_PV_BY_ENV, _BEST_SEL_BY_ENV
+    _BEST_PV_BY_ENV.clear()
+    _BEST_SEL_BY_ENV.clear()
+
     print(f"CFG: START_FY={START_FY} FINAL_YEAR={FINAL_YEAR} PV_WINDOW={TFIXED}y MAX_STARTS/FY={MAX_STARTS_PER_FY}")
-    print(f"Effort: {OPTIMISATION_PROFILE}  {{'MO': {EFFORT['MO']}, 'REL_GAP': {EFFORT['REL_GAP']}}}")
+    print(f"Effort: {OPTIMISATION_PROFILE} -> {{'MO': {EFFORT['MO']}, 'REL_GAP': {EFFORT['REL_GAP']}}}")
     cap_year = START_FY + int(TIME_CAP_AFTER_YEARS)
-    print(f"TIMEBASED CAP: from FY{cap_year} onward, ClosingNet  {int(ALPHA_CAP*100)}% of FULL.")
+    print(f"TIME-BASED CAP: from FY{cap_year} onward, ClosingNet <= {int(ALPHA_CAP*100)}% of FULL.")
 
     if ALLOW_TAPERED_ENVELOPE:
         print(("Envelope: flat (FULL) while ON in early/middle years; taper allowed only on the last "
@@ -2104,14 +2111,19 @@ def main():
             envs_sorted = sorted(SURPLUS_OPTIONS_M.items(), key=lambda kv: kv[1])
             for sur_key, baseM in envs_sorted:
                 print(f" -- Surplus {sur_key} = {baseM:.0f} M p.a. --")
-                for plus in sorted(PLUSMINUS_LEVELS_M):
-                    print(f" {int(plus)}  FULL={baseM+plus:,.0f} M")
+                plus_values = sorted({float(v) for v in PLUSMINUS_LEVELS_M}) or [0.0]
+                if not RUN_BENEFIT_PLUSMINUS:
+                    plus_values = [0.0]
+                elif 0.0 not in plus_values:
+                    plus_values = [0.0] + plus_values
+                for plus in plus_values:
+                    print(f" +/-{int(plus)} -> FULL={baseM + plus:,.0f} M")
                     out = run_combo(ct, sc_key, sc_sheet, sur_key, baseM, plus,
                                     prev_dim_floors=prev_dims, prev_best_sel=prev_sel)
                     if out is not None:
                         tot_pv, prev_dims, prev_sel = out
 
-    print("\n Done. Pickles are under:", CACHE)
+    print("\nDone. Pickles are under:", CACHE)
 
 if __name__ == "__main__":
     t0 = time.time()

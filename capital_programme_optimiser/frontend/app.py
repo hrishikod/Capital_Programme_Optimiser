@@ -2799,6 +2799,49 @@ def profile_options(
 
     return _sorted_profile_labels(subset["Profile"].dropna().astype(str).tolist())
 
+def _full_envelope_series(df: pd.DataFrame, mode: str, *, prefer_full: bool) -> pd.Series:
+
+    if df is None or df.empty:
+
+        return pd.Series(dtype=float)
+
+    has_full = prefer_full and "EnvelopeFull" in df.columns
+
+    if has_full:
+
+        env = pd.to_numeric(df["EnvelopeFull"], errors="coerce")
+
+    elif "Envelope" in df.columns:
+
+        env = pd.to_numeric(df["Envelope"], errors="coerce")
+
+    else:
+
+        env = pd.Series(dtype=float)
+
+    if prefer_full and not has_full and mode == "buffered":
+
+        buff = pd.to_numeric(df["Buffer"], errors="coerce") if "Buffer" in df.columns else 0
+
+        env = env.add(buff, fill_value=0)
+
+    elif prefer_full and not has_full and mode == "cash":
+
+        uplift = (
+
+            pd.to_numeric(df["CashPlus"], errors="coerce") if "CashPlus" in df.columns else 0
+
+        )
+
+        env = env.add(uplift, fill_value=0)
+
+    return env
+
+def _base_envelope_series(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty or "Envelope" not in df.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(df["Envelope"], errors="coerce")
+
 def available_envelopes(
     data: DashboardData,
     *,
@@ -2827,7 +2870,10 @@ def available_envelopes(
     subset = df.loc[mask]
     if subset.empty or mode not in {"fixed", "buffered", "cash"}:
         return []
-    values = pd.to_numeric(subset["Envelope"], errors="coerce").dropna()
+    values = _base_envelope_series(subset)
+    if values.isna().all():
+        values = _full_envelope_series(subset, mode, prefer_full=data.prefer_envelope_full)
+    values = values.dropna()
     return sorted({int(v) for v in values.tolist()})
 
 
@@ -2848,6 +2894,9 @@ def available_buffer_levels(
     df = scenarios_df if scenarios_df is not None else data.scenarios
     if df.empty:
         return []
+    env_base = _base_envelope_series(df)
+    if env_base.isna().all():
+        env_base = _full_envelope_series(df, mode, prefer_full=data.prefer_envelope_full)
     mask = (
         (df["Conf"] == confidence)
         & (df["BenSteep"] == steep)
@@ -2856,8 +2905,9 @@ def available_buffer_levels(
     )
     if prefer_comparison is not None and "IsComp" in df.columns:
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
-    if envelope is not None and "Envelope" in df.columns:
-        mask = mask & (pd.to_numeric(df["Envelope"], errors="coerce") == float(envelope))
+    if envelope is not None:
+        env_match = env_base == float(envelope)
+        mask = mask & env_match.fillna(False)
     if slug_prefix and "CacheStem" in df.columns:
         stems_lower = df["CacheStem"].astype(str).str.lower()
         mask = mask & stems_lower.str.startswith(slug_prefix.lower())
@@ -3265,42 +3315,67 @@ def scenario_selector(
     if dim_source.empty:
         dim_source = data.scenarios
     if not dim_source.empty:
-        dim_mask = (
+        full_env_dim = _base_envelope_series(dim_source)
+        if full_env_dim.isna().all():
+            full_env_dim = _full_envelope_series(
+                dim_source, mode_key, prefer_full=data.prefer_envelope_full
+            )
+        base_dim_mask = (
             (dim_source["Conf"] == confidence)
             & (dim_source["BenSteep"] == benefit_steep)
             & (pd.to_numeric(dim_source["BenHorizon"], errors="coerce") == int(benefit_horizon))
             & (dim_source["Mode"] == mode_key)
         )
-        if prefer_comparison is not None and "IsComp" in dim_source.columns:
-            dim_mask = dim_mask & (dim_source["IsComp"] == (1 if prefer_comparison else 0))
         if mode_key in {"fixed", "buffered", "cash"} and envelope is not None:
-            dim_mask = dim_mask & (
-                pd.to_numeric(dim_source["Envelope"], errors="coerce") == float(envelope)
-            )
+            env_match = full_env_dim == float(envelope)
+            base_dim_mask = base_dim_mask & env_match.fillna(False)
         if mode_key == "buffered" and buffer_value is not None:
-            dim_mask = dim_mask & (
+            base_dim_mask = base_dim_mask & (
                 pd.to_numeric(dim_source["Buffer"], errors="coerce") == float(buffer_value)
             )
         if mode_key == "cash" and buffer_value is not None:
-            dim_mask = dim_mask & (
+            base_dim_mask = base_dim_mask & (
                 pd.to_numeric(dim_source["CashPlus"], errors="coerce") == float(buffer_value)
             )
         if slug_filter and "CacheStem" in dim_source.columns:
             stems = dim_source["CacheStem"].astype(str).str.lower()
-            dim_mask = dim_mask & stems.str.startswith(slug_filter)
-        subset_dims = (
-            dim_source.loc[dim_mask, "ObjectiveDim"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .unique()
-            .tolist()
-        )
+            base_dim_mask = base_dim_mask & stems.str.startswith(slug_filter)
+
+        def _dimension_list(mask) -> List[str]:
+            return (
+                dim_source.loc[mask, "ObjectiveDim"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+            )
+
+        subset_dims: List[str] = []
+        if prefer_comparison is not None and "IsComp" in dim_source.columns:
+            pref_mask = base_dim_mask & (dim_source["IsComp"] == (1 if prefer_comparison else 0))
+            subset_dims = _dimension_list(pref_mask)
+            if not subset_dims:
+                alt_mask = base_dim_mask & (dim_source["IsComp"] == (0 if prefer_comparison else 1))
+                subset_dims = _dimension_list(alt_mask)
+        if not subset_dims:
+            subset_dims = _dimension_list(base_dim_mask)
         dimension_options = sorted({dim for dim in subset_dims if dim})
     if not dimension_options:
         dimension_options = [str(dim).strip() for dim in (data.dims or ["Total"]) if str(dim).strip()]
         if not dimension_options:
             dimension_options = ["Total"]
+    if dimension_options:
+        seen_dim: Set[str] = set()
+        deduped: List[str] = []
+        for dim in dimension_options:
+            label = str(dim).strip()
+            key = label.lower()
+            if not label or key in seen_dim:
+                continue
+            seen_dim.add(key)
+            deduped.append(label)
+        dimension_options = deduped
     try:
         dimension_options = ["Total"] + [dim for dim in dimension_options if dim.lower() != "total"]
     except Exception:
@@ -6206,6 +6281,8 @@ def render_programme_kpis(
     stats_opt: dict | None,
     stats_cmp: dict | None,
     *,
+    opt_selection: Optional[ScenarioSelection],
+    cmp_selection: Optional[ScenarioSelection],
     npv_label: str,
 ) -> None:
     """Render the overview KPI card grid."""
@@ -6214,9 +6291,22 @@ def render_programme_kpis(
     def _fmt(value: float | None) -> str:
         return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
 
+    def _fmt_gap(value: float | None) -> str:
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if not np.isfinite(val):
+            return "N/A"
+        return f"{val * 100:.2f} %"
+
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
     pair_label = scenario_pair_label()
+    opt_meta = opt_selection.metadata if opt_selection else {}
+    cmp_meta = cmp_selection.metadata if cmp_selection else {}
+    opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
+    cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
 
     opt_spend = float(stats_opt.get("total_spend")) if stats_opt and stats_opt.get("total_spend") is not None else None
     cmp_spend = float(stats_cmp.get("total_spend")) if stats_cmp and stats_cmp.get("total_spend") is not None else None
@@ -6289,6 +6379,16 @@ def render_programme_kpis(
             _fmt(cmp_pv),
         ),
         delta_pv_card,
+        '</div>',
+        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}_gap">',
+        _kpi_card_html(
+            f"{primary_label} solver relative gap",
+            _fmt_gap(opt_gap),
+        ),
+        _kpi_card_html(
+            f"{comparison_label} solver relative gap",
+            _fmt_gap(cmp_gap),
+        ),
         '</div>',
     ]
     st.markdown("".join(cards), unsafe_allow_html=True)
@@ -9599,7 +9699,13 @@ def main() -> None:
         stats_cmp = _scenario_stats(cmp_series)
 
         with st.expander("Programme summary", expanded=False):
-            render_programme_kpis(stats_opt, stats_cmp, npv_label=npv_summary_label)
+            render_programme_kpis(
+                stats_opt,
+                stats_cmp,
+                opt_selection=opt_selection,
+                cmp_selection=comp_selection,
+                npv_label=npv_summary_label,
+            )
 
         download_tables: Dict[str, pd.DataFrame] = {}
 

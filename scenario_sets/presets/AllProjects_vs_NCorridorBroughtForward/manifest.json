@@ -120,26 +120,22 @@
         "Total"
       ],
       "plusminus_levels_m": [
-        0.0,
-        200.0,
-        500.0
+        0.0
       ],
       "run_plusminus": true,
-      "run_prefix": "test_",
+      "run_prefix": "test6",
       "scenario_keys": [
         "A45"
       ],
       "start_fy": 2025,
       "surplus_options_m": {
-        "M0": 0.0,
-        "M0_2": 0.0,
-        "M2500": 2500.0
+        "s2500": 2500.0
       },
       "time_limit": 1200,
       "years": 60
     },
-    "elapsed_seconds": 195.478305,
-    "finished_at": "2025-11-05T23:12:30Z",
+    "elapsed_seconds": 66.499243,
+    "finished_at": "2025-11-06T03:40:14Z",
     "output_files": [
       "Mathematical Best_P50Real_A45_s2500_pm0_ECO.pkl",
       "Mathematical Best_P50Real_A45_s2500_pm0_ENV.pkl",
@@ -309,17 +305,18 @@
       "NCor_P95Real_A45_s3500_pm500_RES.pkl",
       "NCor_P95Real_A45_s3500_pm500_TOT.pkl",
       "NCor_P95Real_A45_s3500_pm500_URB.pkl",
-      "test_P50Real_A45_M0_2_pm0_TOT_noSol.pkl",
-      "test_P50Real_A45_M0_2_pm200_TOT_noSol.pkl",
-      "test_P50Real_A45_M0_2_pm500_TOT_noSol.pkl",
-      "test_P50Real_A45_M0_pm0_TOT_noSol.pkl",
-      "test_P50Real_A45_M0_pm200_TOT_noSol.pkl",
-      "test_P50Real_A45_M0_pm500_TOT_noSol.pkl",
-      "test_P50Real_A45_M2500_pm0_TOT.pkl",
-      "test_P50Real_A45_M2500_pm200_TOT.pkl",
-      "test_P50Real_A45_M2500_pm500_TOT.pkl"
+      "Test4_P50Real_A45_s2500_pm0_TOT.pkl",
+      "Test4_P50Real_A45_s2500_pm200_TOT.pkl",
+      "Test4_P50Real_A45_s2500_pm500_TOT.pkl",
+      "test5_P50Real_A45_s2500_pm0_ENV.pkl",
+      "test5_P50Real_A45_s2500_pm0_INC.pkl",
+      "test5_P50Real_A45_s2500_pm0_TOT.pkl",
+      "test5_P50Real_A45_s3500_pm0_ENV.pkl",
+      "test5_P50Real_A45_s3500_pm0_INC.pkl",
+      "test5_P50Real_A45_s3500_pm0_TOT.pkl",
+      "test6_P50Real_A45_s2500_pm0_TOT.pkl"
     ],
-    "started_at": "2025-11-05T23:09:14Z"
+    "started_at": "2025-11-06T03:39:08Z"
   },
   "name": "AllProjects_vs_NCorridorBroughtForward",
   "runs": [
@@ -642,6 +639,323 @@
         "test_P50Real_A45_M2500_pm500_TOT.pkl"
       ],
       "started_at": "2025-11-05T23:09:14Z"
+    },
+    {
+      "config": {
+        "cost_types": [
+          "P50 - Real"
+        ],
+        "forced_start": {
+          "Project 1": {
+            "include": true
+          },
+          "Project 10": {
+            "include": true
+          },
+          "Project 11": {
+            "include": true
+          },
+          "Project 12": {
+            "include": true
+          },
+          "Project 13": {
+            "include": true
+          },
+          "Project 14": {
+            "include": true
+          },
+          "Project 15": {
+            "include": true
+          },
+          "Project 16": {
+            "include": true
+          },
+          "Project 17": {
+            "include": true
+          },
+          "Project 18": {
+            "include": true
+          },
+          "Project 19": {
+            "include": true
+          },
+          "Project 2": {
+            "include": true
+          },
+          "Project 20": {
+            "include": true
+          },
+          "Project 21": {
+            "include": true
+          },
+          "Project 22": {
+            "include": true
+          },
+          "Project 23": {
+            "include": true
+          },
+          "Project 24": {
+            "include": true
+          },
+          "Project 25": {
+            "include": true
+          },
+          "Project 26": {
+            "include": true
+          },
+          "Project 27": {
+            "include": true
+          },
+          "Project 28": {
+            "include": true
+          },
+          "Project 29": {
+            "include": true
+          },
+          "Project 3": {
+            "include": true
+          },
+          "Project 30": {
+            "include": true
+          },
+          "Project 31": {
+            "include": true
+          },
+          "Project 32": {
+            "include": true
+          },
+          "Project 33": {
+            "include": true
+          },
+          "Project 34": {
+            "include": true
+          },
+          "Project 35": {
+            "include": true
+          },
+          "Project 36": {
+            "include": true
+          },
+          "Project 4": {
+            "include": true
+          },
+          "Project 5": {
+            "include": true
+          },
+          "Project 6": {
+            "include": true
+          },
+          "Project 7": {
+            "include": true
+          },
+          "Project 8": {
+            "include": true
+          },
+          "Project 9": {
+            "include": true
+          }
+        },
+        "objective_dims": [
+          "Total"
+        ],
+        "plusminus_levels_m": [
+          0.0
+        ],
+        "run_plusminus": true,
+        "run_prefix": "test6",
+        "scenario_keys": [
+          "A45"
+        ],
+        "start_fy": 2025,
+        "surplus_options_m": {
+          "s2500": 2500.0
+        },
+        "time_limit": 1200,
+        "years": 60
+      },
+      "elapsed_seconds": 66.499243,
+      "finished_at": "2025-11-06T03:40:14Z",
+      "output_files": [
+        "Mathematical Best_P50Real_A45_s2500_pm0_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_INC.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_RES.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm0_URB.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_INC.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_RES.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm200_URB.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_INC.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_RES.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s2500_pm500_URB.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_INC.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_RES.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm0_URB.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_INC.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_RES.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm200_URB.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_ECO.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_ENV.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_HSP.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_INC.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_RES.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_TOT.pkl",
+        "Mathematical Best_P50Real_A45_s3500_pm500_URB.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_INC.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_RES.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm0_URB.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_INC.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_RES.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm200_URB.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_INC.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_RES.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s2500_pm500_URB.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_INC.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_RES.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm0_URB.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_INC.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_RES.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm200_URB.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_ECO.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_ENV.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_HSP.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_INC.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_RES.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_TOT.pkl",
+        "Mathematical Best_P95Real_A45_s3500_pm500_URB.pkl",
+        "NCor_P50Real_A45_s2500_pm0_ECO.pkl",
+        "NCor_P50Real_A45_s2500_pm0_ENV.pkl",
+        "NCor_P50Real_A45_s2500_pm0_HSP.pkl",
+        "NCor_P50Real_A45_s2500_pm0_INC.pkl",
+        "NCor_P50Real_A45_s2500_pm0_RES.pkl",
+        "NCor_P50Real_A45_s2500_pm0_TOT.pkl",
+        "NCor_P50Real_A45_s2500_pm0_URB.pkl",
+        "NCor_P50Real_A45_s2500_pm200_ECO.pkl",
+        "NCor_P50Real_A45_s2500_pm200_ENV.pkl",
+        "NCor_P50Real_A45_s2500_pm200_HSP.pkl",
+        "NCor_P50Real_A45_s2500_pm200_INC.pkl",
+        "NCor_P50Real_A45_s2500_pm200_RES.pkl",
+        "NCor_P50Real_A45_s2500_pm200_TOT.pkl",
+        "NCor_P50Real_A45_s2500_pm200_URB.pkl",
+        "NCor_P50Real_A45_s2500_pm500_ECO.pkl",
+        "NCor_P50Real_A45_s2500_pm500_ENV.pkl",
+        "NCor_P50Real_A45_s2500_pm500_HSP.pkl",
+        "NCor_P50Real_A45_s2500_pm500_INC.pkl",
+        "NCor_P50Real_A45_s2500_pm500_RES.pkl",
+        "NCor_P50Real_A45_s2500_pm500_TOT.pkl",
+        "NCor_P50Real_A45_s2500_pm500_URB.pkl",
+        "NCor_P50Real_A45_s3500_pm0_ECO.pkl",
+        "NCor_P50Real_A45_s3500_pm0_ENV.pkl",
+        "NCor_P50Real_A45_s3500_pm0_HSP.pkl",
+        "NCor_P50Real_A45_s3500_pm0_INC.pkl",
+        "NCor_P50Real_A45_s3500_pm0_RES.pkl",
+        "NCor_P50Real_A45_s3500_pm0_TOT.pkl",
+        "NCor_P50Real_A45_s3500_pm0_URB.pkl",
+        "NCor_P50Real_A45_s3500_pm200_ECO.pkl",
+        "NCor_P50Real_A45_s3500_pm200_ENV.pkl",
+        "NCor_P50Real_A45_s3500_pm200_HSP.pkl",
+        "NCor_P50Real_A45_s3500_pm200_INC.pkl",
+        "NCor_P50Real_A45_s3500_pm200_RES.pkl",
+        "NCor_P50Real_A45_s3500_pm200_TOT.pkl",
+        "NCor_P50Real_A45_s3500_pm200_URB.pkl",
+        "NCor_P50Real_A45_s3500_pm500_ECO.pkl",
+        "NCor_P50Real_A45_s3500_pm500_ENV.pkl",
+        "NCor_P50Real_A45_s3500_pm500_HSP.pkl",
+        "NCor_P50Real_A45_s3500_pm500_INC.pkl",
+        "NCor_P50Real_A45_s3500_pm500_RES.pkl",
+        "NCor_P50Real_A45_s3500_pm500_TOT.pkl",
+        "NCor_P50Real_A45_s3500_pm500_URB.pkl",
+        "NCor_P95Real_A45_s2500_pm0_ECO.pkl",
+        "NCor_P95Real_A45_s2500_pm0_ENV.pkl",
+        "NCor_P95Real_A45_s2500_pm0_HSP.pkl",
+        "NCor_P95Real_A45_s2500_pm0_INC.pkl",
+        "NCor_P95Real_A45_s2500_pm0_RES.pkl",
+        "NCor_P95Real_A45_s2500_pm0_TOT.pkl",
+        "NCor_P95Real_A45_s2500_pm0_URB.pkl",
+        "NCor_P95Real_A45_s2500_pm200_ECO.pkl",
+        "NCor_P95Real_A45_s2500_pm200_ENV.pkl",
+        "NCor_P95Real_A45_s2500_pm200_HSP.pkl",
+        "NCor_P95Real_A45_s2500_pm200_INC.pkl",
+        "NCor_P95Real_A45_s2500_pm200_RES.pkl",
+        "NCor_P95Real_A45_s2500_pm200_TOT.pkl",
+        "NCor_P95Real_A45_s2500_pm200_URB.pkl",
+        "NCor_P95Real_A45_s2500_pm500_ECO.pkl",
+        "NCor_P95Real_A45_s2500_pm500_ENV.pkl",
+        "NCor_P95Real_A45_s2500_pm500_HSP.pkl",
+        "NCor_P95Real_A45_s2500_pm500_INC.pkl",
+        "NCor_P95Real_A45_s2500_pm500_RES.pkl",
+        "NCor_P95Real_A45_s2500_pm500_TOT.pkl",
+        "NCor_P95Real_A45_s2500_pm500_URB.pkl",
+        "NCor_P95Real_A45_s3500_pm0_ECO.pkl",
+        "NCor_P95Real_A45_s3500_pm0_ENV.pkl",
+        "NCor_P95Real_A45_s3500_pm0_HSP.pkl",
+        "NCor_P95Real_A45_s3500_pm0_INC.pkl",
+        "NCor_P95Real_A45_s3500_pm0_RES.pkl",
+        "NCor_P95Real_A45_s3500_pm0_TOT.pkl",
+        "NCor_P95Real_A45_s3500_pm0_URB.pkl",
+        "NCor_P95Real_A45_s3500_pm200_ECO.pkl",
+        "NCor_P95Real_A45_s3500_pm200_ENV.pkl",
+        "NCor_P95Real_A45_s3500_pm200_HSP.pkl",
+        "NCor_P95Real_A45_s3500_pm200_INC.pkl",
+        "NCor_P95Real_A45_s3500_pm200_RES.pkl",
+        "NCor_P95Real_A45_s3500_pm200_TOT.pkl",
+        "NCor_P95Real_A45_s3500_pm200_URB.pkl",
+        "NCor_P95Real_A45_s3500_pm500_ECO.pkl",
+        "NCor_P95Real_A45_s3500_pm500_ENV.pkl",
+        "NCor_P95Real_A45_s3500_pm500_HSP.pkl",
+        "NCor_P95Real_A45_s3500_pm500_INC.pkl",
+        "NCor_P95Real_A45_s3500_pm500_RES.pkl",
+        "NCor_P95Real_A45_s3500_pm500_TOT.pkl",
+        "NCor_P95Real_A45_s3500_pm500_URB.pkl",
+        "Test4_P50Real_A45_s2500_pm0_TOT.pkl",
+        "Test4_P50Real_A45_s2500_pm200_TOT.pkl",
+        "Test4_P50Real_A45_s2500_pm500_TOT.pkl",
+        "test5_P50Real_A45_s2500_pm0_ENV.pkl",
+        "test5_P50Real_A45_s2500_pm0_INC.pkl",
+        "test5_P50Real_A45_s2500_pm0_TOT.pkl",
+        "test5_P50Real_A45_s3500_pm0_ENV.pkl",
+        "test5_P50Real_A45_s3500_pm0_INC.pkl",
+        "test5_P50Real_A45_s3500_pm0_TOT.pkl",
+        "test6_P50Real_A45_s2500_pm0_TOT.pkl"
+      ],
+      "started_at": "2025-11-06T03:39:08Z"
     }
   ]
 }

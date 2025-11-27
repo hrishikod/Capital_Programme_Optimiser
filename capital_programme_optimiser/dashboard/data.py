@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import pandas as pd
 from capital_programme_optimiser.dashboard.constants import (
@@ -45,6 +45,175 @@ DEFAULT_PROFILE_PREFIXES = (
 )
 
 DEFAULT_PROFILE_LABEL = "Default"
+
+BENEFIT_RATE_DEFAULT = 0.02
+_BENEFIT_RATE_FOLDER_OVERRIDES = {
+    "GPS27": 0.0,
+}
+
+
+def _result_folder_name(res: Dict[str, Any]) -> Optional[str]:
+    path_str = res.get("_cache_path")
+    if not path_str:
+        return None
+    try:
+        folder = Path(path_str).parent.name
+    except Exception:
+        return None
+    return folder or None
+
+
+def _result_folder_tags(results: Dict[str, Dict[str, Any]]) -> Set[str]:
+    names: Set[str] = set()
+    for res in results.values():
+        folder = _result_folder_name(res)
+        if folder:
+            names.add(folder.upper())
+    return names
+
+
+def _resolve_benefit_rate(results: Dict[str, Dict[str, Any]]) -> float:
+    """Return the benefit discount rate implied by the results set."""
+    for res in results.values():
+        rate_value = res.get("benefit_rate")
+        if rate_value is None:
+            continue
+        try:
+            return float(rate_value)
+        except (TypeError, ValueError):
+            continue
+
+    folder_names = _result_folder_tags(results)
+    if len(folder_names) == 1:
+        folder = next(iter(folder_names))
+        override = _BENEFIT_RATE_FOLDER_OVERRIDES.get(folder)
+        if override is not None:
+            return float(override)
+
+    return BENEFIT_RATE_DEFAULT
+
+
+_BENEFIT_VALUE_SCALE_OVERRIDES = {
+    "GPS27": 1_000_000.0,
+}
+
+_BENEFIT_DATAFRAME_KEYS = {
+    "benefits_by_year",
+    "benefits_by_year_full",
+    "benefits_by_project_dimension_by_year",
+    "benefit_flow",
+    "benefit_flow_by_dim_long",
+    "benefit_flow_by_dim_wide",
+    "pv_by_project_and_dimension",
+}
+_BENEFIT_SCALAR_KEYS = {
+    "pv_total",
+    "benefit_pv_total",
+}
+_BENEFIT_MAPPING_KEYS = {
+    "pv_by_dimension",
+    "benefit_pv_by_dim",
+}
+
+
+def _benefit_value_scale(results: Dict[str, Dict[str, Any]]) -> Optional[float]:
+    folders = _result_folder_tags(results)
+    if len(folders) != 1:
+        return None
+    folder = next(iter(folders))
+    divisor = _BENEFIT_VALUE_SCALE_OVERRIDES.get(folder)
+    if divisor:
+        return float(divisor)
+    return None
+
+
+def _scale_number(value: Any, divisor: float) -> Any:
+    try:
+        return float(value) / divisor
+    except (TypeError, ValueError):
+        return value
+
+
+def _scale_dataframe_numeric(df: pd.DataFrame, divisor: float) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        return df
+    scaled = df.copy()
+    for column in scaled.columns:
+        if str(column).strip().lower() == "year":
+            continue
+        series = pd.to_numeric(scaled[column], errors="coerce")
+        if series.notna().any():
+            scaled[column] = series / divisor
+    return scaled
+
+
+def _scale_result_benefits(res: Dict[str, Any], divisor: float) -> None:
+    if not divisor:
+        return
+    for key in _BENEFIT_DATAFRAME_KEYS:
+        df = res.get(key)
+        if isinstance(df, pd.DataFrame):
+            res[key] = _scale_dataframe_numeric(df, divisor)
+    for key in _BENEFIT_SCALAR_KEYS:
+        if key in res:
+            res[key] = _scale_number(res[key], divisor)
+    for key in _BENEFIT_MAPPING_KEYS:
+        mapping = res.get(key)
+        if isinstance(mapping, dict):
+            res[key] = {k: _scale_number(v, divisor) for k, v in mapping.items()}
+    best = res.get("best")
+    if isinstance(best, dict) and "pv" in best:
+        best["pv"] = _scale_number(best.get("pv"), divisor)
+
+
+def _normalise_schedule_frame(schedule: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Normalise scheduler tables to Project/StartFY/EndFY/Dur layout."""
+    required_cols = ["Project", "StartFY", "EndFY", "Dur"]
+    if schedule is None or schedule.empty:
+        return pd.DataFrame(columns=required_cols)
+
+    def _match_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
+        lookup = {str(col).strip().lower(): col for col in df.columns}
+        for candidate in candidates:
+            if candidate in lookup:
+                return lookup[candidate]
+        return None
+
+    sched = schedule.copy()
+    project_col = _match_column(sched, ["project"])
+    if project_col is None:
+        sched = sched.reset_index()
+        project_col = _match_column(sched, ["project"])
+        if project_col is None and "index" in sched.columns:
+            project_col = "index"
+
+    start_col = _match_column(sched, ["startfy", "start_fy", "startyear", "start_year"])
+    end_col = _match_column(sched, ["endfy", "end_fy", "endyear", "end_year"])
+    dur_col = _match_column(sched, ["dur", "duration"])
+
+    if project_col is None or start_col is None or end_col is None:
+        return pd.DataFrame(columns=required_cols)
+
+    start_series = pd.to_numeric(sched[start_col], errors="coerce")
+    end_series = pd.to_numeric(sched[end_col], errors="coerce")
+    if dur_col is not None:
+        dur_series = pd.to_numeric(sched[dur_col], errors="coerce")
+    else:
+        dur_series = end_series - start_series + 1
+
+    result = pd.DataFrame(
+        {
+            "Project": sched[project_col].astype(str),
+            "StartFY": start_series,
+            "EndFY": end_series,
+            "Dur": dur_series,
+        }
+    ).dropna(subset=["Project", "StartFY", "EndFY"])
+
+    if result.empty:
+        return pd.DataFrame(columns=required_cols)
+
+    return result[required_cols]
 
 
 def _derive_profile_label(cache_name: str) -> str:
@@ -182,13 +351,44 @@ def _parse_mode(stem: str) -> str:
 
 
 def _parse_benefit_scenario(stem: str, res: Dict[str, Any]) -> tuple[str, int]:
+    """Parse the benefit profile label (e.g. A45, LIN40) and return (steepness, horizon)."""
     import re
 
+    def _clean(match) -> Optional[tuple[str, int]]:
+        if not match:
+            return None
+        steep = match.group(1).upper()
+        try:
+            horizon = int(match.group(2))
+        except (TypeError, ValueError):
+            return None
+        return steep, horizon
+
     scenario = str(res.get("scenario", "")).strip()
-    m = re.match(r"([AB])(\d{2})$", scenario, flags=re.IGNORECASE)
-    if not m:
-        m = re.search(r"([AB])(\d{2})", stem, flags=re.IGNORECASE)
-    return (m.group(1).upper(), int(m.group(2))) if m else ("A", 60)
+    if scenario:
+        direct = _clean(
+            re.fullmatch(r"([A-Za-z]+)(\d{1,3})", scenario, flags=re.IGNORECASE)
+            or re.search(r"([A-Za-z]+)(\d{1,3})", scenario, flags=re.IGNORECASE)
+        )
+        if direct:
+            return direct
+
+    # When metadata is missing, try to infer from the cache filename just after the cost type token.
+    marker = re.search(r"(REAL|NOM(?:INAL)?)", stem, flags=re.IGNORECASE)
+    if marker:
+        tail = stem[marker.end() :]
+        inferred = _clean(
+            re.search(r"(?:[_-])([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE)
+            or re.search(r"([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE)
+        )
+        if inferred:
+            return inferred
+
+    legacy = _clean(re.search(r"([AB])(\d{2})", stem, flags=re.IGNORECASE))
+    if legacy:
+        return legacy
+
+    return ("A", 60)
 
 
 def _comp_tag(prefix: str, label: str) -> str:
@@ -318,10 +518,17 @@ class DashboardData:
     benefit_rate: float
     auto_prefixes: List[str]
     auto_labels: Dict[str, str]
+    prefer_envelope_full: bool
 
     def scenario_options(self) -> ScenarioOptions:
         df = self.scenarios
-        envelopes = unique_ints(df["Envelope"]) if "Envelope" in df else []
+        envelopes = (
+            unique_ints(df["EnvelopeFull"])
+            if self.prefer_envelope_full and "EnvelopeFull" in df
+            else unique_ints(df["Envelope"])
+            if "Envelope" in df
+            else []
+        )
         buffer_vals = unique_ints(df["Buffer"]) if "Buffer" in df else []
         cash_vals = unique_ints(df["CashPlus"]) if "CashPlus" in df else []
         buffers = sorted(set(buffer_vals + cash_vals))
@@ -501,6 +708,14 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
     if not stems:
         raise RuntimeError("No scenario pickles supplied")
 
+    folder_names = _result_folder_tags(results)
+    prefer_envelope_full = len(folder_names) == 1 and "GPS27" in folder_names
+
+    scale_divisor = _benefit_value_scale(results)
+    if scale_divisor:
+        for stem in stems:
+            _scale_result_benefits(results[stem], scale_divisor)
+
     detection = _detect_comparison_prefixes(stems)
     auto_prefixes: List[str] = detection["prefixes"]
     auto_labels: Dict[str, str] = detection["label_by_prefix"]
@@ -508,7 +723,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
     first = results[stems[0]]
     start_fy = int(first.get("calendar", {}).get("start_fy", 2025))
     model_years = int(first.get("calendar", {}).get("years", 60))
-    benefit_rate = float(first.get("benefit_rate", 0.02))
+    benefit_rate = _resolve_benefit_rate(results)
 
     scenario_meta: Dict[str, Dict[str, Any]] = {}
     used_codes: set[str] = set()
@@ -526,30 +741,37 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         env_val_meta = meta_info.get("baseline_envelope_M")
         baseline_known = env_val_meta is not None
         full_env_meta = meta_info.get("full_envelope_M")
-        plus_meta = meta_info.get("plusminus_M")
-        if env_val_meta is None and full_env_meta is not None:
+        full_env_val: Optional[float] = None
+        if full_env_meta is not None:
             try:
                 full_env_val = float(full_env_meta)
             except (TypeError, ValueError):
                 full_env_val = None
+        stem_env_base = _parse_surplus_from_stem(stem)
+        if full_env_val is not None and stem_env_base is not None:
+            # If the recorded full envelope differs from the stem base, assume the buffer was included in full_env.
+            if abs(full_env_val - stem_env_base) > 1e-6:
+                env_val_meta = stem_env_base
+                baseline_known = True
+        plus_meta = meta_info.get("plusminus_M")
+        if env_val_meta is None and full_env_val is not None:
+            plus_val: Optional[float] = None
+            if plus_meta is not None:
+                try:
+                    plus_val = float(plus_meta)
+                except (TypeError, ValueError):
+                    plus_val = None
+            if plus_val is None:
+                if mode == "buffered":
+                    plus_val = _parse_buffer_from_stem(stem)
+                elif mode == "cash":
+                    plus_val = _parse_cash_from_stem(stem)
+            if plus_val is not None:
+                env_val_meta = full_env_val - float(plus_val)
             else:
-                plus_val: Optional[float] = None
-                if plus_meta is not None:
-                    try:
-                        plus_val = float(plus_meta)
-                    except (TypeError, ValueError):
-                        plus_val = None
-                if plus_val is None:
-                    if mode == "buffered":
-                        plus_val = _parse_buffer_from_stem(stem)
-                    elif mode == "cash":
-                        plus_val = _parse_cash_from_stem(stem)
-                if plus_val is not None:
-                    env_val_meta = full_env_val - float(plus_val)
-                else:
-                    env_val_meta = full_env_val
-        if env_val_meta is None:
-            env_val_meta = full_env_meta
+                env_val_meta = full_env_val
+        if env_val_meta is None and full_env_val is not None:
+            env_val_meta = full_env_val
         env_val: Optional[float] = None
         if env_val_meta is not None:
             try:
@@ -562,8 +784,29 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 env_val = parsed
         if env_val is None and mode in {"fixed", "buffered", "cash"}:
             env_val = _parse_surplus_from_stem(stem)
+        # For GPS27 we want the envelope to stay at the full annual value across buffers
+        # so that buffers remain selectable without changing the envelope number.
+        if prefer_envelope_full and full_env_val is not None and not baseline_known:
+            env_val = full_env_val
         yoy_buf = _parse_buffer_from_stem(stem) if mode == "buffered" else None
         cash_buf = _parse_cash_from_stem(stem) if mode == "cash" else None
+        full_envelope = full_env_val
+        if full_envelope is None and env_val is not None:
+            if mode == "buffered":
+                full_envelope = env_val + (yoy_buf or 0.0)
+            elif mode == "cash":
+                full_envelope = env_val + (cash_buf or 0.0)
+            else:
+                full_envelope = env_val
+        if full_envelope is None:
+            full_envelope = env_val
+        gap_raw = res.get("gap", None)
+        if gap_raw is None:
+            gap_raw = (res.get("best", {}) or {}).get("gap")
+        try:
+            gap_val = float(gap_raw)
+        except (TypeError, ValueError):
+            gap_val = None
         steep, horizon = _parse_benefit_scenario(stem, res)
         objective_meta = res.get("objective", {}) or {}
         if not isinstance(objective_meta, dict):
@@ -620,6 +863,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             "Conf": conf,
             "Mode": mode,
             "Envelope": env_val if env_val is not None else "",
+            "EnvelopeFull": full_envelope if full_envelope is not None else (env_val if env_val is not None else ""),
             "Buffer": yoy_buf if yoy_buf is not None else "",
             "CashPlus": cash_buf if cash_buf is not None else "",
             "BenSteep": steep,
@@ -638,6 +882,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             "StartFY": int(res.get("calendar", {}).get("start_fy", start_fy)),
             "HorizonYears": int(res.get("calendar", {}).get("years", model_years)),
             "BenRate": float(res.get("benefit_rate", benefit_rate)),
+            "Gap": gap_val,
             "BenefitPVByDim": pv_by_dim,
             "BenefitPVTotal": pv_total,
             "BenefitPVPrimary": pv_primary,
@@ -749,20 +994,19 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 years_union.update(pd.to_numeric(long["Year"], errors="coerce").dropna().astype(int).tolist())
             bendim_rows.append(long[["Key", "Code", "Dimension", "Year", "BenefitFlow"]])
 
-        sched = res.get("schedule", pd.DataFrame())
+        sched = _normalise_schedule_frame(res.get("schedule"))
         if not sched.empty:
-            sched_rows.append(sched[["Project", "StartFY", "EndFY", "Dur"]].assign(Code=code))
-            if {"StartFY", "EndFY"}.issubset(sched.columns):
-                start_vals = pd.to_numeric(sched["StartFY"], errors="coerce")
-                end_vals = pd.to_numeric(sched["EndFY"], errors="coerce")
-                mask_sched = start_vals.notna() & end_vals.notna()
-                if mask_sched.any():
-                    for start_year, end_year in zip(
-                        start_vals[mask_sched].astype(int),
-                        end_vals[mask_sched].astype(int),
-                    ):
-                        if end_year >= start_year:
-                            years_union.update(range(start_year, end_year + 1))
+            sched_rows.append(sched.assign(Code=code))
+            start_vals = pd.to_numeric(sched["StartFY"], errors="coerce")
+            end_vals = pd.to_numeric(sched["EndFY"], errors="coerce")
+            mask_sched = start_vals.notna() & end_vals.notna()
+            if mask_sched.any():
+                for start_year, end_year in zip(
+                    start_vals[mask_sched].astype(int),
+                    end_vals[mask_sched].astype(int),
+                ):
+                    if end_year >= start_year:
+                        years_union.update(range(start_year, end_year + 1))
 
         spend = res.get("spend", pd.DataFrame())
         if not spend.empty:
@@ -778,6 +1022,19 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 rec.update({int(year): float(row[year]) for year in sp0.columns})
                 spmat_rows.append(rec)
 
+    def _env_full_value(meta: Dict[str, Any], prefer_full: bool) -> Optional[float]:
+        raw = (
+            meta.get("EnvelopeFull", meta.get("Envelope", None))
+            if prefer_full
+            else meta.get("Envelope", None)
+        )
+        if raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     df_scen = pd.DataFrame(
         [
             {
@@ -786,7 +1043,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                     meta["BenSteep"],
                     int(meta["BenHorizon"]),
                     meta["Mode"],
-                    float(meta["Envelope"]) if meta["Envelope"] != "" else None,
+                    _env_full_value(meta, prefer_envelope_full),
                     float(meta["Buffer"])
                     if (meta["Mode"] == "buffered" and meta["Buffer"] != "")
                     else (
@@ -800,7 +1057,11 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 "BenSteep": meta["BenSteep"],
                 "BenHorizon": meta["BenHorizon"],
                 "Mode": meta["Mode"],
-                "EnvStr": str(int(round(meta["Envelope"]))) if meta["Envelope"] != "" else "",
+                "EnvStr": (
+                    str(int(round(_env_full_value(meta, prefer_envelope_full))))
+                    if _env_full_value(meta, prefer_envelope_full) is not None
+                    else ""
+                ),
                 "BuffStr": (
                     "+/-" + str(int(round(meta["Buffer"])))
                     if (meta["Mode"] == "buffered" and meta["Buffer"] != "")
@@ -808,6 +1069,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 ),
                 "Code": meta["Code"],
                 "Envelope": meta["Envelope"],
+                "EnvelopeFull": _env_full_value(meta, True),
                 "Buffer": meta["Buffer"],
                 "CashPlus": meta["CashPlus"],
                 "ObjectiveDim": meta["ObjectiveDim"],
@@ -820,6 +1082,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 "StartFY": meta["StartFY"],
                 "HorizonYears": meta["HorizonYears"],
                 "BenRate": meta["BenRate"],
+                "Gap": meta.get("Gap", None),
                 "IsComp": meta["IsComp"],
             }
             for meta in scenario_meta.values()
@@ -870,6 +1133,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         benefit_rate=benefit_rate,
         auto_prefixes=auto_prefixes,
         auto_labels=auto_labels,
+        prefer_envelope_full=prefer_envelope_full,
     )
 
 
