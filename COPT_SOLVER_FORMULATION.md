@@ -1,6 +1,6 @@
-# COPT Solver Formulation
-
-This document describes the mathematical formulation of the optimization problem implemented in `git_copt_solver.ipynb` (specifically the `CoptSpendMatchMO` class).
+# Capital Project Optimiser Formulation 
+### Fixed funding with piecewise soft cap
+This document describes the mathematical formulation of the capital project optimiser problem. The problem is to optimise the capital project portfolio subject to fixed funding with a piecewise soft cap on the net balance.
 
 ## 1. Sets and Indices
 
