@@ -45,31 +45,38 @@ $$
 ### 5.1. Project Constraints
 
 *   **Single Start:** Each project must start exactly once within the allowed start window.
-    $$ \sum_{s} x_{v,s} = 1 \quad \forall v \in V $$
+    $$\sum_{s} x_{v,s} = 1 \quad \forall v \in V 
+	$$
 
 *   **Starts Capacity:** Limit the number of project starts in any given year.
-    $$ \sum_{v} x_{v,t} \le Cap_{starts} \quad \forall t $$
+    $$\sum_{v} x_{v,t} \le Cap_{starts} \quad \forall t 
+	$$
 
 ### 5.2. Financial Dynamics
 
 *   **Spend Calculation:** Total spend in year $t$ is the sum of spend from all active projects.
-    $$ Spend_t = \sum_{v \in V} \sum_{s} x_{v,s} \cdot S_{v, t-s} $$
+    $$Spend_t = \sum_{v \in V} \sum_{s} x_{v,s} \cdot S_{v, t-s} 
+	$$
     *(Sum includes only valid $s$ such that $s \le t < s + D_v$)*
 
 *   **Funding Draw:** Funding drawn is determined by the envelope capacity and the active indicator.
-    $$ funding_t = y_t \cdot E_t \quad \forall t $$
+    $$funding_t = y_t \cdot E_t \quad \forall t 
+	$$
 
 *   **Net Balance:**
-    $$ net_0 = funding_0 - Spend_0 - dividend_0 $$
-    $$ net_t = net_{t-1} + funding_t - Spend_t - dividend_t \quad \forall t > 0 $$
+    $$net_0 = funding_0 - Spend_0 - dividend_0 
+	$$
+
+    $$net_t = net_{t-1} + funding_t - Spend_t - dividend_t \quad \forall t > 0 
+	$$
 
 ### 5.3. Envelope and Dividend Logic
 
 *   **Envelope Activation:** If any project spends money in year $t$, the envelope must be active ($y_t=1$).
-    $$ y_t \ge x_{v,s} \quad \forall v, s \text{ contributing to } Spend_t $$
+    $$y_t \ge x_{v,s} \quad \forall v, s \text{ contributing to } Spend_t $$
 
 *   **Monotonicity:** The envelope active period must be contiguous from the start (cannot turn off and on again).
-    $$ y_t \ge y_{t+1} \quad \forall t < T-1 $$
+    $$y_t \ge y_{t+1} \quad \forall t < T-1 $$
 
 *   **Dividend Restriction:** Dividends can only be paid out at the end of the programme's life (when the envelope becomes inactive).
     $$ dividend_t \le M \cdot (1 - y_{t+1}) \quad \forall t < T-1 $$
@@ -78,10 +85,10 @@ $$
 
 The net balance is capped by a base threshold plus a series of excess tiers. If the balance exceeds the base, it spills into the excess tiers which incur penalties.
 
-$$ net_t \le E_t \cdot Tier_{0, \text{thresh}} + \sum_i excess\_tier_{i,t} + M \cdot (1 - y_{t+1}) $$
+$$net_t \le E_t \cdot Tier_{0, \text{thresh}} + \sum_i excess\_tier_{i,t} + M \cdot (1 - y_{t+1}) $$
 
 *   **Tier Capacity:** Each excess tier has a maximum capacity based on the envelope size.
-    $$ 0 \le excess\_tier_{i,t} \le E_t \cdot (Tier_{i+1, \text{thresh}} - Tier_{i, \text{thresh}}) $$
+    $$0 \le excess\_tier_{i,t} \le E_t \cdot (Tier_{i+1, \text{thresh}} - Tier_{i, \text{thresh}}) $$
 
 *(Note: The term $M \cdot (1 - y_{t+1})$ allows the net balance to be arbitrarily large (up to $M$) without penalty once the programme ends, i.e., when $y_{t+1}=0$.)*
 
@@ -89,8 +96,8 @@ $$ net_t \le E_t \cdot Tier_{0, \text{thresh}} + \sum_i excess\_tier_{i,t} + M \
 
 The backlog variable tracks the net balance but is forced to zero after the programme ends.
 
-$$ backlog_t \ge net_t - M \cdot (1 - y_{t+1}) $$
-$$ backlog_t \le net_t + M \cdot (1 - y_{t+1}) $$
-$$ backlog_{T-1} = 0 $$
+$$backlog_t \ge net_t - M \cdot (1 - y_{t+1}) $$
+$$backlog_t \le net_t + M \cdot (1 - y_{t+1}) $$
+$$backlog_{T-1} = 0 $$
 
 *(Effectively, $backlog_t = net_t$ while $y_{t+1}=1$, and is unconstrained (can be 0) when $y_{t+1}=0$.)*
