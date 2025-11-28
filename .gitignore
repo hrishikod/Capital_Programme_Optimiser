@@ -1,5 +1,6 @@
 # Python envs
 .venv/
+venv/
 
 # Bytecode
 __pycache__/
