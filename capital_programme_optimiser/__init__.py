@@ -1,1 +1,0 @@
-"""Capital Programme Optimiser package."""
