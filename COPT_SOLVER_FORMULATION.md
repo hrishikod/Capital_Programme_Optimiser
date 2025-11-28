@@ -45,25 +45,30 @@ $$
 ### 5.1. Project Constraints
 
 *   **Single Start:** Each project must start exactly once within the allowed start window.
+
     $$\sum_{s} x_{v,s} = 1 \quad \forall v \in V 
 	$$
 
 *   **Starts Capacity:** Limit the number of project starts in any given year.
+
     $$\sum_{v} x_{v,t} \le Cap_{starts} \quad \forall t 
 	$$
 
 ### 5.2. Financial Dynamics
 
 *   **Spend Calculation:** Total spend in year $t$ is the sum of spend from all active projects.
+
     $$Spend_t = \sum_{v \in V} \sum_{s} x_{v,s} \cdot S_{v, t-s} 
 	$$
-    *(Sum includes only valid $s$ such that $s \le t < s + D_v$)*
+    *(Sum includes only valid $ s $ such that $ s \le t < s + D_v $)*
 
 *   **Funding Draw:** Funding drawn is determined by the envelope capacity and the active indicator.
+
     $$funding_t = y_t \cdot E_t \quad \forall t 
 	$$
 
 *   **Net Balance:**
+
     $$net_0 = funding_0 - Spend_0 - dividend_0 
 	$$
 
@@ -88,9 +93,10 @@ The net balance is capped by a base threshold plus a series of excess tiers. If 
 $$net_t \le E_t \cdot Tier_{0, \text{thresh}} + \sum_i excess\_tier_{i,t} + M \cdot (1 - y_{t+1}) $$
 
 *   **Tier Capacity:** Each excess tier has a maximum capacity based on the envelope size.
+
     $$0 \le excess\_tier_{i,t} \le E_t \cdot (Tier_{i+1, \text{thresh}} - Tier_{i, \text{thresh}}) $$
 
-*(Note: The term $M \cdot (1 - y_{t+1})$ allows the net balance to be arbitrarily large (up to $M$) without penalty once the programme ends, i.e., when $y_{t+1}=0$.)*
+*(Note: The term $ M \cdot (1 - y_{t+1}) $ allows the net balance to be arbitrarily large (up to $ M $) without penalty once the programme ends, i.e., when $ y_{t+1}=0 $.)*
 
 ### 5.5. Backlog Constraints
 
@@ -100,4 +106,4 @@ $$backlog_t \ge net_t - M \cdot (1 - y_{t+1}) $$
 $$backlog_t \le net_t + M \cdot (1 - y_{t+1}) $$
 $$backlog_{T-1} = 0 $$
 
-*(Effectively, $backlog_t = net_t$ while $y_{t+1}=1$, and is unconstrained (can be 0) when $y_{t+1}=0$.)*
+*(Effectively, $ backlog_t = net_t$ while $ y_{t+1}=1 $, and is unconstrained (can be 0) when $ y_{t+1}=0 $.)*
