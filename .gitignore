@@ -9,3 +9,7 @@ __pycache__/
 # Streamlit state
 .streamlit/
 
+# Input, Output, and intermediate folders
+input/
+output/
+linear-program-files/
