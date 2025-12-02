@@ -49,34 +49,39 @@ def main():
     
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
-    data_file = project_root / "Cost_benefit_streams.xlsx"
     
-    if not data_file.exists():
-        print(f"Error: Data file not found at {data_file}")
-        # Try absolute path from notebook if available or ask user?
-        # Notebook path: C:\Users\Adrian Desilvestro\Documents\NZTA\Project_Rons_optimisation\Cost_benefit_streams.xlsx
-        # That looks like a user specific path.
-        # I'll rely on the user having the file in the project root as implied by "ROOT" in notebook usually being CWD or similar.
-        # Wait, notebook said: ROOT = Path(r"C:\Users\Adrian Desilvestro\Documents\NZTA\Project_Rons_optimisation")
-        # But the user workspace is d:\Projects\Capital_Programme_Optimiser
-        # So I should look in the workspace.
-        data_file = Path(r"d:\Projects\Capital_Programme_Optimiser\Cost_benefit_streams.xlsx")
-        if not data_file.exists():
-             print(f"Warning: Hardcoded path {data_file} not found. Checking current dir.")
-             data_file = Path("Cost_benefit_streams.xlsx")
+    # Use CSVs from input folder
+    costs_file = project_root / "input" / "costs.csv"
+    benefits_file = project_root / "input" / "benefits.csv"
+    
+    # Fallback to dummy if not found? Or just error.
+    if not costs_file.exists():
+        print(f"Error: Costs file not found at {costs_file}")
+        # Check for dummy
+        costs_file = project_root / "input" / "dummy_costs.csv"
+        if costs_file.exists():
+            print(f"Using dummy costs: {costs_file}")
+            
+    if not benefits_file.exists():
+        print(f"Error: Benefits file not found at {benefits_file}")
+        # Check for dummy
+        benefits_file = project_root / "input" / "dummy_benefits.csv"
+        if benefits_file.exists():
+            print(f"Using dummy benefits: {benefits_file}")
 
-    print(f"Using data file: {data_file}")
+    print(f"Using costs file: {costs_file}")
+    print(f"Using benefits file: {benefits_file}")
 
     start_fy = 2026
-    years = 70 # TFIXED from notebook (2095 - 2026 + 1)
+    years = 60 # 2026 to 2085 is 60 years
     
-    loader = DataLoader(str(data_file), start_fy, years)
+    loader = DataLoader(str(costs_file), str(benefits_file), start_fy, years)
     
     print("Loading data...")
     try:
         data = loader.load_all(
             cost_type="P50 - Real",
-            benefit_sheet="Benefits Linear 40yrs", # From notebook: BENEFIT_SCENARIOS
+            benefit_sheet=None, # Not used for CSV
             rules={} # Empty rules for now
         )
     except Exception as e:

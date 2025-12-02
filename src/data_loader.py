@@ -15,8 +15,9 @@ class ProjectData:
     dims_order: List[str]
 
 class DataLoader:
-    def __init__(self, data_file: str, start_fy: int, years: int):
-        self.data_file = data_file
+    def __init__(self, costs_path: str, benefits_path: str, start_fy: int, years: int):
+        self.costs_path = costs_path
+        self.benefits_path = benefits_path
         self.start_fy = start_fy
         self.years = years
         self.horizon_all = [start_fy + i for i in range(years)]
@@ -24,26 +25,44 @@ class DataLoader:
     def clean(self, s: str) -> str:
         return re.sub(r"\s+", " ", str(s or "").replace("\xa0", " ")).strip()
 
+    def clean_number(self, x: Any) -> float:
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip().replace(",", "").replace(" ", "")
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+
     def norm(self, s: str) -> str:
         return self.clean(s).lower()
 
     def load_costs(self, cost_type: str) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], pd.DataFrame]:
-        df = pd.read_excel(self.data_file, sheet_name="Costs", engine="openpyxl")
+        if str(self.costs_path).lower().endswith(".csv"):
+            df = pd.read_csv(self.costs_path)
+        else:
+            df = pd.read_excel(self.costs_path, sheet_name="Costs", engine="openpyxl")
+            
         df.columns = [str(c).strip() for c in df.columns]
         proj_col = [c for c in df.columns if c.lower() == "project"]
         if not proj_col:
-            raise RuntimeError("Costs sheet needs 'Project'.")
+            raise RuntimeError("Costs file needs 'Project'.")
         proj_col = proj_col[-1]
 
         year_cols = {int(c): c for c in df.columns if str(c).isdigit()}
         use_cols = [year_cols.get(y, None) for y in self.horizon_all]
 
-        cut = df[df["Cost type"].astype(str).str.strip() == str(cost_type).strip()].copy()
+        # Filter by cost type if column exists
+        if "Cost type" in df.columns:
+             cut = df[df["Cost type"].astype(str).str.strip() == str(cost_type).strip()].copy()
+        else:
+             cut = df.copy()
+
         costs_input: Dict[str, List[float]] = {}
         for _, r in cut.iterrows():
             p = self.clean(r[proj_col])
             vals = [
-                (pd.to_numeric(r[c], errors="coerce") if c is not None else 0.0)
+                (self.clean_number(r[c]) if c is not None else 0.0)
                 for c in use_cols
             ]
             costs_input[p] = (pd.Series(vals).fillna(0.0) / 1_000_000.0).tolist()  # M
@@ -68,18 +87,23 @@ class DataLoader:
         costs_input_df.index.name = "Project"
         return projects, variants, costs_input_df
 
-    def load_benefits(self, sheet: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        df = pd.read_excel(self.data_file, sheet_name=sheet, engine="openpyxl")
+    def load_benefits(self, sheet: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        # sheet arg is for Excel, ignored for CSV or used if Excel
+        if str(self.benefits_path).lower().endswith(".csv"):
+            df = pd.read_csv(self.benefits_path)
+        else:
+            df = pd.read_excel(self.benefits_path, sheet_name=sheet, engine="openpyxl")
+            
         df.columns = [str(c).strip() for c in df.columns]
         if "Project" not in df.columns:
-            raise RuntimeError("Benefits sheet needs 'Project'.")
+            raise RuntimeError("Benefits file needs 'Project'.")
         dim_col = None
         for c in df.columns:
             if c.lower().startswith("dimension"):
                 dim_col = c
                 break
         if dim_col is None:
-            raise RuntimeError("Benefits sheet needs 'Dimension'.")
+            raise RuntimeError("Benefits file needs 'Dimension'.")
         if dim_col != "Dimension":
             df.rename(columns={dim_col: "Dimension"}, inplace=True)
 
@@ -91,6 +115,9 @@ class DataLoader:
         tcols.sort(key=lambda x: x[0])
 
         for _, c in tcols:
+            # Clean number strings
+            if df[c].dtype == object:
+                 df[c] = df[c].astype(str).str.replace(",", "").str.replace(" ", "")
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
         ben_kernel_df = df.copy()
