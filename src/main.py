@@ -40,7 +40,13 @@ def calculate_pv_coefficients(
                 pv_map[(v, s)] = val
     return pv_map
 
+import argparse
+
 def main():
+    parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
+    parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
+    args = parser.parse_args()
+
     # Configuration
     # Adjust paths as necessary. Assuming running from project root or src.
     # We need to find the data file.
@@ -122,6 +128,10 @@ def main():
     print(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
     
+    if args.generate_only:
+        print("Model generated. Skipping solve step.")
+        return
+
     print("Solving...")
     result = optimizer.solve()
     
