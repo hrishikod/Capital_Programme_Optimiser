@@ -112,7 +112,8 @@ class CapitalProgrammeOptimizer:
         for variant_id in self.variants:
             if self.allowed_starts[variant_id]:
                 self.solver.Add(
-                    self.solver.Sum([self.x[(variant_id, s)] for s in self.allowed_starts[variant_id]]) == 1.0
+                    self.solver.Sum([self.x[(variant_id, s)] for s in self.allowed_starts[variant_id]]) == 1.0,
+                    name=f"SingleStart_{variant_id}"
                 )
 
         # Max starts per year
@@ -122,7 +123,7 @@ class CapitalProgrammeOptimizer:
                 if t in starts:
                      starts_in_t.append(self.x[(variant_id, t)])
             if starts_in_t:
-                self.solver.Add(self.solver.Sum(starts_in_t) <= self.max_starts_per_year)
+                self.solver.Add(self.solver.Sum(starts_in_t) <= self.max_starts_per_year, name=f"MaxStarts_{t}")
 
         # Spend expressions
         self.spend_exprs = []
@@ -139,11 +140,11 @@ class CapitalProgrammeOptimizer:
 
         # Envelope logic
         for t in range(self.years):
-            self.solver.Add(self.funding[t] == self.y[t] * self.funding_target_M[t])
+            self.solver.Add(self.funding[t] == self.y[t] * self.funding_target_M[t], name=f"FundingDef_{t}")
             
             # y[t] >= y[t+1] (Monotonicity)
             if t < self.years - 1:
-                self.solver.Add(self.y[t] >= self.y[t+1])
+                self.solver.Add(self.y[t] >= self.y[t+1], name=f"Monotonicity_{t}")
             
             # y[t] must be 1 if there is spend
             for variant_id, starts in self.allowed_starts.items():
@@ -151,18 +152,19 @@ class CapitalProgrammeOptimizer:
                 for start_year_idx in starts:
                     if start_year_idx <= t < start_year_idx + len(spend_vec):
                         if spend_vec[t-start_year_idx] > 0:
-                            self.solver.Add(self.y[t] >= self.x[(variant_id, start_year_idx)])
+                            self.solver.Add(self.y[t] >= self.x[(variant_id, start_year_idx)], name=f"Activity_{t}_{variant_id}_{start_year_idx}")
 
         # Net balance flow
-        self.solver.Add(self.net[0] == self.funding[0] - self.spend_exprs[0] - self.dividend[0])
+        self.solver.Add(self.net[0] == self.funding[0] - self.spend_exprs[0] - self.dividend[0], name="NetBalance_0")
         for t in range(1, self.years):
             self.solver.Add(
-                self.net[t] == self.net[t-1] + self.funding[t] - self.spend_exprs[t] - self.dividend[t]
+                self.net[t] == self.net[t-1] + self.funding[t] - self.spend_exprs[t] - self.dividend[t],
+                name=f"NetBalance_{t}"
             )
 
         # Dividend restriction: dividend[t] <= M * (1 - y[t+1])
         for t in range(self.years - 1):
-            self.solver.Add(self.dividend[t] <= self.big_M * (1.0 - self.y[t+1]))
+            self.solver.Add(self.dividend[t] <= self.big_M * (1.0 - self.y[t+1]), name=f"DividendRestr_{t}")
         
         # Piecewise soft cap
         base_thresh = self.piecewise_cap_tiers[0][0]
@@ -176,15 +178,15 @@ class CapitalProgrammeOptimizer:
             else:
                 rhs += self.big_M 
             
-            self.solver.Add(self.net[t] <= rhs)
+            self.solver.Add(self.net[t] <= rhs, name=f"SoftCap_{t}")
 
         # Backlog constraints
         for t in range(self.years - 1):
             term = self.big_M * (1.0 - self.y[t+1])
-            self.solver.Add(self.backlog[t] >= self.net[t] - term)
-            self.solver.Add(self.backlog[t] <= self.net[t] + term)
+            self.solver.Add(self.backlog[t] >= self.net[t] - term, name=f"BacklogLB_{t}")
+            self.solver.Add(self.backlog[t] <= self.net[t] + term, name=f"BacklogUB_{t}")
         
-        self.solver.Add(self.backlog[self.years - 1] == 0.0)
+        self.solver.Add(self.backlog[self.years - 1] == 0.0, name="BacklogFinal")
 
         # 4. Objective
         obj_backlog = self.solver.Sum(self.backlog) * self.backlog_weight
