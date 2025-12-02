@@ -61,10 +61,6 @@ class CapitalProgrammeOptimizer:
         self.allowed_starts: Dict[str, List[int]] = {}
         for variant_id, meta in self.variants.items():
             duration = meta["dur"]
-            # Simple logic: can start as long as it finishes within horizon? 
-            # Or just starts within horizon? The notebook logic was:
-            # earliest_start = 0, latest_start = years - duration
-            # We'll stick to that to ensure full project fits in horizon
             latest_start_idx = self.years - duration
             if latest_start_idx >= 0:
                 self.allowed_starts[variant_id] = list(range(latest_start_idx + 1))
@@ -82,16 +78,14 @@ class CapitalProgrammeOptimizer:
                 else:
                     self.x[(variant_id, start_year_idx)] = self.solver.BoolVar(f"x_{variant_id}_{start_year_idx}")
 
-        # y[t]: Envelope active (relaxed to continuous [0,1] usually fine if constraints force it)
-        # But for strict logic, let's use Bool or continuous with constraints.
-        # Notebook used continuous [0,1] with constraints.
+        # y[t]: Envelope active
         self.y: List[pywraplp.Variable] = [
             self.solver.NumVar(0.0, 1.0, f"y_{t}") for t in range(self.years)
         ]
 
         # Financial variables
         self.funding: List[pywraplp.Variable] = []
-        self.spend: List[pywraplp.Variable] = [] # Auxiliary, not direct var, but we can make it one or just expr
+        self.spend: List[pywraplp.Variable] = [] 
         self.net: List[pywraplp.Variable] = []
         self.dividend: List[pywraplp.Variable] = []
         self.backlog: List[pywraplp.Variable] = []
@@ -140,8 +134,6 @@ class CapitalProgrammeOptimizer:
             for variant_id, starts in self.allowed_starts.items():
                 spend_vec = self.variants[variant_id]["spend"]
                 for start_year_idx in starts:
-                    # If project v starts at s, does it spend in year t?
-                    # t must be >= s and t < s + dur
                     if start_year_idx <= t < start_year_idx + len(spend_vec):
                         amount = spend_vec[t - start_year_idx]
                         if amount > 0:
@@ -150,18 +142,13 @@ class CapitalProgrammeOptimizer:
 
         # Envelope logic
         for t in range(self.years):
-            # funding[t] == y[t] * envelope[t]
-            # Linearize: funding <= y[t] * env, funding >= y[t] * env (since funding is var)
-            # Or just: funding == y[t] * env
             self.solver.Add(self.funding[t] == self.y[t] * self.funding_target_M[t])
             
             # y[t] >= y[t+1] (Monotonicity)
             if t < self.years - 1:
                 self.solver.Add(self.y[t] >= self.y[t+1])
             
-            # y[t] must be 1 if there is spend? 
-            # Notebook: "If there is spend in year t from some x[v,s], then y[t] must be 1."
-            # Implementation: y[t] >= x[v,s] for all contributing vars
+            # y[t] must be 1 if there is spend
             for variant_id, starts in self.allowed_starts.items():
                 spend_vec = self.variants[variant_id]["spend"]
                 for start_year_idx in starts:
@@ -170,7 +157,6 @@ class CapitalProgrammeOptimizer:
                             self.solver.Add(self.y[t] >= self.x[(variant_id, start_year_idx)])
 
         # Net balance flow
-        # net[0] = fund[0] - spend[0] - div[0]
         self.solver.Add(self.net[0] == self.funding[0] - self.spend_exprs[0] - self.dividend[0])
         for t in range(1, self.years):
             self.solver.Add(
@@ -178,7 +164,6 @@ class CapitalProgrammeOptimizer:
             )
 
         # Dividend restriction: dividend[t] <= M * (1 - y[t+1])
-        # Only pay dividend if next year is inactive (end of programme)
         for t in range(self.years - 1):
             self.solver.Add(self.dividend[t] <= self.big_M * (1.0 - self.y[t+1]))
         
@@ -188,24 +173,15 @@ class CapitalProgrammeOptimizer:
             base_cap = self.funding_target_M[t] * base_thresh
             sum_excess = self.solver.Sum(self.excess_tiers[t])
             
-            # net[t] <= base_cap + sum_excess + M*(1 - y[t+1])
-            # If y[t+1]=1 (active), net <= base + excess
-            # If y[t+1]=0 (end), net <= base + excess + M (unconstrained effectively)
-            
             rhs = base_cap + sum_excess
             if t < self.years - 1:
                 rhs += self.big_M * (1.0 - self.y[t+1])
             else:
-                # Last year, just cap by Big M if needed, or assume y[T]=0 implicitly
                 rhs += self.big_M 
             
             self.solver.Add(self.net[t] <= rhs)
 
         # Backlog constraints
-        # backlog[t] >= net[t] - M(1 - y[t+1])
-        # backlog[t] <= net[t] + M(1 - y[t+1])
-        # backlog[t] >= 0 (implicit in var definition)
-        # backlog[T-1] == 0
         for t in range(self.years - 1):
             term = self.big_M * (1.0 - self.y[t+1])
             self.solver.Add(self.backlog[t] >= self.net[t] - term)
@@ -214,8 +190,6 @@ class CapitalProgrammeOptimizer:
         self.solver.Add(self.backlog[self.years - 1] == 0.0)
 
         # 4. Objective
-        # Min Backlog + Excess Penalties - PV
-        
         obj_backlog = self.solver.Sum(self.backlog) * self.backlog_weight
         
         excess_terms = []
@@ -224,26 +198,9 @@ class CapitalProgrammeOptimizer:
                 excess_terms.append(self.excess_tiers[t][i] * weight)
         obj_excess = self.solver.Sum(excess_terms)
         
-        # PV Reward
-        # We need PV coefficients. For now, assume we have them or calculate them.
-        # Let's assume a simple discount rate for now or pass it in.
-        # The notebook calculated specific PV coefficients per project/start.
-        # I'll implement a simple PV calculation here: sum(benefit / (1+r)^t)
-        # But wait, the benefit data is complex (kernels).
-        # For this refactor, I will assume the caller passes in a `pv_map` or I calculate it simply from cost if benefit data missing?
-        # Actually, `variants` has `spend`. I should probably accept `pv_coefficients` map as input to be precise.
-        # BUT, to make this class self-contained for the "refactor", I'll add a method to set PV coefficients.
-        # Or better, let's just use a placeholder PV = Cost for now if not provided?
-        # No, the user wants "easier LP generation", so I should expose the objective terms.
-        
-        self.pv_expr = self.solver.Sum([]) # Placeholder, will be populated if coefficients set
+        self.pv_expr = self.solver.Sum([]) 
         
         self.objective = self.solver.Objective()
-        # We can't easily sum expressions into a single Objective object in OR-Tools like in COPT/Gurobi sometimes.
-        # We have to set coefficients for variables.
-        # This is where OR-Tools is a bit more verbose.
-        # Actually, `solver.Minimize(expr)` works in python wrapper.
-        
         self.total_obj_expr = obj_backlog + obj_excess
         self.solver.Minimize(self.total_obj_expr)
 
