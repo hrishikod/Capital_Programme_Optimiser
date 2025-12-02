@@ -59,28 +59,28 @@ class CapitalProgrammeOptimizer:
     def _build_model(self):
         # 1. Pre-calculate allowed starts
         self.allowed_starts: Dict[str, List[int]] = {}
-        for v, meta in self.variants.items():
-            dur = meta["dur"]
+        for variant_id, meta in self.variants.items():
+            duration = meta["dur"]
             # Simple logic: can start as long as it finishes within horizon? 
             # Or just starts within horizon? The notebook logic was:
-            # s_ear = 0, s_lat = ny - dur
+            # earliest_start = 0, latest_start = years - duration
             # We'll stick to that to ensure full project fits in horizon
-            s_lat = self.years - dur
-            if s_lat >= 0:
-                self.allowed_starts[v] = list(range(s_lat + 1))
+            latest_start_idx = self.years - duration
+            if latest_start_idx >= 0:
+                self.allowed_starts[variant_id] = list(range(latest_start_idx + 1))
             else:
-                self.allowed_starts[v] = []
+                self.allowed_starts[variant_id] = []
 
         # 2. Decision Variables
         self.x: Dict[Tuple[str, int], pywraplp.Variable] = {}
         
-        # x[v,s]: Binary start variable (or continuous [0,1] if relaxed)
-        for v, starts in self.allowed_starts.items():
-            for s in starts:
+        # x[variant_id, start_year_idx]: Binary start variable (or continuous [0,1] if relaxed)
+        for variant_id, starts in self.allowed_starts.items():
+            for start_year_idx in starts:
                 if self.relax_integrality:
-                    self.x[(v, s)] = self.solver.NumVar(0.0, 1.0, f"x_{v}_{s}")
+                    self.x[(variant_id, start_year_idx)] = self.solver.NumVar(0.0, 1.0, f"x_{variant_id}_{start_year_idx}")
                 else:
-                    self.x[(v, s)] = self.solver.BoolVar(f"x_{v}_{s}")
+                    self.x[(variant_id, start_year_idx)] = self.solver.BoolVar(f"x_{variant_id}_{start_year_idx}")
 
         # y[t]: Envelope active (relaxed to continuous [0,1] usually fine if constraints force it)
         # But for strict logic, let's use Bool or continuous with constraints.
@@ -118,18 +118,18 @@ class CapitalProgrammeOptimizer:
         # 3. Constraints
 
         # Single start per project
-        for v in self.variants:
-            if self.allowed_starts[v]:
+        for variant_id in self.variants:
+            if self.allowed_starts[variant_id]:
                 self.solver.Add(
-                    self.solver.Sum([self.x[(v, s)] for s in self.allowed_starts[v]]) == 1.0
+                    self.solver.Sum([self.x[(variant_id, s)] for s in self.allowed_starts[variant_id]]) == 1.0
                 )
 
         # Max starts per year
         for t in range(self.years):
             starts_in_t = []
-            for v, starts in self.allowed_starts.items():
+            for variant_id, starts in self.allowed_starts.items():
                 if t in starts:
-                     starts_in_t.append(self.x[(v, t)])
+                     starts_in_t.append(self.x[(variant_id, t)])
             if starts_in_t:
                 self.solver.Add(self.solver.Sum(starts_in_t) <= self.max_starts_per_year)
 
@@ -137,15 +137,15 @@ class CapitalProgrammeOptimizer:
         self.spend_exprs = []
         for t in range(self.years):
             terms = []
-            for v, starts in self.allowed_starts.items():
-                spend_vec = self.variants[v]["spend"]
-                for s in starts:
+            for variant_id, starts in self.allowed_starts.items():
+                spend_vec = self.variants[variant_id]["spend"]
+                for start_year_idx in starts:
                     # If project v starts at s, does it spend in year t?
                     # t must be >= s and t < s + dur
-                    if s <= t < s + len(spend_vec):
-                        amount = spend_vec[t - s]
+                    if start_year_idx <= t < start_year_idx + len(spend_vec):
+                        amount = spend_vec[t - start_year_idx]
                         if amount > 0:
-                            terms.append(self.x[(v, s)] * amount)
+                            terms.append(self.x[(variant_id, start_year_idx)] * amount)
             self.spend_exprs.append(self.solver.Sum(terms))
 
         # Envelope logic
@@ -162,12 +162,12 @@ class CapitalProgrammeOptimizer:
             # y[t] must be 1 if there is spend? 
             # Notebook: "If there is spend in year t from some x[v,s], then y[t] must be 1."
             # Implementation: y[t] >= x[v,s] for all contributing vars
-            for v, starts in self.allowed_starts.items():
-                spend_vec = self.variants[v]["spend"]
-                for s in starts:
-                    if s <= t < s + len(spend_vec):
-                        if spend_vec[t-s] > 0:
-                            self.solver.Add(self.y[t] >= self.x[(v, s)])
+            for variant_id, starts in self.allowed_starts.items():
+                spend_vec = self.variants[variant_id]["spend"]
+                for start_year_idx in starts:
+                    if start_year_idx <= t < start_year_idx + len(spend_vec):
+                        if spend_vec[t-start_year_idx] > 0:
+                            self.solver.Add(self.y[t] >= self.x[(variant_id, start_year_idx)])
 
         # Net balance flow
         # net[0] = fund[0] - spend[0] - div[0]
@@ -250,12 +250,12 @@ class CapitalProgrammeOptimizer:
     def set_pv_coefficients(self, pv_map: Dict[Tuple[str, int], float]):
         """
         Updates the objective to include PV rewards.
-        pv_map: {(variant, start_year): pv_value}
+        pv_map: {(variant_id, start_year_idx): pv_value}
         """
         pv_terms = []
-        for (v, s), coeff in pv_map.items():
-            if (v, s) in self.x:
-                pv_terms.append(self.x[(v, s)] * coeff)
+        for (variant_id, start_year_idx), coeff in pv_map.items():
+            if (variant_id, start_year_idx) in self.x:
+                pv_terms.append(self.x[(variant_id, start_year_idx)] * coeff)
         
         if pv_terms:
             self.pv_expr = self.solver.Sum(pv_terms)
@@ -288,12 +288,12 @@ class CapitalProgrammeOptimizer:
         # Extract results
         # Schedule
         schedule_rows = []
-        for (v, s), var in self.x.items():
+        for (variant_id, start_year_idx), var in self.x.items():
             if var.solution_value() > 0.5:
                 schedule_rows.append({
-                    "Project": v,
-                    "StartYear": self.start_fy + s,
-                    "Duration": self.variants[v]["dur"]
+                    "Project": variant_id,
+                    "StartYear": self.start_fy + start_year_idx,
+                    "Duration": self.variants[variant_id]["dur"]
                 })
         schedule_df = pd.DataFrame(schedule_rows)
         
