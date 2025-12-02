@@ -11,5 +11,5 @@ __pycache__/
 
 # Input, Output, and intermediate folders
 input/
-output/
+output/*
 linear-program-files/
