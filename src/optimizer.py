@@ -48,9 +48,6 @@ class CapitalProgrammeOptimizer:
             
         # Set solver parameters
         self.solver.SetTimeLimit(int(time_limit_seconds * 1000))
-        # Note: Gap limit setting depends on the specific solver backend in OR-Tools
-        # For SCIP, we can try setting parameters via string args if supported, 
-        # but pywraplp interface is generic. We'll rely on time limit mostly.
         
         self.big_M = sum(funding_target_M) * 2.0 # Safe upper bound
         
@@ -216,9 +213,7 @@ class CapitalProgrammeOptimizer:
         
         if pv_terms:
             self.pv_expr = self.solver.Sum(pv_terms)
-            # Update objective: Original Min - PV * weight
-            # OR-Tools doesn't support "updating" the expression easily if we already called Minimize?
-            # Actually we can just call Minimize again with the new expression.
+            # Update objective to include PV term
             self.solver.Minimize(self.total_obj_expr - self.pv_expr * self.pv_weight)
 
     def export_model(self, filepath: str):
@@ -273,9 +268,7 @@ class CapitalProgrammeOptimizer:
             })
         cash_df = pd.DataFrame(cash_rows)
         
-        # Gap calculation (approximate for SCIP/CBC via OR-Tools)
-        # OR-Tools doesn't always expose gap directly for all solvers via standard API
-        # We'll try to get best bound if available
+        # Gap calculation
         gap = 0.0
         try:
             obj_val = self.solver.Objective().Value()
