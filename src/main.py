@@ -115,6 +115,13 @@ def main():
     )
     optimizer.set_pv_coefficients(pv_map)
     
+    # Export LP
+    lp_dir = project_root / "linear-program-files"
+    lp_dir.mkdir(exist_ok=True)
+    lp_file = lp_dir / "model.lp"
+    print(f"Exporting model to {lp_file}...")
+    optimizer.export_model(str(lp_file))
+    
     print("Solving...")
     result = optimizer.solve()
     

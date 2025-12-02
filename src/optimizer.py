@@ -259,6 +259,11 @@ class CapitalProgrammeOptimizer:
             # Actually we can just call Minimize again with the new expression.
             self.solver.Minimize(self.total_obj_expr - self.pv_expr * self.pv_weight)
 
+    def export_model(self, filepath: str):
+        """Exports the model to an LP file."""
+        with open(filepath, "w") as f:
+            f.write(self.solver.ExportModelAsLpFormat(False))
+
     def solve(self) -> OptimizationResult:
         status_code = self.solver.Solve()
         
