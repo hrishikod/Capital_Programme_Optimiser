@@ -41,3 +41,7 @@ This document captures assumptions and logic derived from the original notebook 
 - **Cost Type**: Defaults to "P50 - Real".
 - **Missing Data**: Missing values in CSVs are treated as 0.0.
 - **Number Parsing**: Commas and spaces in number strings are removed before parsing.
+
+## Implementation Details
+- **Objective Updates**: The objective function is initially set with Backlog and Excess Spend terms. It is updated later to include PV rewards by calling `Minimize` again with the combined expression.
+- **Gap Calculation**: The optimality gap is calculated as `abs(obj - bound) / abs(obj)` if the objective is non-zero. This is an approximation as OR-Tools generic API doesn't always expose the solver's internal gap directly.
