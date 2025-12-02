@@ -45,6 +45,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
     parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
+    parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
     args = parser.parse_args()
 
     # Configuration
@@ -108,7 +109,8 @@ def main():
         start_fy=start_fy,
         years=years,
         max_starts_per_year=100,
-        solver_backend="SCIP" # Try SCIP, user needs it installed. Or CBC.
+        solver_backend="SCIP", # Try SCIP, user needs it installed. Or CBC.
+        relax_integrality=args.relax
     )
     
     print("Calculating PV coefficients...")

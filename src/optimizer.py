@@ -27,7 +27,8 @@ class CapitalProgrammeOptimizer:
         piecewise_cap_tiers: List[Tuple[float, float]] = None,
         solver_backend: str = "SCIP",
         time_limit_seconds: float = 300.0,
-        gap_limit: float = 0.01
+        gap_limit: float = 0.01,
+        relax_integrality: bool = False
     ):
         self.variants = variants
         self.funding_target_M = funding_target_M
@@ -39,6 +40,7 @@ class CapitalProgrammeOptimizer:
         self.piecewise_cap_tiers = piecewise_cap_tiers or [
             (0.12, 1000.0), (0.15, 4000.0), (0.20, 12000.0)
         ]
+        self.relax_integrality = relax_integrality
         
         self.solver = pywraplp.Solver.CreateSolver(solver_backend)
         if not self.solver:
@@ -72,10 +74,13 @@ class CapitalProgrammeOptimizer:
         # 2. Decision Variables
         self.x: Dict[Tuple[str, int], pywraplp.Variable] = {}
         
-        # x[v,s]: Binary start variable
+        # x[v,s]: Binary start variable (or continuous [0,1] if relaxed)
         for v, starts in self.allowed_starts.items():
             for s in starts:
-                self.x[(v, s)] = self.solver.BoolVar(f"x_{v}_{s}")
+                if self.relax_integrality:
+                    self.x[(v, s)] = self.solver.NumVar(0.0, 1.0, f"x_{v}_{s}")
+                else:
+                    self.x[(v, s)] = self.solver.BoolVar(f"x_{v}_{s}")
 
         # y[t]: Envelope active (relaxed to continuous [0,1] usually fine if constraints force it)
         # But for strict logic, let's use Bool or continuous with constraints.
