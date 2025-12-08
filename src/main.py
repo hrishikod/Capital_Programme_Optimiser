@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.data_loader import DataLoader
-from src.optimizer import CapitalProgrammeOptimizer
+from src.cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
+from src.optimizer import CapitalProgrammeOptimizer as Optimizer
 
 def calculate_pv_coefficients(
     variants: dict,
@@ -51,6 +52,8 @@ def main():
     parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
     parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
     parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
+    parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
     args = parser.parse_args()
 
     # Parse overflow tiers
@@ -137,18 +140,34 @@ def main():
     print(f"  Overflow Tiers: {piecewise_cap_tiers}")
     print(f"  Start Year: {start_fy}")
     print(f"  Horizon: {years} years")
+    print(f"  Time Limit: {args.time_limit}s")
 
     print("Initializing optimizer...")
-    optimizer = CapitalProgrammeOptimizer(
-        variants=data.variants,
-        funding_target_M=funding_target_M,
-        start_fy=start_fy,
-        years=years,
-        max_starts_per_year=100,
-        solver_backend="SCIP", # Try SCIP, user needs it installed. Or CBC.
-        relax_integrality=args.relax,
-        piecewise_cap_tiers=piecewise_cap_tiers
-    )
+    if args.optimizer == "cp-sat":
+        print(f"Using CP-SAT optimizer.")
+        optimizer = CpSatOptimizer(
+            variants=data.variants,
+            funding_target_M=funding_target_M,
+            start_fy=start_fy,
+            years=years,
+            max_starts_per_year=100,
+            relax_integrality=args.relax,
+            piecewise_cap_tiers=piecewise_cap_tiers,
+            time_limit_seconds=args.time_limit
+        )
+    else:
+        print(f"Using Optimizer.")
+        optimizer = Optimizer(
+            variants=data.variants,
+            funding_target_M=funding_target_M,
+            start_fy=start_fy,
+            years=years,
+            max_starts_per_year=100,
+            solver_backend="SCIP",
+            relax_integrality=args.relax,
+            piecewise_cap_tiers=piecewise_cap_tiers,
+            time_limit_seconds=args.time_limit
+        )
     
     print("Calculating PV coefficients...")
     pv_map = calculate_pv_coefficients(
