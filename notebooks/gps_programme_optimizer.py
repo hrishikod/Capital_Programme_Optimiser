@@ -23,8 +23,8 @@ notebook_path = Path(os.getcwd())
 project_root = notebook_path.parent
 src_path = project_root / "src"
 
-if str(src_path) not in sys.path:
-    sys.path.append(str(src_path))
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
     
 # Import the optimizer
 from src.main import run_optimization
