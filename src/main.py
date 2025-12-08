@@ -46,7 +46,21 @@ def main():
     parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
     parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
     parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
+    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
+    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
+    parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
     args = parser.parse_args()
+
+    # Parse overflow tiers
+    try:
+        tiers_raw = args.overflow_tiers.split(",")
+        piecewise_cap_tiers = []
+        for t in tiers_raw:
+            thresh, pen = t.split(":")
+            piecewise_cap_tiers.append((float(thresh), float(pen)))
+    except ValueError:
+        print("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        return
 
     # Configuration
     # Adjust paths as necessary. Assuming running from project root or src.
@@ -98,10 +112,14 @@ def main():
     print(f"Loaded {len(data.variants)} variants.")
     
     # Funding envelope
-    # Notebook: SURPLUS_OPTIONS_M: {"s1500": 1500.0}
-    funding_level = 1500.0
+    funding_level = args.funding_level
     funding_target_M = [funding_level] * years
     
+    print(f"Configuration:")
+    print(f"  Funding Level: {funding_level}")
+    print(f"  Dimension: {args.dimension}")
+    print(f"  Overflow Tiers: {piecewise_cap_tiers}")
+
     print("Initializing optimizer...")
     optimizer = CapitalProgrammeOptimizer(
         variants=data.variants,
@@ -110,7 +128,8 @@ def main():
         years=years,
         max_starts_per_year=100,
         solver_backend="SCIP", # Try SCIP, user needs it installed. Or CBC.
-        relax_integrality=args.relax
+        relax_integrality=args.relax,
+        piecewise_cap_tiers=piecewise_cap_tiers
     )
     
     print("Calculating PV coefficients...")
@@ -119,7 +138,8 @@ def main():
         data.kernels_by_dim,
         optimizer.allowed_starts,
         start_fy,
-        years
+        years,
+        dim=args.dimension
     )
     optimizer.set_pv_coefficients(pv_map)
     
