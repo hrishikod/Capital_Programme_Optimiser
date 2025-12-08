@@ -224,7 +224,12 @@ def run_optimization(args):
     result = optimizer.solve()
     
     logging.info(f"Status: {result.status}")
-    logging.info(f"Objective: {result.objective_value}")
+    logging.info(f"Status: {result.status}")
+    logging.info(f"Objective: {result.objective_value:,.2f}")
+    if result.breakdown:
+        logging.info("Objective Breakdown:")
+        for k, v in result.breakdown.items():
+            logging.info(f"  {k}: {v:,.2f}")
     logging.info(f"Gap: {result.gap:.4%}")
     
     if result.status in ["OPTIMAL", "FEASIBLE"]:

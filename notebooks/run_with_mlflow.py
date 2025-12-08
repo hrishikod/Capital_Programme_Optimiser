@@ -78,6 +78,10 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         mlflow.log_metric("objective_value", result.objective_value)
         mlflow.log_metric("gap", result.gap)
         
+        if result.breakdown:
+            for k, v in result.breakdown.items():
+                mlflow.log_metric(k, v)
+        
         # Calculate summary metrics from results
         total_spend = result.spend_profile.iloc[0, :].sum()
         mlflow.log_metric("total_spend", total_spend)
