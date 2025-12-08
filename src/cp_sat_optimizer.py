@@ -84,11 +84,8 @@ class CapitalProgrammeOptimizer:
         ]
 
         # Financial variables (Scaled Integers)
-        # We need to determine appropriate bounds. 
-        # Funding and Spend can be large. 
-        # Let's assume a safe upper bound for variables.
-        # If total funding is ~1000 * 60 = 60000. Scaled by 1000 = 60,000,000.
-        # int64 max is ~9e18, so we have plenty of room.
+        # Use a safe upper bound (Total funding * ~5) to avoid overflow
+        # int64 max is ~9e18, so scaling by 1000 is safe.
         
         upper_bound = int(sum(self.funding_target_M) * 5 * self.scaling_factor) # Safe upper bound
         
@@ -102,8 +99,7 @@ class CapitalProgrammeOptimizer:
         for t in range(self.years):
             ub_fund = self._scale(self.funding_target_M[t])
             # Funding is exactly y[t] * target, or 0.
-            # We can define it as a variable or just use the expression.
-            # Let's use a variable for clarity in constraints.
+            # Modeled as a variable for clarity in constraints.
             self.funding.append(self.model.NewIntVar(0, ub_fund, f"fund_{t}"))
             
             # Net, Dividend, Backlog can be large
@@ -168,15 +164,11 @@ class CapitalProgrammeOptimizer:
             if t < self.years - 1:
                 self.model.Add(self.y[t] >= self.y[t+1])
             
-            # y[t] must be 1 if there is spend
-            # Instead of iterating all projects again, we can say: if spend_vars[t] > 0 => y[t] = 1
-            # Or: spend_vars[t] <= y[t] * BigM
+            # y[t] must be 1 if there is spend (BigM constraint)
             self.model.Add(self.spend_vars[t] <= self.y[t] * upper_bound)
 
-        # Net balance flow
-        # net[0] == funding[0] - spend[0] - dividend[0]
-        # But we must handle the equality carefully. 
-        # funding - spend - dividend = net -> funding = net + spend + dividend
+        # Net balance flow: net[t] = net[t-1] + funding[t] - spend[t] - dividend[t]
+        # Initial year:
         self.model.Add(self.funding[0] == self.net[0] + self.spend_vars[0] + self.dividend[0])
         
         for t in range(1, self.years):
@@ -197,16 +189,12 @@ class CapitalProgrammeOptimizer:
             base_cap = self._scale(self.funding_target_M[t] * base_thresh)
             sum_excess = sum(self.excess_tiers[t])
             
-            # net[t] <= base_cap + sum_excess + M * (1 - y[t+1]) (if not last year)
+            # Link net[t] to base cap + excess tiers
             rhs_terms = [base_cap, sum_excess]
             if t < self.years - 1:
-                # We can use OnlyEnforceIf or just the big M formulation.
-                # Big M is fine and easy here.
-                # But CP-SAT supports conditional constraints natively.
-                # Let's stick to the arithmetic formulation for now as it's already structured that way.
                 rhs_terms.append(self.big_M_scaled * (1 - self.y[t+1]))
             else:
-                rhs_terms.append(self.big_M_scaled) # Last year effectively no cap if we want, or just M
+                rhs_terms.append(self.big_M_scaled) # No cap in final years
             
             self.model.Add(self.net[t] <= sum(rhs_terms))
 
@@ -222,15 +210,7 @@ class CapitalProgrammeOptimizer:
         self.model.Add(self.backlog[self.years - 1] == 0)
 
         # 4. Objective
-        # We need to scale weights too if they are small? 
-        # backlog_weight is 1.0. pv_weight is 1e-4.
-        # Since we are maximizing/minimizing integers, we should scale the objective components to be integers.
-        # Let's scale the objective by another factor, say 10000, to handle pv_weight.
-        # Or just multiply terms.
-        
-        # Let's define obj_scale = 10000
-        # obj = (sum(backlog) * backlog_weight + sum(excess * weight)) * obj_scale - pv * pv_weight * obj_scale
-        
+        # Scale objective components to integer units.
         self.obj_scale = 10000
         
         # Backlog term
@@ -262,10 +242,7 @@ class CapitalProgrammeOptimizer:
         pv_terms = []
         for (variant_id, start_year_idx), coeff in pv_map.items():
             if (variant_id, start_year_idx) in self.x:
-                # coeff is float PV. We need to scale it.
-                # The objective is in (ScaledDollars * ObjScale) units.
-                # PV should be comparable.
-                # PV is usually "Dollars". So we scale by scaling_factor * obj_scale * pv_weight.
+                # Scale PV coefficient to match objective units (ScaledDollars * ObjScale)
                 
                 scaled_coeff = int(coeff * self.scaling_factor * self.obj_scale * self.pv_weight)
                 pv_terms.append(self.x[(variant_id, start_year_idx)] * scaled_coeff)
@@ -343,10 +320,6 @@ class CapitalProgrammeOptimizer:
         except:
             pass
             
-        # Objective value needs to be descaled to be somewhat comparable to original units if desired,
-        # but it's a composite score. Let's just return the raw solver value or descale by obj_scale.
-        # The original code returned the raw objective.
-        
         return OptimizationResult(
             status=status,
             objective_value=solver.ObjectiveValue(),
