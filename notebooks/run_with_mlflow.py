@@ -33,7 +33,8 @@ from src.main import run_optimization
 
 # Define Widgets for Parameters
 dbutils.widgets.text("funding_level", "1500.0", "Annual Funding Level ($M)")
-dbutils.widgets.text("dimension", "Total", "Dimension")
+valid_dimensions = ["Total", "Inclusive Access", "Healthy and safe people", "Economic Prosperity", "Environmental Sustainability", "Resilience and Security"]
+dbutils.widgets.dropdown("dimension", "Total", valid_dimensions, "Dimension")
 dbutils.widgets.text("start_year", "2026", "Start Year")
 dbutils.widgets.text("horizon", "60", "Horizon (Years)")
 dbutils.widgets.text("overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overflow Tiers")
