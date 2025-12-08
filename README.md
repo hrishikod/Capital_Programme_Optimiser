@@ -40,7 +40,13 @@ python src/main.py [options]
 **Options:**
 
 *   `--funding-level FLOAT`: Annual funding envelope (default: 1500.0).
-*   `--dimension STRING`: Dimension to optimize (default: "Total").
+*   `--dimension STRING`: Dimension to optimize (default: "Total"). Supports full names or tricodes:
+    *   `TOT`: Total
+    *   `INC`: Inclusive Access
+    *   `HSP`: Healthy and safe people
+    *   `ECO`: Economic Prosperity
+    *   `ENV`: Environmental Sustainability
+    *   `RES`: Resilience and Security
 *   `--overflow-tiers STRING`: Overflow tiers as `threshold:penalty` pairs (default: "0.12:1000,0.15:4000,0.20:12000").
 *   `--generate-only`: Generate the LP file without solving.
 *   `--relax`: Generate LP relaxation (continuous variables).

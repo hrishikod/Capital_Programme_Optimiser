@@ -62,6 +62,20 @@ def main():
         print("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
         return
 
+    # Map dimension tricodes
+    dim_map = {
+        "TOT": "Total",
+        "INC": "Inclusive Access",
+        "HSP": "Healthy and safe people",
+        "ECO": "Economic Prosperity",
+        "ENV": "Environmental Sustainability",
+        "RES": "Resilience and Security"
+    }
+    
+    target_dimension = args.dimension
+    if target_dimension.upper() in dim_map:
+        target_dimension = dim_map[target_dimension.upper()]
+
     # Configuration
     # Adjust paths as necessary. Assuming running from project root or src.
     # We need to find the data file.
@@ -117,7 +131,7 @@ def main():
     
     print(f"Configuration:")
     print(f"  Funding Level: {funding_level}")
-    print(f"  Dimension: {args.dimension}")
+    print(f"  Dimension: {target_dimension} (Input: {args.dimension})")
     print(f"  Overflow Tiers: {piecewise_cap_tiers}")
 
     print("Initializing optimizer...")
@@ -139,7 +153,7 @@ def main():
         optimizer.allowed_starts,
         start_fy,
         years,
-        dim=args.dimension
+        dim=target_dimension
     )
     optimizer.set_pv_coefficients(pv_map)
     
