@@ -48,6 +48,8 @@ python src/main.py [options]
     *   `ENV`: Environmental Sustainability
     *   `RES`: Resilience and Security
 *   `--overflow-tiers STRING`: Overflow tiers as `threshold:penalty` pairs (default: "0.12:1000,0.15:4000,0.20:12000").
+*   `--start-year INT`: Start financial year (default: 2026).
+*   `--horizon INT`: Planning horizon in years (default: 60).
 *   `--generate-only`: Generate the LP file without solving.
 *   `--relax`: Generate LP relaxation (continuous variables).
 

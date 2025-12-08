@@ -49,6 +49,8 @@ def main():
     parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
     parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
     parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
+    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
+    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
     args = parser.parse_args()
 
     # Parse overflow tiers
@@ -107,8 +109,8 @@ def main():
     print(f"Using costs file: {costs_file}")
     print(f"Using benefits file: {benefits_file}")
 
-    start_fy = 2026
-    years = 60 # 2026 to 2085 is 60 years
+    start_fy = args.start_year
+    years = args.horizon
     
     loader = DataLoader(str(costs_file), str(benefits_file), start_fy, years)
     
@@ -133,6 +135,8 @@ def main():
     print(f"  Funding Level: {funding_level}")
     print(f"  Dimension: {target_dimension} (Input: {args.dimension})")
     print(f"  Overflow Tiers: {piecewise_cap_tiers}")
+    print(f"  Start Year: {start_fy}")
+    print(f"  Horizon: {years} years")
 
     print("Initializing optimizer...")
     optimizer = CapitalProgrammeOptimizer(
@@ -176,8 +180,8 @@ def main():
     print(f"Gap: {result.gap:.4%}")
     
     if result.status in ["OPTIMAL", "FEASIBLE"]:
-        print("\nSchedule:")
-        print(result.schedule.head())
+        print("\nSchedule (Top 20):")
+        print(result.schedule.head(20))
         print(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
         
         # Save results
