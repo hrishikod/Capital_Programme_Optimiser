@@ -17,8 +17,14 @@ This document describes the mathematical formulation of the capital project opti
 *   $W_{v,s}$: PV coefficient (benefit) for starting project $v$ at year $s$.
 *   $Cap_{starts}$: Maximum number of project starts allowed per year (`max_starts_per_year`).
 *   $M$: A large constant used for big-M constraints (`net_bigM`), typically sum of all funding targets.
-*   $Tier_{i, \text{thresh}}$: Threshold (fraction of envelope) for the $i$-th piecewise soft cap tier.
-*   $Tier_{i, \text{weight}}$: Penalty weight for the $i$-th piecewise soft cap tier.
+*   $Tier_{i, \text{thresh}}$: Threshold (fraction of envelope) for the $i$-th piecewise soft cap tier. Default tiers:
+    *   Tier 1: 0.12 (12%)
+    *   Tier 2: 0.15 (15%)
+    *   Tier 3: 0.20 (20%)
+*   $Tier_{i, \text{weight}}$: Penalty weight for the $i$-th piecewise soft cap tier. Default weights:
+    *   Tier 1: 1000
+    *   Tier 2: 4000
+    *   Tier 3: 12000
 *   $\alpha_{backlog}$: Weight for backlog penalty (`BACKLOG_WEIGHT` = 1.0).
 *   $\alpha_{pv}$: Weight for PV reward (`PV_WEIGHT` = 1e-4).
 

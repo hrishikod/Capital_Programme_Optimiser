@@ -46,7 +46,37 @@ def main():
     parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
     parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
     parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
+    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
+    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
+    parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
+    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
+    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
     args = parser.parse_args()
+
+    # Parse overflow tiers
+    try:
+        tiers_raw = args.overflow_tiers.split(",")
+        piecewise_cap_tiers = []
+        for t in tiers_raw:
+            thresh, pen = t.split(":")
+            piecewise_cap_tiers.append((float(thresh), float(pen)))
+    except ValueError:
+        print("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        return
+
+    # Map dimension tricodes
+    dim_map = {
+        "TOT": "Total",
+        "INC": "Inclusive Access",
+        "HSP": "Healthy and safe people",
+        "ECO": "Economic Prosperity",
+        "ENV": "Environmental Sustainability",
+        "RES": "Resilience and Security"
+    }
+    
+    target_dimension = args.dimension
+    if target_dimension.upper() in dim_map:
+        target_dimension = dim_map[target_dimension.upper()]
 
     # Configuration
     # Adjust paths as necessary. Assuming running from project root or src.
@@ -79,8 +109,8 @@ def main():
     print(f"Using costs file: {costs_file}")
     print(f"Using benefits file: {benefits_file}")
 
-    start_fy = 2026
-    years = 60 # 2026 to 2085 is 60 years
+    start_fy = args.start_year
+    years = args.horizon
     
     loader = DataLoader(str(costs_file), str(benefits_file), start_fy, years)
     
@@ -98,10 +128,16 @@ def main():
     print(f"Loaded {len(data.variants)} variants.")
     
     # Funding envelope
-    # Notebook: SURPLUS_OPTIONS_M: {"s1500": 1500.0}
-    funding_level = 1500.0
+    funding_level = args.funding_level
     funding_target_M = [funding_level] * years
     
+    print(f"Configuration:")
+    print(f"  Funding Level: {funding_level}")
+    print(f"  Dimension: {target_dimension} (Input: {args.dimension})")
+    print(f"  Overflow Tiers: {piecewise_cap_tiers}")
+    print(f"  Start Year: {start_fy}")
+    print(f"  Horizon: {years} years")
+
     print("Initializing optimizer...")
     optimizer = CapitalProgrammeOptimizer(
         variants=data.variants,
@@ -110,7 +146,8 @@ def main():
         years=years,
         max_starts_per_year=100,
         solver_backend="SCIP", # Try SCIP, user needs it installed. Or CBC.
-        relax_integrality=args.relax
+        relax_integrality=args.relax,
+        piecewise_cap_tiers=piecewise_cap_tiers
     )
     
     print("Calculating PV coefficients...")
@@ -119,7 +156,8 @@ def main():
         data.kernels_by_dim,
         optimizer.allowed_starts,
         start_fy,
-        years
+        years,
+        dim=target_dimension
     )
     optimizer.set_pv_coefficients(pv_map)
     
@@ -142,8 +180,8 @@ def main():
     print(f"Gap: {result.gap:.4%}")
     
     if result.status in ["OPTIMAL", "FEASIBLE"]:
-        print("\nSchedule:")
-        print(result.schedule.head())
+        print("\nSchedule (Top 20):")
+        print(result.schedule.head(20))
         print(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
         
         # Save results
