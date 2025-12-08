@@ -1,10 +1,29 @@
 import sys
 import os
 import numpy as np
+import logging
+from datetime import datetime
 from pathlib import Path
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Determine paths robustly (handles interactive/Databricks environments)
+try:
+    SCRIPT_PATH = Path(__file__).resolve()
+    SCRIPT_DIR = SCRIPT_PATH.parent
+except NameError:
+    # Interactive/Notebook fallback
+    cwd = Path(os.getcwd()).resolve()
+    if (cwd / "src").exists() and (cwd / "src").is_dir():
+        SCRIPT_DIR = cwd / "src"
+    elif cwd.name == "src":
+        SCRIPT_DIR = cwd
+    else:
+        SCRIPT_DIR = cwd
+
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+# Add project root to path
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from src.data_loader import DataLoader
 from src.cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
@@ -54,7 +73,9 @@ def main():
     parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
     parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
     parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
-    args = parser.parse_args()
+    
+    # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
+    args, _ = parser.parse_known_args()
 
     # Parse overflow tiers
     try:
@@ -87,8 +108,8 @@ def main():
     # The notebook used: ROOT / "Cost_benefit_streams.xlsx"
     # Let's try to find it relative to this script.
     
-    script_dir = Path(__file__).parent
-    project_root = script_dir.parent
+    script_dir = SCRIPT_DIR
+    project_root = PROJECT_ROOT
     
     # Use CSVs from input folder
     costs_file = project_root / "input" / "costs.csv"
@@ -96,28 +117,51 @@ def main():
     
     # Fallback to dummy if not found? Or just error.
     if not costs_file.exists():
-        print(f"Error: Costs file not found at {costs_file}")
+        logging.error(f"Error: Costs file not found at {costs_file}")
         # Check for dummy
         costs_file = project_root / "input" / "dummy_costs.csv"
         if costs_file.exists():
-            print(f"Using dummy costs: {costs_file}")
+            logging.info(f"Using dummy costs: {costs_file}")
             
     if not benefits_file.exists():
-        print(f"Error: Benefits file not found at {benefits_file}")
+        logging.error(f"Error: Benefits file not found at {benefits_file}")
         # Check for dummy
         benefits_file = project_root / "input" / "dummy_benefits.csv"
         if benefits_file.exists():
-            print(f"Using dummy benefits: {benefits_file}")
+            logging.info(f"Using dummy benefits: {benefits_file}")
 
-    print(f"Using costs file: {costs_file}")
-    print(f"Using benefits file: {benefits_file}")
+    # Setup Logging
+    log_dir = project_root / "logs"
+    log_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"run_{timestamp}.log"
+
+    # Reconfigure logging to include file handler
+    # Remove existing handlers if any to avoid duplicates in interactive modes
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    logging.info(f"Logging initialized. Writing to {log_file}")
+    logging.info(f"Using costs file: {costs_file}")
+    logging.info(f"Using benefits file: {benefits_file}")
 
     start_fy = args.start_year
     years = args.horizon
     
     loader = DataLoader(str(costs_file), str(benefits_file), start_fy, years)
     
-    print("Loading data...")
+    logging.info("Loading data...")
     try:
         data = loader.load_all(
             cost_type="P50 - Real",
@@ -125,26 +169,26 @@ def main():
             rules={} # Empty rules for now
         )
     except Exception as e:
-        print(f"Failed to load data: {e}")
+        logging.error(f"Failed to load data: {e}")
         return
 
-    print(f"Loaded {len(data.variants)} variants.")
+    logging.info(f"Loaded {len(data.variants)} variants.")
     
     # Funding envelope
     funding_level = args.funding_level
     funding_target_M = [funding_level] * years
     
-    print(f"Configuration:")
-    print(f"  Funding Level: {funding_level}")
-    print(f"  Dimension: {target_dimension} (Input: {args.dimension})")
-    print(f"  Overflow Tiers: {piecewise_cap_tiers}")
-    print(f"  Start Year: {start_fy}")
-    print(f"  Horizon: {years} years")
-    print(f"  Time Limit: {args.time_limit}s")
+    logging.info(f"Configuration:")
+    logging.info(f"  Funding Level: {funding_level}")
+    logging.info(f"  Dimension: {target_dimension} (Input: {args.dimension})")
+    logging.info(f"  Overflow Tiers: {piecewise_cap_tiers}")
+    logging.info(f"  Start Year: {start_fy}")
+    logging.info(f"  Horizon: {years} years")
+    logging.info(f"  Time Limit: {args.time_limit}s")
 
-    print("Initializing optimizer...")
+    logging.info("Initializing optimizer...")
     if args.optimizer == "cp-sat":
-        print(f"Using CP-SAT optimizer.")
+        logging.info(f"Using CP-SAT optimizer.")
         optimizer = CpSatOptimizer(
             variants=data.variants,
             funding_target_M=funding_target_M,
@@ -156,7 +200,7 @@ def main():
             time_limit_seconds=args.time_limit
         )
     else:
-        print(f"Using Optimizer.")
+        logging.info(f"Using Optimizer.")
         optimizer = Optimizer(
             variants=data.variants,
             funding_target_M=funding_target_M,
@@ -169,7 +213,7 @@ def main():
             time_limit_seconds=args.time_limit
         )
     
-    print("Calculating PV coefficients...")
+    logging.info("Calculating PV coefficients...")
     pv_map = calculate_pv_coefficients(
         data.variants,
         data.kernels_by_dim,
@@ -184,33 +228,34 @@ def main():
     lp_dir = project_root / "linear-program-files"
     lp_dir.mkdir(exist_ok=True)
     lp_file = lp_dir / "model.lp"
-    print(f"Exporting model to {lp_file}...")
+    logging.info(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
     
     if args.generate_only:
-        print("Model generated. Skipping solve step.")
+        logging.info("Model generated. Skipping solve step.")
         return
 
-    print("Solving...")
+    logging.info("Solving...")
     result = optimizer.solve()
     
-    print(f"Status: {result.status}")
-    print(f"Objective: {result.objective_value}")
-    print(f"Gap: {result.gap:.4%}")
+    logging.info(f"Status: {result.status}")
+    logging.info(f"Objective: {result.objective_value}")
+    logging.info(f"Gap: {result.gap:.4%}")
     
     if result.status in ["OPTIMAL", "FEASIBLE"]:
-        print("\nSchedule (Top 20):")
-        print(result.schedule.head(20))
-        print(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
+        logging.info("\nSchedule (Top 20):")
+        # For dataframe printing, we might want to keep print or log as string
+        logging.info("\n" + result.schedule.head(20).to_string())
+        logging.info(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
         
         # Save results
         out_dir = project_root / "output"
         out_dir.mkdir(exist_ok=True)
         result.schedule.to_csv(out_dir / "schedule.csv", index=False)
         result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
-        print(f"\nResults saved to {out_dir}")
+        logging.info(f"\nResults saved to {out_dir}")
     else:
-        print("No solution found.")
+        logging.info("No solution found.")
 
 if __name__ == "__main__":
     main()

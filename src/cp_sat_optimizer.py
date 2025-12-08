@@ -1,5 +1,6 @@
 from ortools.sat.python import cp_model
 import numpy as np
+import logging
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -283,6 +284,8 @@ class CapitalProgrammeOptimizer:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.time_limit_seconds
         solver.parameters.log_search_progress = True
+        solver.parameters.log_to_stdout = False
+        solver.log_callback = lambda line: logging.info(line)
         
         status_code = solver.Solve(self.model)
         
