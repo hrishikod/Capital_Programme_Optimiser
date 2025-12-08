@@ -14,6 +14,7 @@ class OptimizationResult:
     spend_profile: pd.DataFrame
     cash_flow: pd.DataFrame
     gap: float
+    breakdown: Dict[str, float] = None
 
 class CapitalProgrammeOptimizer:
     def __init__(
@@ -239,6 +240,7 @@ class CapitalProgrammeOptimizer:
         Updates the objective to include PV rewards.
         pv_map: {(variant_id, start_year_idx): pv_value}
         """
+        self.pv_map = pv_map
         pv_terms = []
         for (variant_id, start_year_idx), coeff in pv_map.items():
             if (variant_id, start_year_idx) in self.x:
@@ -320,11 +322,47 @@ class CapitalProgrammeOptimizer:
         except:
             pass
             
+        # --- OBJECTIVE VALUE BREAKDOWN ---
+        
+        # 1. Calculate Real Backlog ($M)
+        # Sum of all backlog variables / currency scaling factor
+        raw_backlog_sum = sum(solver.Value(var) for var in self.backlog)
+        real_backlog_total = raw_backlog_sum / self.scaling_factor
+
+        # 2. Calculate Real Excess Penalty ($M)
+        # Sum of all excess tier variables / currency scaling factor
+        raw_excess_sum = 0
+        for t in range(self.years):
+            for tier_vars in self.excess_tiers[t]:
+                raw_excess_sum += solver.Value(tier_vars)
+        real_excess_total = raw_excess_sum / self.scaling_factor
+
+        # 3. Calculate Real PV ($M)
+        # Iterate active schedule vars and lookup original PV
+        real_pv_total = 0.0
+        if hasattr(self, 'pv_map') and self.pv_map:
+             for (variant_id, start_year_idx), var in self.x.items():
+                 if solver.Value(var) > 0.5:
+                     real_pv_total += self.pv_map.get((variant_id, start_year_idx), 0.0)
+
+        # 4. Global Descaling Factor
+        global_divisor = self.scaling_factor * self.obj_scale
+        descaled_objective = solver.ObjectiveValue() / global_divisor
+
+        breakdown = {
+            "real_backlog_M": real_backlog_total,
+            "real_excess_above_soft_cap_M": real_excess_total,
+            "real_pv_M": real_pv_total,
+            # Useful for debugging weights:
+            "weighted_backlog_contribution": (raw_backlog_sum * self.backlog_weight * self.obj_scale) / global_divisor,
+        }
+
         return OptimizationResult(
             status=status,
-            objective_value=solver.ObjectiveValue(),
+            objective_value=descaled_objective,
             schedule=schedule_df,
             spend_profile=spend_df,
             cash_flow=cash_df,
-            gap=gap
+            gap=gap,
+            breakdown=breakdown
         )
