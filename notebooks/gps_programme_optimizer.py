@@ -18,13 +18,22 @@ import json
 from pathlib import Path
 
 # NOTE - Add src to path if not already there
-# Assuming the notebook is in notebooks/ and src/ is in ../src
-notebook_path = Path(os.getcwd())
-project_root = notebook_path.parent
-src_path = project_root / "src"
+# We dynamically check where 'src' is located to be robust against CWD changes
+cwd = Path(os.getcwd())
+if (cwd / "src").exists():
+    project_root = cwd
+elif (cwd.parent / "src").exists():
+    project_root = cwd.parent
+else:
+    # Fallback: assume notebook is in notebooks/ folder
+    project_root = cwd.parent
+
+print(f"Current Working Directory: {cwd}")
+print(f"Detected Project Root: {project_root}")
 
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    # Use insert(0) to prioritize this project over other modules
+    sys.path.insert(0, str(project_root))
     
 # Import the optimizer
 from src.main import run_optimization
