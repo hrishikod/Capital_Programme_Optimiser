@@ -144,6 +144,9 @@ def run_optimization(args):
             logging.StreamHandler(sys.stdout)
         ]
     )
+    
+    # Suppress noisy py4j logs in Databricks
+    logging.getLogger("py4j").setLevel(logging.WARNING)
 
     logging.info(f"Logging initialized. Writing to {log_file}")
     logging.info(f"Using costs file: {costs_file}")
