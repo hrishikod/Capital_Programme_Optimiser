@@ -62,21 +62,14 @@ def calculate_pv_coefficients(
 
 import argparse
 
-def main():
-    parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
-    parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
-    parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
-    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
-    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
-    parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
-    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
-    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
-    parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
-    parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
-    
-    # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
-    args, _ = parser.parse_known_args()
 
+
+def run_optimization(args):
+    """
+    Main optimization logic, separated for easier calling from notebooks/MLflow.
+    Returns the result object (or None if failed/generate-only).
+    """
+    
     # Parse overflow tiers
     try:
         tiers_raw = args.overflow_tiers.split(",")
@@ -85,8 +78,8 @@ def main():
             thresh, pen = t.split(":")
             piecewise_cap_tiers.append((float(thresh), float(pen)))
     except ValueError:
-        print("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
-        return
+        logging.error("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        return None
 
     # Map dimension tricodes
     dim_map = {
@@ -170,7 +163,7 @@ def main():
         )
     except Exception as e:
         logging.error(f"Failed to load data: {e}")
-        return
+        return None
 
     logging.info(f"Loaded {len(data.variants)} variants.")
     
@@ -233,7 +226,7 @@ def main():
     
     if args.generate_only:
         logging.info("Model generated. Skipping solve step.")
-        return
+        return None
 
     logging.info("Solving...")
     result = optimizer.solve()
@@ -254,8 +247,24 @@ def main():
         result.schedule.to_csv(out_dir / "schedule.csv", index=False)
         result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
         logging.info(f"\nResults saved to {out_dir}")
+        return result
     else:
         logging.info("No solution found.")
+        return result
 
-if __name__ == "__main__":
-    main()
+def main():
+    parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
+    parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
+    parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
+    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
+    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
+    parser.add_argument("--overflow-tiers", type=str, default="0.12:1000,0.15:4000,0.20:12000", help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)")
+    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
+    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
+    parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
+    
+    # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
+    args, _ = parser.parse_known_args()
+    
+    run_optimization(args)
