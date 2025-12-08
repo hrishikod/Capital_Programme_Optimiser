@@ -62,7 +62,7 @@ print(f"Running optimization with config: {vars(args)}")
 # COMMAND ----------
 
 # Start MLflow run
-experiment_name = "/Users/crazy/CapitalProgrammeOptimizer" # Adjust as needed
+experiment_name = "CapitalProgrammeOptimizer"
 mlflow.set_experiment(experiment_name)
 
 with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
