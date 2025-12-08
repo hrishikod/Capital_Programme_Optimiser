@@ -1,12 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Capital Programme Optimizer - MLflow Run
-# MAGIC This notebook runs the optimization with MLflow tracking.
+# MAGIC # Capital Programme Optimizer
+# MAGIC This notebook runs the optimization and logs the results to MLflow.
 
 # COMMAND ----------
 
-# Install dependencies if needed (e.g. ortools)
-# %pip install ortools pandas numpy
+# The model requires ortools to be installed
+# %pip install ortools
 
 # COMMAND ----------
 
@@ -17,7 +17,7 @@ import mlflow
 import json
 from pathlib import Path
 
-# Add src to path if not already there
+# NOTE - Add src to path if not already there
 # Assuming the notebook is in notebooks/ and src/ is in ../src
 notebook_path = Path(os.getcwd())
 project_root = notebook_path.parent
@@ -26,7 +26,7 @@ src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.append(str(src_path))
     
-# Import the optimizer logic
+# Import the optimizer
 from src.main import run_optimization
 
 # COMMAND ----------
@@ -63,7 +63,6 @@ print(f"Running optimization with config: {vars(args)}")
 # COMMAND ----------
 
 # Start MLflow run
-# # Comment out named experiment to use default experiment
 # experiment_name = "CapitalProgrammeOptimizer"
 # mlflow.set_experiment(experiment_name)
 

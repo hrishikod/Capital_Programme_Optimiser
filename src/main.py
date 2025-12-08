@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-# Determine paths robustly (handles interactive/Databricks environments)
+# Determine paths robustly (handles Databricks environments)
 try:
     SCRIPT_PATH = Path(__file__).resolve()
     SCRIPT_DIR = SCRIPT_PATH.parent
@@ -96,10 +96,7 @@ def run_optimization(args):
         target_dimension = dim_map[target_dimension.upper()]
 
     # Configuration
-    # Adjust paths as necessary. Assuming running from project root or src.
-    # We need to find the data file.
-    # The notebook used: ROOT / "Cost_benefit_streams.xlsx"
-    # Let's try to find it relative to this script.
+    # Find cost and benefits csv files
     
     script_dir = SCRIPT_DIR
     project_root = PROJECT_ROOT
@@ -108,20 +105,12 @@ def run_optimization(args):
     costs_file = project_root / "input" / "costs.csv"
     benefits_file = project_root / "input" / "benefits.csv"
     
-    # Fallback to dummy if not found? Or just error.
     if not costs_file.exists():
         logging.error(f"Error: Costs file not found at {costs_file}")
-        # Check for dummy
-        costs_file = project_root / "input" / "dummy_costs.csv"
-        if costs_file.exists():
-            logging.info(f"Using dummy costs: {costs_file}")
             
     if not benefits_file.exists():
         logging.error(f"Error: Benefits file not found at {benefits_file}")
-        # Check for dummy
-        benefits_file = project_root / "input" / "dummy_benefits.csv"
-        if benefits_file.exists():
-            logging.info(f"Using dummy benefits: {benefits_file}")
+
 
     # Setup Logging
     log_dir = project_root / "logs"
