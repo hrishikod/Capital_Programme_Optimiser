@@ -106,13 +106,16 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
             mlflow.log_artifacts(str(output_dir), artifact_path="results")
             
         # Also log the log file
-        log_dir = project_root / "logs"
-        if log_dir.exists():
-             # Find most recent log file
-            logs = list(log_dir.glob("*.log"))
-            if logs:
-                latest_log = max(logs, key=os.path.getctime)
-                mlflow.log_artifact(str(latest_log), artifact_path="logs")
+        if result.log_file and os.path.exists(result.log_file):
+             mlflow.log_artifact(result.log_file, artifact_path="logs")
+        else:
+             # Fallback logic if log_file not populated (e.g. error) or missing
+             log_dir = project_root / "logs"
+             if log_dir.exists():
+                logs = list(log_dir.glob("*.log"))
+                if logs:
+                    latest_log = max(logs, key=os.path.getctime)
+                    mlflow.log_artifact(str(latest_log), artifact_path="logs")
                 
         print(f"Run complete. Metrics and artifacts logged to MLflow.")
     else:
