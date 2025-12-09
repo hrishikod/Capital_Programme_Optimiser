@@ -2,6 +2,7 @@ import sys
 import os
 import numpy as np
 import logging
+import mlflow
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
 
+@mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
 def calculate_pv_coefficients(
     variants: dict,
     kernels_by_dim: dict,
@@ -66,6 +68,8 @@ import argparse
 
 
 
+
+@mlflow.trace(name="run_optimization", span_type="flow")
 def run_optimization(args):
     """
     Main optimization logic, separated for easier calling from notebooks/MLflow.

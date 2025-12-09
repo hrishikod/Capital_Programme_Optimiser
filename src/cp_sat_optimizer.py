@@ -1,6 +1,7 @@
 from ortools.sat.python import cp_model
 import numpy as np
 import logging
+import mlflow
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ class CapitalProgrammeOptimizer:
     def _descale(self, value: int) -> float:
         return float(value) / self.scaling_factor
 
+    @mlflow.trace(name="_build_model", span_type="build")
     def _build_model(self):
         # 1. Pre-calculate allowed starts
         self.allowed_starts: Dict[str, List[int]] = {}
@@ -236,6 +238,7 @@ class CapitalProgrammeOptimizer:
         
         self.model.Minimize(self.obj_backlog + self.obj_excess)
 
+    @mlflow.trace(name="set_pv_coefficients", span_type="build")
     def set_pv_coefficients(self, pv_map: Dict[Tuple[str, int], float]):
         """
         Updates the objective to include PV rewards.
@@ -260,6 +263,7 @@ class CapitalProgrammeOptimizer:
         with open(filepath, "w") as f:
             f.write(str(self.model))
 
+    @mlflow.trace(name="solve", span_type="optimization")
     def solve(self) -> OptimizationResult:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.time_limit_seconds
