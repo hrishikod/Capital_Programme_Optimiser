@@ -32,7 +32,8 @@ class CapitalProgrammeOptimizer:
         time_limit_seconds: float = 300.0,
         gap_limit: float = 0.01, # Not directly used in CP-SAT same way, but kept for compat
         relax_integrality: bool = False, # CP-SAT is pure integer, this flag will be ignored/warned
-        scaling_factor: float = 1000.0
+        scaling_factor: float = 1000.0,
+        num_search_workers: int = 0
     ):
         self.variants = variants
         self.funding_target_M = funding_target_M
@@ -47,6 +48,7 @@ class CapitalProgrammeOptimizer:
         self.relax_integrality = relax_integrality
         self.scaling_factor = scaling_factor
         self.time_limit_seconds = time_limit_seconds
+        self.num_search_workers = num_search_workers
         
         self.model = cp_model.CpModel()
         
@@ -238,25 +240,33 @@ class CapitalProgrammeOptimizer:
         
         self.model.Minimize(self.obj_backlog + self.obj_excess)
 
-    @mlflow.trace(name="set_pv_coefficients", span_type="build")
     def set_pv_coefficients(self, pv_map: Dict[Tuple[str, int], float]):
         """
         Updates the objective to include PV rewards.
         pv_map: {(variant_id, start_year_idx): pv_value}
         """
-        self.pv_map = pv_map
-        pv_terms = []
-        for (variant_id, start_year_idx), coeff in pv_map.items():
-            if (variant_id, start_year_idx) in self.x:
-                # Scale PV coefficient to match objective units (ScaledDollars * ObjScale)
+        # Use start_span to trace this block without auto-logging the crashing inputs
+        with mlflow.start_span(name="set_pv_coefficients", span_type="TOOL") as span:
+            
+            # Log safe metadata (count of items) instead of the complex dictionary
+            span.set_attribute("total_coefficients_provided", len(pv_map))
+
+            self.pv_map = pv_map
+            pv_terms = []
+            for (variant_id, start_year_idx), coeff in pv_map.items():
+                if (variant_id, start_year_idx) in self.x:
+                    
+                    # Scale PV coefficient to match objective units (ScaledDollars * ObjScale)
+                    scaled_coeff = int(coeff * self.scaling_factor * self.obj_scale * self.pv_weight)
+                    pv_terms.append(self.x[(variant_id, start_year_idx)] * scaled_coeff)
+            
+            if pv_terms:
+                self.pv_expr = sum(pv_terms)
+                # Update objective to include PV term (Maximize PV => Minimize -PV)
+                self.model.Minimize(self.obj_backlog + self.obj_excess - self.pv_expr)
                 
-                scaled_coeff = int(coeff * self.scaling_factor * self.obj_scale * self.pv_weight)
-                pv_terms.append(self.x[(variant_id, start_year_idx)] * scaled_coeff)
-        
-        if pv_terms:
-            self.pv_expr = sum(pv_terms)
-            # Update objective to include PV term (Maximize PV => Minimize -PV)
-            self.model.Minimize(self.obj_backlog + self.obj_excess - self.pv_expr)
+                # Log how many terms were actually added to the model
+                span.set_attribute("active_pv_terms_added", len(pv_terms))
 
     def export_model(self, filepath: str):
         """Exports the model to a text file (CP-SAT format)."""
@@ -268,6 +278,7 @@ class CapitalProgrammeOptimizer:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.time_limit_seconds
         solver.parameters.log_search_progress = True
+        solver.parameters.num_search_workers = self.num_search_workers
         solver.parameters.log_to_stdout = False
         solver.log_callback = lambda line: logging.info(line)
         

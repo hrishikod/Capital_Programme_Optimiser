@@ -51,6 +51,7 @@ dbutils.widgets.text("horizon", "60", "Horizon (Years)")
 dbutils.widgets.text("overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overflow Tiers")
 dbutils.widgets.dropdown("optimizer", "cp-sat", ["cp-sat", "optimizer"], "Optimizer Backend")
 dbutils.widgets.text("time_limit", "300.0", "Time Limit (s)")
+dbutils.widgets.text("workers", "0", "Num Workers")
 
 # COMMAND ----------
 
@@ -66,6 +67,7 @@ args.horizon = int(dbutils.widgets.get("horizon"))
 args.overflow_tiers = dbutils.widgets.get("overflow_tiers")
 args.optimizer = dbutils.widgets.get("optimizer")
 args.time_limit = float(dbutils.widgets.get("time_limit"))
+args.workers = int(dbutils.widgets.get("workers"))
 args.generate_only = False
 args.relax = False
 

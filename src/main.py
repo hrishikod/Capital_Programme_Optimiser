@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
 
-@mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
+# @mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
 def calculate_pv_coefficients(
     variants: dict,
     kernels_by_dim: dict,
@@ -42,27 +42,37 @@ def calculate_pv_coefficients(
     discount_rate: float = 0.02,
     dim: str = "Total"
 ):
-    pv_map = {}
-    disc_vec = np.array([(1.0 + discount_rate) ** t for t in range(years)])
+
+    with mlflow.start_span(name="calculate_pv_coefficients", span_type="TOOL") as span:
     
-    for v, starts in allowed_starts.items():
-        ker = kernels_by_dim.get(dim, {}).get(v, [])
-        if not ker:
-            continue
-            
-        for s in starts:
-            # Calculate PV if project v starts at s
-            # Kernel is aligned with project duration.
-            # We need to shift it by s and discount it.
-            val = 0.0
-            for k, f in enumerate(ker):
-                t = s + k
-                if 0 <= t < years:
-                    val += float(f) / float(disc_vec[t])
-            
-            if val != 0.0:
-                pv_map[(v, s)] = val
-    return pv_map
+        pv_map = {}
+        disc_vec = np.array([(1.0 + discount_rate) ** t for t in range(years)])
+        
+        for v, starts in allowed_starts.items():
+            ker = kernels_by_dim.get(dim, {}).get(v, [])
+            if not ker:
+                continue
+                
+            for s in starts:
+                # Calculate PV if project v starts at s
+                # Kernel is aligned with project duration.
+                # We need to shift it by s and discount it.
+                val = 0.0
+                for k, f in enumerate(ker):
+                    t = s + k
+                    if 0 <= t < years:
+                        val += float(f) / float(disc_vec[t])
+                
+                if val != 0.0:
+                    pv_map[(v, s)] = val
+
+        span.set_attribute("output_size", len(pv_map))
+        span.set_attribute("discount_rate", discount_rate)
+        span.set_attribute("start_fy", start_fy)
+        span.set_attribute("years", years)
+        span.set_attribute("dim", dim)
+        
+        return pv_map
 
 import argparse
 
@@ -188,7 +198,8 @@ def run_optimization(args):
             max_starts_per_year=100,
             relax_integrality=args.relax,
             piecewise_cap_tiers=piecewise_cap_tiers,
-            time_limit_seconds=args.time_limit
+            time_limit_seconds=args.time_limit,
+            num_search_workers=args.workers
         )
     else:
         logging.info(f"Using Optimizer.")
@@ -268,6 +279,7 @@ def main():
     parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
     parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
     parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--workers", type=int, default=0, help="Number of search workers (default: 0 = all available)")
     parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
     
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
