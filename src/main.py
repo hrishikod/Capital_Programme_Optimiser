@@ -25,9 +25,11 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from src.data_loader import DataLoader
-from src.cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
-from src.optimizer import CapitalProgrammeOptimizer as Optimizer
+
+# from src.optimizer import CapitalProgrammeOptimizer as Optimizer
+# Switching to cp-sat optimizer
+from cp_sat_optimizer import CapitalProgrammeOptimizer as Optimizer
+from data_loader import DataLoader
 
 def calculate_pv_coefficients(
     variants: dict,

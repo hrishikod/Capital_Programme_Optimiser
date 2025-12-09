@@ -31,12 +31,14 @@ else:
 print(f"Current Working Directory: {cwd}")
 print(f"Detected Project Root: {project_root}")
 
-if str(project_root) not in sys.path:
-    # Use insert(0) to prioritize this project over other modules
-    sys.path.insert(0, str(project_root))
+# Add src to sys.path so we can import modules directly
+src_dir = project_root / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
     
 # Import the optimizer
-from src.main import run_optimization
+# Since src is in path, we import main directly
+from main import run_optimization
 
 # COMMAND ----------
 
