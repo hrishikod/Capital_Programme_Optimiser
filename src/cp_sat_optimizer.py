@@ -365,7 +365,6 @@ class CapitalProgrammeOptimizer:
             spend_profile=spend_df,
             cash_flow=cash_df,
             gap=gap,
-            gap=gap,
             breakdown=breakdown,
             log_file=None # Will be populated by main wrapper if needed
         )
