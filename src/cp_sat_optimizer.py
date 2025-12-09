@@ -240,25 +240,33 @@ class CapitalProgrammeOptimizer:
         
         self.model.Minimize(self.obj_backlog + self.obj_excess)
 
-    @mlflow.trace(name="set_pv_coefficients", span_type="build")
     def set_pv_coefficients(self, pv_map: Dict[Tuple[str, int], float]):
         """
         Updates the objective to include PV rewards.
         pv_map: {(variant_id, start_year_idx): pv_value}
         """
-        self.pv_map = pv_map
-        pv_terms = []
-        for (variant_id, start_year_idx), coeff in pv_map.items():
-            if (variant_id, start_year_idx) in self.x:
-                # Scale PV coefficient to match objective units (ScaledDollars * ObjScale)
+        # Use start_span to trace this block without auto-logging the crashing inputs
+        with mlflow.start_span(name="set_pv_coefficients", span_type="TOOL") as span:
+            
+            # Log safe metadata (count of items) instead of the complex dictionary
+            span.set_attribute("total_coefficients_provided", len(pv_map))
+
+            self.pv_map = pv_map
+            pv_terms = []
+            for (variant_id, start_year_idx), coeff in pv_map.items():
+                if (variant_id, start_year_idx) in self.x:
+                    
+                    # Scale PV coefficient to match objective units (ScaledDollars * ObjScale)
+                    scaled_coeff = int(coeff * self.scaling_factor * self.obj_scale * self.pv_weight)
+                    pv_terms.append(self.x[(variant_id, start_year_idx)] * scaled_coeff)
+            
+            if pv_terms:
+                self.pv_expr = sum(pv_terms)
+                # Update objective to include PV term (Maximize PV => Minimize -PV)
+                self.model.Minimize(self.obj_backlog + self.obj_excess - self.pv_expr)
                 
-                scaled_coeff = int(coeff * self.scaling_factor * self.obj_scale * self.pv_weight)
-                pv_terms.append(self.x[(variant_id, start_year_idx)] * scaled_coeff)
-        
-        if pv_terms:
-            self.pv_expr = sum(pv_terms)
-            # Update objective to include PV term (Maximize PV => Minimize -PV)
-            self.model.Minimize(self.obj_backlog + self.obj_excess - self.pv_expr)
+                # Log how many terms were actually added to the model
+                span.set_attribute("active_pv_terms_added", len(pv_terms))
 
     def export_model(self, filepath: str):
         """Exports the model to a text file (CP-SAT format)."""
