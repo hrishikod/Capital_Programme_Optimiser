@@ -188,7 +188,8 @@ def run_optimization(args):
             max_starts_per_year=100,
             relax_integrality=args.relax,
             piecewise_cap_tiers=piecewise_cap_tiers,
-            time_limit_seconds=args.time_limit
+            time_limit_seconds=args.time_limit,
+            num_search_workers=args.workers
         )
     else:
         logging.info(f"Using Optimizer.")
@@ -268,6 +269,7 @@ def main():
     parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
     parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
     parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--workers", type=int, default=0, help="Number of search workers (default: 0 = all available)")
     parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
     
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)

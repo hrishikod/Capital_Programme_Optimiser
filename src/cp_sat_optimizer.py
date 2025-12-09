@@ -32,7 +32,8 @@ class CapitalProgrammeOptimizer:
         time_limit_seconds: float = 300.0,
         gap_limit: float = 0.01, # Not directly used in CP-SAT same way, but kept for compat
         relax_integrality: bool = False, # CP-SAT is pure integer, this flag will be ignored/warned
-        scaling_factor: float = 1000.0
+        scaling_factor: float = 1000.0,
+        num_search_workers: int = 0
     ):
         self.variants = variants
         self.funding_target_M = funding_target_M
@@ -47,6 +48,7 @@ class CapitalProgrammeOptimizer:
         self.relax_integrality = relax_integrality
         self.scaling_factor = scaling_factor
         self.time_limit_seconds = time_limit_seconds
+        self.num_search_workers = num_search_workers
         
         self.model = cp_model.CpModel()
         
@@ -268,6 +270,7 @@ class CapitalProgrammeOptimizer:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.time_limit_seconds
         solver.parameters.log_search_progress = True
+        solver.parameters.num_search_workers = self.num_search_workers
         solver.parameters.log_to_stdout = False
         solver.log_callback = lambda line: logging.info(line)
         
