@@ -15,6 +15,7 @@ class OptimizationResult:
     cash_flow: pd.DataFrame
     gap: float
     breakdown: Dict[str, float] = None
+    log_file: str = None
 
 class CapitalProgrammeOptimizer:
     def __init__(
@@ -278,7 +279,7 @@ class CapitalProgrammeOptimizer:
         status = status_map.get(status_code, "UNKNOWN")
         
         if status not in ["OPTIMAL", "FEASIBLE"]:
-            return OptimizationResult(status, 0.0, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0.0)
+            return OptimizationResult(status, 0.0, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0.0, None, None)
 
         # Extract results
         # Schedule
@@ -364,5 +365,7 @@ class CapitalProgrammeOptimizer:
             spend_profile=spend_df,
             cash_flow=cash_df,
             gap=gap,
-            breakdown=breakdown
+            gap=gap,
+            breakdown=breakdown,
+            log_file=None # Will be populated by main wrapper if needed
         )

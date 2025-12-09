@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # from src.optimizer import CapitalProgrammeOptimizer as Optimizer
 # Switching to cp-sat optimizer
-from cp_sat_optimizer import CapitalProgrammeOptimizer as Optimizer
+from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
 
 def calculate_pv_coefficients(
@@ -233,6 +233,9 @@ def run_optimization(args):
         for k, v in result.breakdown.items():
             logging.info(f"  {k}: {v:,.2f}")
     logging.info(f"Gap: {result.gap:.4%}")
+    
+    # Attach log file path so notebook knows where it is (in case of /tmp fallback)
+    result.log_file = str(log_file)
     
     if result.status in ["OPTIMAL", "FEASIBLE"]:
         logging.info("\nSchedule (Top 20):")
