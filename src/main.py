@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
 
-@mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
+# @mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
 def calculate_pv_coefficients(
     variants: dict,
     kernels_by_dim: dict,
@@ -42,27 +42,37 @@ def calculate_pv_coefficients(
     discount_rate: float = 0.02,
     dim: str = "Total"
 ):
-    pv_map = {}
-    disc_vec = np.array([(1.0 + discount_rate) ** t for t in range(years)])
+
+    with mlflow.start_span(name="calculate_pv_coefficients", span_type="TOOL") as span:
     
-    for v, starts in allowed_starts.items():
-        ker = kernels_by_dim.get(dim, {}).get(v, [])
-        if not ker:
-            continue
-            
-        for s in starts:
-            # Calculate PV if project v starts at s
-            # Kernel is aligned with project duration.
-            # We need to shift it by s and discount it.
-            val = 0.0
-            for k, f in enumerate(ker):
-                t = s + k
-                if 0 <= t < years:
-                    val += float(f) / float(disc_vec[t])
-            
-            if val != 0.0:
-                pv_map[(v, s)] = val
-    return pv_map
+        pv_map = {}
+        disc_vec = np.array([(1.0 + discount_rate) ** t for t in range(years)])
+        
+        for v, starts in allowed_starts.items():
+            ker = kernels_by_dim.get(dim, {}).get(v, [])
+            if not ker:
+                continue
+                
+            for s in starts:
+                # Calculate PV if project v starts at s
+                # Kernel is aligned with project duration.
+                # We need to shift it by s and discount it.
+                val = 0.0
+                for k, f in enumerate(ker):
+                    t = s + k
+                    if 0 <= t < years:
+                        val += float(f) / float(disc_vec[t])
+                
+                if val != 0.0:
+                    pv_map[(v, s)] = val
+
+        span.set_attribute("output_size", len(pv_map))
+        span.set_attribute("discount_rate", discount_rate)
+        span.set_attribute("start_fy", start_fy)
+        span.set_attribute("years", years)
+        span.set_attribute("dim", dim)
+        
+        return pv_map
 
 import argparse
 
