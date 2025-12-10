@@ -7,7 +7,7 @@ def create_dummy_csv_data():
     # Configuration
     num_projects = 50
     start_year = 2026
-    end_year = 2085
+    end_year = 2035
     years = list(range(start_year, end_year + 1))
     benefit_years = 40 # t+0 to t+39 (actually t+40 based on inspection, let's do 41)
     
@@ -21,10 +21,10 @@ def create_dummy_csv_data():
     for proj in projects:
         # Random duration between 3 and 10 years
         duration = random.randint(3, 10)
-        # Random start year (must finish by end_year)
-        # To make it interesting, let's scatter them
-        max_start = end_year - duration
-        start_y = random.randint(start_year, min(start_year + 20, max_start))
+        # Random start year
+        # Ensure max_start is at least start_year to avoid ValueError
+        max_start = max(start_year, end_year - duration)
+        start_y = random.randint(start_year, max_start)
         
         total_cost = random.uniform(10, 500) * 1_000_000 # 10M to 500M
         annual_cost = total_cost / duration
