@@ -182,3 +182,46 @@ def plot_annual_spend_net_funding(cash_flow: pd.DataFrame, output_path: Path) ->
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
+
+
+def save_visualizations(
+    result,
+    kernels_by_dim: Dict[str, Dict[str, List[float]]],
+    start_fy: int,
+    years: int,
+    dimension: str,
+    output_dir: Path,
+) -> None:
+    """
+    Post-processing helper to save visual outputs for an optimization result.
+
+    Args:
+        result: OptimizationResult with schedule, spend_profile, cash_flow.
+        kernels_by_dim: benefits mapped by dimension -> project -> flow.
+        start_fy: first financial year.
+        years: horizon length.
+        dimension: target dimension for benefit aggregation.
+        output_dir: directory to write PNG and CSV outputs.
+    """
+    if result is None or result.schedule is None:
+        return
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    benefit_profile = build_benefit_profile(
+        result.schedule,
+        kernels_by_dim,
+        start_fy,
+        years,
+        dimension,
+    )
+    benefit_profile.to_csv(out_dir / "benefit_profile.csv")
+    plot_program_schedule(result.schedule, out_dir / "program_schedule.png")
+    plot_cumulative_spend_and_benefit(
+        result.spend_profile,
+        benefit_profile,
+        start_fy,
+        out_dir / "cumulative_spend_benefit.png",
+    )
+    plot_annual_spend_net_funding(result.cash_flow, out_dir / "annual_spend_net_funding.png")

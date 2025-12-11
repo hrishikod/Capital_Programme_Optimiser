@@ -31,12 +31,6 @@ if str(PROJECT_ROOT) not in sys.path:
 # Switching to cp-sat optimizer
 from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
-from visualization import (
-    build_benefit_profile,
-    plot_program_schedule,
-    plot_cumulative_spend_and_benefit,
-    plot_annual_spend_net_funding,
-)
 
 # @mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
 def calculate_pv_coefficients(
@@ -280,22 +274,6 @@ def run_optimization(args):
         out_dir.mkdir(exist_ok=True, parents=True) # Ensure parents exist
         result.schedule.to_csv(out_dir / "schedule.csv", index=False)
         result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
-        benefit_profile = build_benefit_profile(
-            result.schedule,
-            data.kernels_by_dim,
-            start_fy,
-            years,
-            target_dimension
-        )
-        benefit_profile.to_csv(out_dir / "benefit_profile.csv")
-        plot_program_schedule(result.schedule, out_dir / "program_schedule.png")
-        plot_cumulative_spend_and_benefit(
-            result.spend_profile,
-            benefit_profile,
-            start_fy,
-            out_dir / "cumulative_spend_benefit.png"
-        )
-        plot_annual_spend_net_funding(result.cash_flow, out_dir / "annual_spend_net_funding.png")
         logging.info(f"\nResults saved to {out_dir}")
         return result
     else:
