@@ -135,7 +135,7 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         output_dir = project_root / "output"
         if output_dir.exists():
             mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
-            
+
         # Also log the log file
         if result.log_file and os.path.exists(result.log_file):
             mlflow.log_artifact(result.log_file, artifact_path="logs")

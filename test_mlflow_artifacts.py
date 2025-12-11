@@ -16,7 +16,7 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-# Import the optimizer
+# Import the run_optimization function from the main.py module in the src directory
 from main import run_optimization
 
 def test_mlflow_artifacts():
