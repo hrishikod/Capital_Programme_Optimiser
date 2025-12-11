@@ -138,11 +138,11 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
             
         # Also log the log file
         if result.log_file and os.path.exists(result.log_file):
-             mlflow.log_artifact(result.log_file, artifact_path="logs")
+            mlflow.log_artifact(result.log_file, artifact_path="logs")
         else:
-             # Fallback logic if log_file not populated (e.g. error) or missing
-             log_dir = project_root / "logs"
-             if log_dir.exists():
+            # Fallback logic if log_file not populated (e.g. error) or missing
+            log_dir = project_root / "logs"
+            if log_dir.exists():
                 logs = list(log_dir.glob("*.log"))
                 if logs:
                     latest_log = max(logs, key=os.path.getctime)
