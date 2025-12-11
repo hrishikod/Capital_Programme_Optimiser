@@ -3,7 +3,10 @@ import numpy as np
 import random
 import os
 
-def create_dummy_csv_data(output_dir="input"):
+def create_dummy_csv_data(output_dir="input", seed=None):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
     # Configuration
     num_projects = 50
     start_year = 2026
@@ -145,6 +148,7 @@ import argparse
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate dummy data for optimization")
     parser.add_argument("--output-dir", type=str, default="input", help="Directory to save generated CSV files")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
     args = parser.parse_args()
     
-    create_dummy_csv_data(args.output_dir)
+    create_dummy_csv_data(args.output_dir, args.seed)
