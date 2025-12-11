@@ -15,10 +15,8 @@ def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimen
     if dimension in kernels_by_dim:
         return dimension
     dim_lower = dimension.lower()
-    for key in kernels_by_dim.keys():
-        if key.lower() == dim_lower:
-            return key
-    return None
+    lower_map = {key.lower(): key for key in kernels_by_dim.keys()}
+    return lower_map.get(dim_lower)
 
 
 def build_benefit_profile(
@@ -104,9 +102,11 @@ def plot_cumulative_spend_and_benefit(
     if not years:
         return
 
+    # Aggregated spend profile is expected to be a single-row DataFrame
     spend_series = spend_profile.iloc[0].reindex(years, fill_value=0.0)
 
     if benefit_profile is not None and not benefit_profile.empty:
+        # Benefit profile is also a single-row aggregate
         benefit_series = benefit_profile.iloc[0].reindex(years, fill_value=0.0)
     else:
         benefit_series = pd.Series([0.0] * len(years), index=years)
