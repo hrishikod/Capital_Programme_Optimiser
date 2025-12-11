@@ -77,9 +77,9 @@ def build_benefit_profile(
     return pd.DataFrame([profile], columns=horizon_years, index=["Total Benefit"])
 
 
-def plot_programme_schedule(schedule_df: pd.DataFrame, output_path: Path) -> None:
+def plot_program_schedule(schedule_df: pd.DataFrame, output_path: Path) -> None:
     """
-    Plot a simple programme schedule (Gantt-style) using Project, StartYear, and Duration columns.
+    Plot a simple program schedule (Gantt-style) using Project, StartYear, and Duration columns.
     Saves the figure to output_path. Returns early if schedule_df is empty.
     """
     if schedule_df is None or schedule_df.empty:
@@ -99,7 +99,7 @@ def plot_programme_schedule(schedule_df: pd.DataFrame, output_path: Path) -> Non
     ax.set_yticks(range(len(schedule_sorted)))
     ax.set_yticklabels(schedule_sorted["Project"])
     ax.set_xlabel("Year")
-    ax.set_title("Programme Schedule")
+    ax.set_title("Program Schedule")
     ax.grid(True, axis="x", linestyle="--", alpha=0.4)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

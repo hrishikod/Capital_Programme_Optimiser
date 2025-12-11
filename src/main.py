@@ -33,7 +33,7 @@ from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
 from visualization import (
     build_benefit_profile,
-    plot_programme_schedule,
+    plot_program_schedule,
     plot_cumulative_spend_and_benefit,
     plot_annual_spend_net_funding,
 )
@@ -288,7 +288,7 @@ def run_optimization(args):
             target_dimension
         )
         benefit_profile.to_csv(out_dir / "benefit_profile.csv")
-        plot_programme_schedule(result.schedule, out_dir / "programme_schedule.png")
+        plot_program_schedule(result.schedule, out_dir / "program_schedule.png")
         plot_cumulative_spend_and_benefit(
             result.spend_profile,
             benefit_profile,
