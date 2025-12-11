@@ -5,10 +5,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
-def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> str:
+def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
     """
     Return the exact key in kernels_by_dim that matches the requested dimension (case-insensitive).
     """
@@ -18,7 +18,7 @@ def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimen
     for key in kernels_by_dim.keys():
         if key.lower() == dim_lower:
             return key
-    return ""
+    return None
 
 
 def build_benefit_profile(
@@ -38,13 +38,13 @@ def build_benefit_profile(
         return pd.DataFrame([profile], columns=horizon_years, index=["Total Benefit"])
 
     dim_key = _find_dimension_key(kernels_by_dim, dimension)
-    dim_kernels = kernels_by_dim.get(dim_key, {})
+    dim_kernels = kernels_by_dim.get(dim_key, {}) if dim_key else {}
 
     for _, row in schedule_df.iterrows():
         project = row.get("Project")
         try:
             start_idx = int(row.get("StartYear", start_fy)) - int(start_fy)
-        except Exception:
+        except (TypeError, ValueError):
             start_idx = 0
 
         ker = dim_kernels.get(project, [])
