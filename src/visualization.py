@@ -125,7 +125,7 @@ def plot_cumulative_spend_and_benefit(
     if years is None:
         try:
             years = [int(c) for c in spend_profile.columns]
-        except Exception:
+        except (TypeError, ValueError):
             years = [start_fy + i for i in range(spend_profile.shape[1])]
     if not years:
         return
@@ -143,7 +143,7 @@ def plot_cumulative_spend_and_benefit(
     ax.plot(years, spend_series.cumsum(), label="Cumulative Spend", color="#4C78A8")
     ax.plot(years, benefit_series.cumsum(), label="Cumulative Benefit", color="#F58518")
     ax.set_xlabel("Year")
-    ax.set_ylabel("Cumulative ($M)")
+    ax.set_ylabel("Cumulative")
     ax.set_title("Cumulative Spend and Benefit")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
@@ -170,7 +170,7 @@ def plot_annual_spend_net_funding(cash_flow: pd.DataFrame, output_path: Path) ->
     ax.plot(years, cash_flow["Funding"], label="Funding Envelope", color="#F58518", linewidth=2, linestyle="--")
 
     ax.set_xlabel("Year")
-    ax.set_ylabel("$M")
+    ax.set_ylabel("Amount")
     ax.set_title("Annual Spend, Net Balance, and Funding Envelope")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
