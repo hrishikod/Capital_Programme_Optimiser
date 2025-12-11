@@ -89,6 +89,14 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
     
+    # Log input data files as artifacts
+    for path_arg, name in [(args.costs_path, "costs"), (args.benefits_path, "benefits")]:
+        input_file = Path(path_arg) if os.path.isabs(path_arg) else project_root / path_arg
+        if input_file.exists():
+            mlflow.log_artifact(str(input_file), artifact_path="input_data")
+        else:
+            print(f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
+    
     # Run Optimization
     result = run_optimization(args)
     
@@ -105,21 +113,21 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         total_spend = result.spend_profile.iloc[0, :].sum()
         mlflow.log_metric("total_spend", total_spend)
         
-        # Log Artifacts (CSVs)
+        # Log output data artifacts (CSVs)
         # result object doesn't have file paths, but run_optimization writes them to output/
         # We can find them or use the dataframes directly
         
         output_dir = project_root / "output"
         if output_dir.exists():
-            mlflow.log_artifacts(str(output_dir), artifact_path="results")
-            
+            mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
+
         # Also log the log file
         if result.log_file and os.path.exists(result.log_file):
-             mlflow.log_artifact(result.log_file, artifact_path="logs")
+            mlflow.log_artifact(result.log_file, artifact_path="logs")
         else:
-             # Fallback logic if log_file not populated (e.g. error) or missing
-             log_dir = project_root / "logs"
-             if log_dir.exists():
+            # Fallback logic if log_file not populated (e.g. error) or missing
+            log_dir = project_root / "logs"
+            if log_dir.exists():
                 logs = list(log_dir.glob("*.log"))
                 if logs:
                     latest_log = max(logs, key=os.path.getctime)
