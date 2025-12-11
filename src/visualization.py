@@ -7,6 +7,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
+import os
 
 
 def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
@@ -225,3 +226,63 @@ def save_visualizations(
         out_dir / "cumulative_spend_benefit.png",
     )
     plot_annual_spend_net_funding(result.cash_flow, out_dir / "annual_spend_net_funding.png")
+
+
+def visualize_from_outputs(
+    schedule_csv: Path,
+    cash_flow_csv: Path,
+    output_dir: Path,
+    benefit_profile_csv: Optional[Path] = None,
+) -> None:
+    """
+    Post-processing entrypoint that reads model output files and produces plots.
+
+    Args:
+        schedule_csv: path to schedule.csv
+        cash_flow_csv: path to cash_flow.csv
+        output_dir: directory for generated PNGs (and optional benefit profile copy)
+        benefit_profile_csv: optional path to benefit_profile.csv; if absent, benefits are plotted as zeros
+    """
+    schedule_path = Path(schedule_csv)
+    cash_flow_path = Path(cash_flow_csv)
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not schedule_path.exists() or not cash_flow_path.exists():
+        logging.warning("Visualization skipped: missing schedule (%s) or cash_flow (%s)", schedule_path, cash_flow_path)
+        return
+
+    schedule_df = pd.read_csv(schedule_path)
+    cash_flow_df = pd.read_csv(cash_flow_path)
+
+    # Build spend profile from cash flow spend column
+    spend_series = cash_flow_df.get("Spend")
+    year_series = cash_flow_df.get("Year")
+    if spend_series is None or year_series is None or spend_series.empty or year_series.empty:
+        logging.warning("Visualization skipped: cash_flow missing Spend/Year columns")
+        return
+
+    years = year_series.tolist()
+    spend_profile = pd.DataFrame([spend_series.tolist()], columns=years, index=["Total Spend"])
+
+    # Load benefit profile if provided; otherwise zeros
+    benefit_profile: pd.DataFrame
+    if benefit_profile_csv and Path(benefit_profile_csv).exists():
+        benefit_profile = pd.read_csv(benefit_profile_csv, index_col=0)
+        # normalize columns to int years if possible
+        try:
+            benefit_profile.columns = [int(c) for c in benefit_profile.columns]
+        except Exception:
+            pass
+    else:
+        benefit_profile = pd.DataFrame([[0.0] * len(years)], columns=years, index=["Total Benefit"])
+
+    plot_program_schedule(schedule_df, out_dir / "program_schedule.png")
+    plot_cumulative_spend_and_benefit(
+        spend_profile,
+        benefit_profile,
+        start_fy=int(years[0]),
+        output_path=out_dir / "cumulative_spend_benefit.png",
+        years=years,
+    )
+    plot_annual_spend_net_funding(cash_flow_df, out_dir / "annual_spend_net_funding.png")
