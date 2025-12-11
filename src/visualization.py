@@ -10,7 +10,14 @@ from typing import Dict, List, Optional
 
 def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
     """
-    Return the exact key in kernels_by_dim that matches the requested dimension (case-insensitive).
+    Return the matching dimension key from kernels_by_dim (case-insensitive).
+
+    kernels_by_dim is expected to be shaped like:
+    {
+        "Total": {"ProjectA": [benefits_by_year], ...},
+        "Safety": {...}
+    }
+    Returns None when no dimension matches.
     """
     if dimension in kernels_by_dim:
         return dimension
@@ -28,6 +35,16 @@ def build_benefit_profile(
 ) -> pd.DataFrame:
     """
     Build a per-year benefit profile for the selected schedule and target dimension.
+
+    Args:
+        schedule_df: DataFrame with columns ["Project", "StartYear", "Duration"].
+        kernels_by_dim: mapping of dimension -> {project -> benefit flow}.
+        start_fy: first financial year (e.g., 2026).
+        years: planning horizon length.
+        dimension: dimension name to use when looking up kernels (case-insensitive).
+
+    Returns:
+        Single-row DataFrame (index 'Total Benefit') with columns for each year.
     """
     horizon_years = [start_fy + i for i in range(years)]
     profile = [0.0] * years
@@ -58,6 +75,10 @@ def build_benefit_profile(
 
 
 def plot_programme_schedule(schedule_df: pd.DataFrame, output_path: Path) -> None:
+    """
+    Plot a simple programme schedule (Gantt-style) using Project, StartYear, and Duration columns.
+    Saves the figure to output_path. Returns early if schedule_df is empty.
+    """
     if schedule_df is None or schedule_df.empty:
         return
 
@@ -91,6 +112,13 @@ def plot_cumulative_spend_and_benefit(
     output_path: Path,
     years: Optional[List[int]] = None,
 ) -> None:
+    """
+    Plot cumulative spend and benefit over time.
+
+    spend_profile and benefit_profile are expected to be single-row DataFrames with
+    year columns (ints). If years is not provided, columns are used; otherwise the
+    provided sequence determines ordering.
+    """
     if spend_profile is None or spend_profile.empty:
         return
 
@@ -127,6 +155,11 @@ def plot_cumulative_spend_and_benefit(
 
 
 def plot_annual_spend_net_funding(cash_flow: pd.DataFrame, output_path: Path) -> None:
+    """
+    Plot annual spend alongside net balance and funding envelope.
+
+    Expects cash_flow DataFrame to contain 'Year', 'Spend', 'Net', and 'Funding' columns.
+    """
     if cash_flow is None or cash_flow.empty:
         return
 
