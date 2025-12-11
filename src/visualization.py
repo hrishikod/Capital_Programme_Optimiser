@@ -42,10 +42,13 @@ def build_benefit_profile(
 
     for _, row in schedule_df.iterrows():
         project = row.get("Project")
+        start_year = row.get("StartYear")
+        if pd.isna(start_year):
+            continue
         try:
-            start_idx = int(row.get("StartYear", start_fy)) - int(start_fy)
+            start_idx = int(start_year) - int(start_fy)
         except (TypeError, ValueError):
-            start_idx = 0
+            continue
 
         ker = dim_kernels.get(project, [])
         for offset, value in enumerate(ker):
@@ -88,11 +91,19 @@ def plot_cumulative_spend_and_benefit(
     benefit_profile: pd.DataFrame,
     start_fy: int,
     output_path: Path,
+    years: Optional[List[int]] = None,
 ) -> None:
     if spend_profile is None or spend_profile.empty:
         return
 
-    years = [start_fy + i for i in range(spend_profile.shape[1])]
+    if years is None:
+        try:
+            years = [int(c) for c in spend_profile.columns]
+        except Exception:
+            years = [start_fy + i for i in range(spend_profile.shape[1])]
+    if not years:
+        return
+
     spend_series = spend_profile.iloc[0].reindex(years, fill_value=0.0)
 
     if benefit_profile is not None and not benefit_profile.empty:
