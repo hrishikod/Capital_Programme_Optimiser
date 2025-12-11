@@ -3,7 +3,7 @@ import numpy as np
 import random
 import os
 
-def create_dummy_csv_data():
+def create_dummy_csv_data(output_dir="input"):
     # Configuration
     num_projects = 50
     start_year = 2026
@@ -54,9 +54,9 @@ def create_dummy_csv_data():
     cols = ["Project", "Cost type", "Activity Class", "Region", "GPS Request Tier", "Cost", "Duration"] + [str(y) for y in years]
     df_costs = df_costs[cols]
     
-    os.makedirs("input", exist_ok=True)
-    df_costs.to_csv("input/dummy_costs.csv", index=False)
-    print(f"Created input/dummy_costs.csv with {len(df_costs)} projects.")
+    os.makedirs(output_dir, exist_ok=True)
+    df_costs.to_csv(os.path.join(output_dir, "dummy_costs.csv"), index=False)
+    print(f"Created {os.path.join(output_dir, 'dummy_costs.csv')} with {len(df_costs)} projects.")
 
     # 2. Generate Benefits
     # Schema: Project, Activity Class, Region, GPS Request Tier, Dimension, t+0...t+40
@@ -137,8 +137,14 @@ def create_dummy_csv_data():
     cols_ben = ["Project", "Activity Class", "Region", "GPS Request Tier", "Dimension"] + t_cols
     df_ben = df_ben[cols_ben]
     
-    df_ben.to_csv("input/dummy_benefits.csv", index=False)
-    print(f"Created input/dummy_benefits.csv with {len(df_ben)} rows.")
+    df_ben.to_csv(os.path.join(output_dir, "dummy_benefits.csv"), index=False)
+    print(f"Created {os.path.join(output_dir, 'dummy_benefits.csv')} with {len(df_ben)} rows.")
+
+import argparse
 
 if __name__ == "__main__":
-    create_dummy_csv_data()
+    parser = argparse.ArgumentParser(description="Generate dummy data for optimization")
+    parser.add_argument("--output-dir", type=str, default="input", help="Directory to save generated CSV files")
+    args = parser.parse_args()
+    
+    create_dummy_csv_data(args.output_dir)
