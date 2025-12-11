@@ -89,6 +89,29 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
     
+    # Log input data files as artifacts
+    # Resolve costs and benefits file paths
+    if os.path.isabs(args.costs_path):
+        costs_file = Path(args.costs_path)
+    else:
+        costs_file = project_root / args.costs_path
+        
+    if os.path.isabs(args.benefits_path):
+        benefits_file = Path(args.benefits_path)
+    else:
+        benefits_file = project_root / args.benefits_path
+    
+    # Log input files if they exist
+    if costs_file.exists():
+        mlflow.log_artifact(str(costs_file), artifact_path="input_data")
+    else:
+        print(f"Warning: Costs file not found at {costs_file}, skipping artifact logging")
+        
+    if benefits_file.exists():
+        mlflow.log_artifact(str(benefits_file), artifact_path="input_data")
+    else:
+        print(f"Warning: Benefits file not found at {benefits_file}, skipping artifact logging")
+    
     # Run Optimization
     result = run_optimization(args)
     
@@ -105,13 +128,13 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         total_spend = result.spend_profile.iloc[0, :].sum()
         mlflow.log_metric("total_spend", total_spend)
         
-        # Log Artifacts (CSVs)
+        # Log output data artifacts (CSVs)
         # result object doesn't have file paths, but run_optimization writes them to output/
         # We can find them or use the dataframes directly
         
         output_dir = project_root / "output"
         if output_dir.exists():
-            mlflow.log_artifacts(str(output_dir), artifact_path="results")
+            mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
             
         # Also log the log file
         if result.log_file and os.path.exists(result.log_file):
