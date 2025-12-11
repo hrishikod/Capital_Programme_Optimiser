@@ -7,6 +7,7 @@ import os
 import argparse
 import mlflow
 import tempfile
+import time
 from pathlib import Path
 
 # Add src to path
@@ -78,7 +79,12 @@ def test_mlflow_artifacts():
             
             # Run Optimization
             print("\nRunning optimization...")
+            start_time = time.perf_counter()
             result = run_optimization(args)
+            end_time = time.perf_counter()
+            elapsed = end_time - start_time
+            mlflow.log_metric("optimization_time_seconds", elapsed)
+            print(f"Optimization time: {elapsed:.2f} seconds")
             
             if result:
                 # Log Metrics
