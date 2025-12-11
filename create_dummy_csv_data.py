@@ -3,11 +3,14 @@ import numpy as np
 import random
 import os
 
-def create_dummy_csv_data():
+def create_dummy_csv_data(output_dir="input", seed=None):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
     # Configuration
     num_projects = 50
     start_year = 2026
-    end_year = 2085
+    end_year = 2035
     years = list(range(start_year, end_year + 1))
     benefit_years = 40 # t+0 to t+39 (actually t+40 based on inspection, let's do 41)
     
@@ -21,10 +24,10 @@ def create_dummy_csv_data():
     for proj in projects:
         # Random duration between 3 and 10 years
         duration = random.randint(3, 10)
-        # Random start year (must finish by end_year)
-        # To make it interesting, let's scatter them
-        max_start = end_year - duration
-        start_y = random.randint(start_year, min(start_year + 20, max_start))
+        # Random start year
+        # Ensure max_start is at least start_year to avoid ValueError
+        max_start = max(start_year, end_year - duration)
+        start_y = random.randint(start_year, max_start)
         
         total_cost = random.uniform(10, 500) * 1_000_000 # 10M to 500M
         annual_cost = total_cost / duration
@@ -54,9 +57,9 @@ def create_dummy_csv_data():
     cols = ["Project", "Cost type", "Activity Class", "Region", "GPS Request Tier", "Cost", "Duration"] + [str(y) for y in years]
     df_costs = df_costs[cols]
     
-    os.makedirs("input", exist_ok=True)
-    df_costs.to_csv("input/dummy_costs.csv", index=False)
-    print(f"Created input/dummy_costs.csv with {len(df_costs)} projects.")
+    os.makedirs(output_dir, exist_ok=True)
+    df_costs.to_csv(os.path.join(output_dir, "dummy_costs.csv"), index=False)
+    print(f"Created {os.path.join(output_dir, 'dummy_costs.csv')} with {len(df_costs)} projects.")
 
     # 2. Generate Benefits
     # Schema: Project, Activity Class, Region, GPS Request Tier, Dimension, t+0...t+40
@@ -137,8 +140,15 @@ def create_dummy_csv_data():
     cols_ben = ["Project", "Activity Class", "Region", "GPS Request Tier", "Dimension"] + t_cols
     df_ben = df_ben[cols_ben]
     
-    df_ben.to_csv("input/dummy_benefits.csv", index=False)
-    print(f"Created input/dummy_benefits.csv with {len(df_ben)} rows.")
+    df_ben.to_csv(os.path.join(output_dir, "dummy_benefits.csv"), index=False)
+    print(f"Created {os.path.join(output_dir, 'dummy_benefits.csv')} with {len(df_ben)} rows.")
+
+import argparse
 
 if __name__ == "__main__":
-    create_dummy_csv_data()
+    parser = argparse.ArgumentParser(description="Generate dummy data for optimization")
+    parser.add_argument("--output-dir", type=str, default="input", help="Directory to save generated CSV files")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    args = parser.parse_args()
+    
+    create_dummy_csv_data(args.output_dir, args.seed)

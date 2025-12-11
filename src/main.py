@@ -117,9 +117,16 @@ def run_optimization(args):
     script_dir = SCRIPT_DIR
     project_root = PROJECT_ROOT
     
-    # Use CSVs from input folder
-    costs_file = project_root / "input" / "costs.csv"
-    benefits_file = project_root / "input" / "benefits.csv"
+    # Use CSVs from input folder (or args)
+    if os.path.isabs(args.costs_path):
+        costs_file = Path(args.costs_path)
+    else:
+        costs_file = project_root / args.costs_path
+        
+    if os.path.isabs(args.benefits_path):
+        benefits_file = Path(args.benefits_path)
+    else:
+        benefits_file = project_root / args.benefits_path
     
     if not costs_file.exists():
         logging.error(f"Error: Costs file not found at {costs_file}")
@@ -259,8 +266,12 @@ def run_optimization(args):
         logging.info(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
         
         # Save results
-        out_dir = project_root / "output"
-        out_dir.mkdir(exist_ok=True)
+        if os.path.isabs(args.output_dir):
+            out_dir = Path(args.output_dir)
+        else:
+            out_dir = project_root / args.output_dir
+            
+        out_dir.mkdir(exist_ok=True, parents=True) # Ensure parents exist
         result.schedule.to_csv(out_dir / "schedule.csv", index=False)
         result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
         logging.info(f"\nResults saved to {out_dir}")
@@ -281,6 +292,9 @@ def main():
     parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
     parser.add_argument("--workers", type=int, default=0, help="Number of search workers (default: 0 = all available)")
     parser.add_argument("--optimizer", type=str, choices=["cp-sat", "optimizer"], default="cp-sat", help="Optimizer backend to use (default: cp-sat)")
+    parser.add_argument("--costs-path", type=str, default="input/costs.csv", help="Path to costs CSV file (default: input/costs.csv)")
+    parser.add_argument("--benefits-path", type=str, default="input/benefits.csv", help="Path to benefits CSV file (default: input/benefits.csv)")
+    parser.add_argument("--output-dir", type=str, default="output", help="Directory for output files (default: output)")
     
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
     args, _ = parser.parse_known_args()

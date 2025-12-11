@@ -52,6 +52,9 @@ dbutils.widgets.text("overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overfl
 dbutils.widgets.dropdown("optimizer", "cp-sat", ["cp-sat", "optimizer"], "Optimizer Backend")
 dbutils.widgets.text("time_limit", "300.0", "Time Limit (s)")
 dbutils.widgets.text("workers", "0", "Num Workers")
+dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
+dbutils.widgets.text("benefits_path", "input/benefits.csv", "Benefits CSV Path")
+dbutils.widgets.text("output_dir", "output", "Output Directory")
 
 # COMMAND ----------
 
@@ -68,6 +71,9 @@ args.overflow_tiers = dbutils.widgets.get("overflow_tiers")
 args.optimizer = dbutils.widgets.get("optimizer")
 args.time_limit = float(dbutils.widgets.get("time_limit"))
 args.workers = int(dbutils.widgets.get("workers"))
+args.costs_path = dbutils.widgets.get("costs_path")
+args.benefits_path = dbutils.widgets.get("benefits_path")
+args.output_dir = dbutils.widgets.get("output_dir")
 args.generate_only = False
 args.relax = False
 
