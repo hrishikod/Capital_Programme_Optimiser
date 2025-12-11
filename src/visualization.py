@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional
+import logging
 
 
 def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
@@ -47,7 +48,7 @@ def build_benefit_profile(
         Single-row DataFrame (index 'Total Benefit') with columns for each year.
     """
     horizon_years = [start_fy + i for i in range(years)]
-    profile = [0.0] * years
+    profile: List[float] = [0.0] * years
 
     if schedule_df is None or schedule_df.empty or not kernels_by_dim:
         return pd.DataFrame([profile], columns=horizon_years, index=["Total Benefit"])
@@ -59,10 +60,12 @@ def build_benefit_profile(
         project = row.get("Project")
         start_year = row.get("StartYear")
         if pd.isna(start_year):
+            logging.warning("Skipping project %s due to missing StartYear", project)
             continue
         try:
             start_idx = int(start_year) - int(start_fy)
         except (TypeError, ValueError):
+            logging.warning("Skipping project %s due to invalid StartYear %s", project, start_year)
             continue
 
         ker = dim_kernels.get(project, [])
