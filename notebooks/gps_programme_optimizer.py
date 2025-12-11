@@ -15,6 +15,7 @@ import os
 import argparse
 import mlflow
 import json
+import time
 from pathlib import Path
 
 # NOTE - Add src to path if not already there
@@ -98,7 +99,12 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
             print(f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
     
     # Run Optimization
+    start_time = time.perf_counter()
     result = run_optimization(args)
+    end_time = time.perf_counter()
+    elapsed = end_time - start_time
+    mlflow.log_metric("optimization_time_seconds", elapsed)
+    print(f"Optimization time: {elapsed:.2f} seconds")
     
     if result:
         # Log Metrics
