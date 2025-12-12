@@ -2,8 +2,8 @@ import pandas as pd
 
 from src.visualization import build_benefit_profile
 from src.visualization import visualize_from_outputs
-import tempfile
-import os
+
+
 
 
 def test_build_benefit_profile_aligns_benefits_to_start_year():
