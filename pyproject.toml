@@ -16,7 +16,7 @@ dependencies = [
 
 [tool.ruff]
 # Exclude legacy directory from linting
-exclude = ["legacy"]
+exclude = ["legacy", "notebooks", "*.ipynb"]
 
 # Same line length as previously used in flake8
 line-length = 127
