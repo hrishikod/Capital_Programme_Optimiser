@@ -1,0 +1,31 @@
+name: CD Pipeline
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Environment to deploy to"
+                required: true
+                default: "DEV-AAM"
+                type: choice
+                options:
+                    - DEV-AAM
+                    - TEST-AAM
+                    - PROD-AAM
+
+jobs:
+    deploy:
+        name: Deploy
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment || 'DEV-AAM' }}
+        steps:
+            - uses: actions/checkout@v4
+            - name: Deploy to ${{ inputs.environment || 'DEV-AAM' }}
+              run: |
+                  echo "Starting deployment to ${{ inputs.environment || 'DEV-AAM' }}..."
+                  # Placeholder for deployment logic
+                  # Example: python deploy.py --env ${{ inputs.environment || 'DEV-AAM' }}
+                  echo "Deployment complete."
