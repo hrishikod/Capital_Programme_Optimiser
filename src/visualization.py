@@ -8,6 +8,30 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 import os
+import sys
+
+# Ensure we can import from the same directory or project root
+try:
+    SCRIPT_PATH = Path(__file__).resolve()
+    SCRIPT_DIR = SCRIPT_PATH.parent
+except NameError:
+    cwd = Path(os.getcwd()).resolve()
+    SCRIPT_DIR = cwd
+
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.append(str(SCRIPT_DIR))
+
+# Import DataLoader for on-the-fly benefit calculation
+try:
+    from data_loader import DataLoader
+except ImportError:
+    # If running as package, try relative import
+    try:
+        from .data_loader import DataLoader
+    except ImportError:
+        logging.warning("Could not import DataLoader. Benefit recalculation will be unavailable.")
+        DataLoader = None
+
 
 
 def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
@@ -228,11 +252,60 @@ def save_visualizations(
     plot_annual_spend_net_funding(result.cash_flow, out_dir / "annual_spend_net_funding.png")
 
 
+
+def _recalculate_benefits(
+    costs_path: Path,
+    benefits_path: Path,
+    schedule_df: pd.DataFrame,
+    start_fy: int,
+    years: int,
+    output_dir: Path
+) -> Optional[pd.DataFrame]:
+    """
+    Helper to recalculate benefit profile from raw inputs.
+    Returns DataFrame in Millions (matching Spend unit) or None on failure.
+    """
+    if not DataLoader:
+        logging.warning("DataLoader not available, skipping benefit recalc.")
+        return None
+
+    try:
+        logging.info("Recalculating benefits from raw inputs...")
+        loader = DataLoader(str(costs_path), str(benefits_path), start_fy, years)
+        
+        # Load data
+        _, variants, _ = loader.load_costs("P50 - Real")
+        benef_df, _ = loader.load_benefits()
+        
+        # Map kernels
+        _, kernels_by_dim = loader.map_benefit_kernels(benef_df, variants)
+        
+        # Build profile (Total dimension default)
+        benefit_profile = build_benefit_profile(
+            schedule_df,
+            kernels_by_dim,
+            start_fy,
+            years,
+            dimension="Total"
+        )
+        
+        # Save calculated profile
+        benefit_profile.to_csv(output_dir / "benefit_profile_calculated.csv")
+        
+        # Normalize to Millions matches Spend unit
+        return benefit_profile / 1_000_000.0
+        
+    except Exception as e:
+        logging.error("Failed to recalculate benefits: %s", e)
+        return None
+
+
 def visualize_from_outputs(
     schedule_csv: Path,
     cash_flow_csv: Path,
     output_dir: Path,
-    benefit_profile_csv: Optional[Path] = None,
+    costs_path: Optional[Path] = None,
+    benefits_path: Optional[Path] = None,
 ) -> None:
     """
     Post-processing entrypoint that reads model output files and produces plots.
@@ -241,7 +314,8 @@ def visualize_from_outputs(
         schedule_csv: path to schedule.csv
         cash_flow_csv: path to cash_flow.csv
         output_dir: directory for generated PNGs (and optional benefit profile copy)
-        benefit_profile_csv: optional path to benefit_profile.csv; if absent, benefits are plotted as zeros
+        costs_path: optional path to raw costs input (needed for benefit recalc)
+        benefits_path: optional path to raw benefits input (needed for benefit recalc)
     """
     schedule_path = Path(schedule_csv)
     cash_flow_path = Path(cash_flow_csv)
@@ -265,16 +339,22 @@ def visualize_from_outputs(
     years = year_series.tolist()
     spend_profile = pd.DataFrame([spend_series.tolist()], columns=years, index=["Total Spend"])
 
-    # Load benefit profile if provided; otherwise zeros
-    benefit_profile: pd.DataFrame
-    if benefit_profile_csv and Path(benefit_profile_csv).exists():
-        benefit_profile = pd.read_csv(benefit_profile_csv, index_col=0)
-        # normalize columns to int years if possible
-        try:
-            benefit_profile.columns = [int(c) for c in benefit_profile.columns]
-        except Exception:
-            pass
-    else:
+    # Attempt benefit recalculation if inputs provided
+    benefit_profile = None
+    if costs_path and benefits_path and costs_path.exists() and benefits_path.exists():
+        start_fy = int(min(years))
+        num_years = len(years)
+        benefit_profile = _recalculate_benefits(
+            costs_path, 
+            benefits_path, 
+            schedule_df, 
+            start_fy, 
+            num_years, 
+            out_dir
+        )
+    
+    # Fallback to zeros if calc failed or not attempted
+    if benefit_profile is None:
         benefit_profile = pd.DataFrame([[0.0] * len(years)], columns=years, index=["Total Benefit"])
 
     plot_program_schedule(schedule_df, out_dir / "program_schedule.png")
@@ -286,3 +366,26 @@ def visualize_from_outputs(
         years=years,
     )
     plot_annual_spend_net_funding(cash_flow_df, out_dir / "annual_spend_net_funding.png")
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate visualizations from Capital Programme Optimizer outputs.")
+    parser.add_argument("--schedule-csv", type=str, default="output/schedule.csv", help="Path to schedule.csv (default: output/schedule.csv)")
+    parser.add_argument("--cash-flow-csv", type=str, default="output/cash_flow.csv", help="Path to cash_flow.csv (default: output/cash_flow.csv)")
+    parser.add_argument("--costs-path", type=str, default=None, help="Path to raw costs input (optional, for benefit recalc)")
+    parser.add_argument("--benefits-path", type=str, default=None, help="Path to raw benefits input (optional, for benefit recalc)")
+    parser.add_argument("--output-dir", type=str, default="output", help="Directory to save plots (default: output)")
+
+    args = parser.parse_args()
+
+    visualize_from_outputs(
+        schedule_csv=Path(args.schedule_csv),
+        cash_flow_csv=Path(args.cash_flow_csv),
+        output_dir=Path(args.output_dir),
+        costs_path=Path(args.costs_path) if args.costs_path else None,
+        benefits_path=Path(args.benefits_path) if args.benefits_path else None
+    )
+
+if __name__ == "__main__":
+    main()
