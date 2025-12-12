@@ -2,13 +2,12 @@ import matplotlib
 
 # Use non-interactive backend for environments without display servers
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import pandas as pd
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
-import logging
-import os
-import sys
+
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # Import DataLoader for on-the-fly benefit calculation.
 # DataLoader may be unavailable if 'data_loader.py' is missing or if this file is run outside the package context.

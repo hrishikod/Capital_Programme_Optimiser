@@ -1,8 +1,8 @@
-import pandas as pd
-import numpy as np
 import re
-from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
+
+import pandas as pd
 
 
 @dataclass

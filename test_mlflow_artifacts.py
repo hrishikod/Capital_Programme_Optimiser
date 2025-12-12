@@ -3,13 +3,13 @@
 Test script to verify MLflow artifact logging for input and output data.
 """
 
-import sys
 import os
-import argparse
-import mlflow
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+import mlflow
 
 # Add src to path
 cwd = Path(os.getcwd())
@@ -121,7 +121,7 @@ def test_mlflow_artifacts():
                             mlflow.log_artifact(str(latest_log), artifact_path="logs")
                             print(f"✓ Logged log file: {latest_log}")
 
-                print(f"\n✓ Test complete. Metrics and artifacts logged to MLflow.")
+                print("\n✓ Test complete. Metrics and artifacts logged to MLflow.")
                 print(f"✓ Status: {result.status}")
                 print(f"✓ Objective: {result.objective_value:,.2f}")
                 print(f"✓ Gap: {result.gap:.4%}")

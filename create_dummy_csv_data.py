@@ -1,7 +1,8 @@
-import pandas as pd
-import numpy as np
-import random
 import os
+import random
+
+import numpy as np
+import pandas as pd
 
 
 def create_dummy_csv_data(output_dir="input", seed=None):

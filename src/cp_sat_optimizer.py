@@ -1,11 +1,10 @@
-from ortools.sat.python import cp_model
-import numpy as np
 import logging
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
 import mlflow
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
-import math
+from ortools.sat.python import cp_model
 
 
 @dataclass

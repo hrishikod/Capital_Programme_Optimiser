@@ -10,13 +10,12 @@
 
 # COMMAND ----------
 
-import sys
 import os
-import argparse
-import mlflow
-import json
+import sys
 import time
 from pathlib import Path
+
+import mlflow
 
 # NOTE - Add src to path if not already there
 # We dynamically check where 'src' is located to be robust against CWD changes
@@ -148,7 +147,7 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
                     latest_log = max(logs, key=os.path.getctime)
                     mlflow.log_artifact(str(latest_log), artifact_path="logs")
 
-        print(f"Run complete. Metrics and artifacts logged to MLflow.")
+        print("Run complete. Metrics and artifacts logged to MLflow.")
     else:
         print("Optimization failed or no solution found.")
         mlflow.log_param("status", "FAILED")

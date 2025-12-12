@@ -1,10 +1,11 @@
-import sys
-import os
-import numpy as np
 import logging
-import mlflow
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+import mlflow
+import numpy as np
 
 # Determine paths robustly (handles Databricks environments)
 try:
@@ -180,7 +181,7 @@ def run_optimization(args):
     funding_level = args.funding_level
     funding_target_M = [funding_level] * years
 
-    logging.info(f"Configuration:")
+    logging.info("Configuration:")
     logging.info(f"  Funding Level: {funding_level}")
     logging.info(f"  Dimension: {target_dimension} (Input: {args.dimension})")
     logging.info(f"  Overflow Tiers: {piecewise_cap_tiers}")
@@ -190,7 +191,7 @@ def run_optimization(args):
 
     logging.info("Initializing optimizer...")
     if args.optimizer == "cp-sat":
-        logging.info(f"Using CP-SAT optimizer.")
+        logging.info("Using CP-SAT optimizer.")
         optimizer = CpSatOptimizer(
             variants=data.variants,
             funding_target_M=funding_target_M,
@@ -203,7 +204,7 @@ def run_optimization(args):
             num_search_workers=args.workers,
         )
     else:
-        logging.info(f"Using Optimizer.")
+        logging.info("Using Optimizer.")
         optimizer = Optimizer(
             variants=data.variants,
             funding_target_M=funding_target_M,
