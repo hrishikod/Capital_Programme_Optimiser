@@ -1,0 +1,13 @@
+[tool.ruff]
+# Exclude legacy directory from linting
+exclude = ["legacy"]
+
+# Same line length as previously used in flake8
+line-length = 127
+
+[tool.ruff.lint]
+# Select rules to match common flake8 defaults + ruff recommendations
+# E: pycodestyle
+# F: Pyflakes
+# I: isort
+select = ["E", "F", "I"]
