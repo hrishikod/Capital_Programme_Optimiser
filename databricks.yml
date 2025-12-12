@@ -2,8 +2,8 @@ bundle:
   name: capital_programme_optimiser
 
 include:
-  - src/
-  - notebooks/
+  - src/**/*
+  - notebooks/**/*
 
 # resources:
 #   jobs:
