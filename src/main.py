@@ -28,10 +28,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 
-# from src.optimizer import CapitalProgrammeOptimizer as Optimizer
 # Switching to cp-sat optimizer
 from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 from data_loader import DataLoader
+from optimizer import CapitalProgrammeOptimizer as Optimizer
 
 
 # @mlflow.trace(name="calculate_pv_coefficients", span_type="calculation")
