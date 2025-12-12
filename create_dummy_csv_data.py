@@ -14,7 +14,6 @@ def create_dummy_csv_data(output_dir="input", seed=None):
     start_year = 2026
     end_year = 2035
     years = list(range(start_year, end_year + 1))
-    benefit_years = 40  # t+0 to t+39 (actually t+40 based on inspection, let's do 41)
 
     # Project names
     projects = [f"Project_{i:03d}" for i in range(1, num_projects + 1)]
@@ -97,7 +96,6 @@ def create_dummy_csv_data(output_dir="input", seed=None):
 
             # Generate stream
             # t+0 to t+40
-            stream = []
             for t in range(41):
                 # Ramp up for 5 years then flat
                 factor = min(1.0, (t + 1) / 5.0)

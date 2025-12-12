@@ -113,7 +113,6 @@ def run_optimization(args):
     # Configuration
     # Find cost and benefits csv files
 
-    script_dir = SCRIPT_DIR
     project_root = PROJECT_ROOT
 
     # Use CSVs from input folder (or args)
