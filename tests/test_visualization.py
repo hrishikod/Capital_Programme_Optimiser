@@ -1,15 +1,10 @@
 import pandas as pd
 
-from src.visualization import build_benefit_profile
-from src.visualization import visualize_from_outputs
-
-
+from src.visualization import build_benefit_profile, visualize_from_outputs
 
 
 def test_build_benefit_profile_aligns_benefits_to_start_year():
-    schedule_df = pd.DataFrame(
-        [{"Project": "ProjA", "StartYear": 2026, "Duration": 2}]
-    )
+    schedule_df = pd.DataFrame([{"Project": "ProjA", "StartYear": 2026, "Duration": 2}])
     kernels_by_dim = {"Total": {"ProjA": [0.0, 5.0, 10.0]}}
 
     profile = build_benefit_profile(
@@ -29,9 +24,7 @@ def test_visualize_from_outputs_creates_pngs(tmp_path):
     cash_flow_csv = tmp_path / "cash_flow.csv"
 
     # Write minimal schedule and cash flow
-    pd.DataFrame(
-        [{"Project": "ProjA", "StartYear": 2026, "Duration": 2}]
-    ).to_csv(schedule_csv, index=False)
+    pd.DataFrame([{"Project": "ProjA", "StartYear": 2026, "Duration": 2}]).to_csv(schedule_csv, index=False)
 
     pd.DataFrame(
         {

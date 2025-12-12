@@ -2,13 +2,16 @@
 """
 Test script to verify MLflow artifact logging for input and output data.
 """
-import sys
+
 import os
-import argparse
-import mlflow
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+import mlflow
+
+from main import run_optimization
 
 # Add src to path
 cwd = Path(os.getcwd())
@@ -17,16 +20,14 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-# Import the run_optimization function from the main.py module in the src directory
-from main import run_optimization
 
 def test_mlflow_artifacts():
     """Test that input and output data are logged as MLflow artifacts."""
-    
+
     # Create args similar to the notebook
     class Args:
         pass
-    
+
     args = Args()
     args.funding_level = 1500.0
     args.dimension = "Total"
@@ -41,42 +42,42 @@ def test_mlflow_artifacts():
     args.output_dir = "output"
     args.generate_only = False
     args.relax = False
-    
+
     print(f"Testing MLflow artifact logging with config: {vars(args)}")
-    
+
     # Use a temporary directory for MLflow tracking
     with tempfile.TemporaryDirectory() as temp_dir:
         mlflow.set_tracking_uri(f"file://{temp_dir}/mlruns")
-        
+
         with mlflow.start_run(run_name=f"test_opt_{args.dimension}_{args.funding_level}"):
             # Log parameters
             mlflow.log_params(vars(args))
-            
+
             # Log input data files as artifacts
             # Resolve costs and benefits file paths
             if os.path.isabs(args.costs_path):
                 costs_file = Path(args.costs_path)
             else:
                 costs_file = project_root / args.costs_path
-                
+
             if os.path.isabs(args.benefits_path):
                 benefits_file = Path(args.benefits_path)
             else:
                 benefits_file = project_root / args.benefits_path
-            
+
             # Log input files if they exist
             if costs_file.exists():
                 mlflow.log_artifact(str(costs_file), artifact_path="input_data")
                 print(f"✓ Logged input artifact: {costs_file}")
             else:
                 print(f"⚠ Warning: Costs file not found at {costs_file}, skipping artifact logging")
-                
+
             if benefits_file.exists():
                 mlflow.log_artifact(str(benefits_file), artifact_path="input_data")
                 print(f"✓ Logged input artifact: {benefits_file}")
             else:
                 print(f"⚠ Warning: Benefits file not found at {benefits_file}, skipping artifact logging")
-            
+
             # Run Optimization
             print("\nRunning optimization...")
             start_time = time.perf_counter()
@@ -85,26 +86,26 @@ def test_mlflow_artifacts():
             elapsed = end_time - start_time
             mlflow.log_metric("optimization_time_seconds", elapsed)
             print(f"Optimization time: {elapsed:.2f} seconds")
-            
+
             if result:
                 # Log Metrics
                 mlflow.log_metric("objective_value", result.objective_value)
                 mlflow.log_metric("gap", result.gap)
-                
+
                 if result.breakdown:
                     for k, v in result.breakdown.items():
                         mlflow.log_metric(k, v)
-                
+
                 # Calculate summary metrics from results
                 total_spend = result.spend_profile.iloc[0, :].sum()
                 mlflow.log_metric("total_spend", total_spend)
-                
+
                 # Log output data artifacts (CSVs)
                 output_dir = project_root / "output"
                 if output_dir.exists():
                     mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
                     print(f"✓ Logged output artifacts from: {output_dir}")
-                    
+
                 # Also log the log file
                 if result.log_file and os.path.exists(result.log_file):
                     mlflow.log_artifact(result.log_file, artifact_path="logs")
@@ -118,8 +119,8 @@ def test_mlflow_artifacts():
                             latest_log = max(logs, key=os.path.getctime)
                             mlflow.log_artifact(str(latest_log), artifact_path="logs")
                             print(f"✓ Logged log file: {latest_log}")
-                    
-                print(f"\n✓ Test complete. Metrics and artifacts logged to MLflow.")
+
+                print("\n✓ Test complete. Metrics and artifacts logged to MLflow.")
                 print(f"✓ Status: {result.status}")
                 print(f"✓ Objective: {result.objective_value:,.2f}")
                 print(f"✓ Gap: {result.gap:.4%}")
@@ -128,6 +129,7 @@ def test_mlflow_artifacts():
                 print("✗ Optimization failed or no solution found.")
                 mlflow.log_param("status", "FAILED")
                 return False
+
 
 if __name__ == "__main__":
     success = test_mlflow_artifacts()

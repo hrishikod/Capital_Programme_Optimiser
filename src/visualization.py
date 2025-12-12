@@ -2,22 +2,23 @@ import matplotlib
 
 # Use non-interactive backend for environments without display servers
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import pandas as pd
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
-import logging
-import os
-import sys
+
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # Import DataLoader for on-the-fly benefit calculation.
 # DataLoader may be unavailable if 'data_loader.py' is missing or if this file is run outside the package context.
 try:
     from .data_loader import DataLoader
 except ImportError:
-    logging.warning("Could not import DataLoader. Benefit recalculation will be unavailable. This may occur if 'data_loader.py' is missing or if running outside the package context.")
+    logging.warning(
+        "Could not import DataLoader. Benefit recalculation will be unavailable. \n"
+        "This may occur if 'data_loader.py' is missing or if running outside the package context."
+    )
     DataLoader = None
-
 
 
 def _find_dimension_key(kernels_by_dim: Dict[str, Dict[str, List[float]]], dimension: str) -> Optional[str]:
@@ -238,14 +239,8 @@ def save_visualizations(
     plot_annual_spend_net_funding(result.cash_flow, out_dir / "annual_spend_net_funding.png")
 
 
-
 def _recalculate_benefits(
-    costs_path: Path,
-    benefits_path: Path,
-    schedule_df: pd.DataFrame,
-    start_fy: int,
-    years: int,
-    output_dir: Path
+    costs_path: Path, benefits_path: Path, schedule_df: pd.DataFrame, start_fy: int, years: int, output_dir: Path
 ) -> Optional[pd.DataFrame]:
     """
     Helper to recalculate benefit profile from raw inputs.
@@ -258,29 +253,23 @@ def _recalculate_benefits(
     try:
         logging.info("Recalculating benefits from raw inputs...")
         loader = DataLoader(str(costs_path), str(benefits_path), start_fy, years)
-        
+
         # Load data
         _, variants, _ = loader.load_costs("P50 - Real")
         benef_df, _ = loader.load_benefits()
-        
+
         # Map kernels
         _, kernels_by_dim = loader.map_benefit_kernels(benef_df, variants)
-        
+
         # Build profile (Total dimension default)
-        benefit_profile = build_benefit_profile(
-            schedule_df,
-            kernels_by_dim,
-            start_fy,
-            years,
-            dimension="Total"
-        )
-        
+        benefit_profile = build_benefit_profile(schedule_df, kernels_by_dim, start_fy, years, dimension="Total")
+
         # Save calculated profile
         benefit_profile.to_csv(output_dir / "benefit_profile_calculated.csv")
-        
+
         # Normalize to Millions matches Spend unit
         return benefit_profile / 1_000_000.0
-        
+
     except Exception as e:
         logging.error("Failed to recalculate benefits: %s", e)
         return None
@@ -330,15 +319,8 @@ def visualize_from_outputs(
     if costs_path and benefits_path and costs_path.exists() and benefits_path.exists():
         start_fy = int(min(years))
         num_years = len(years)
-        benefit_profile = _recalculate_benefits(
-            costs_path, 
-            benefits_path, 
-            schedule_df, 
-            start_fy, 
-            num_years, 
-            out_dir
-        )
-    
+        benefit_profile = _recalculate_benefits(costs_path, benefits_path, schedule_df, start_fy, num_years, out_dir)
+
     # Fallback to zeros if calc failed or not attempted
     if benefit_profile is None:
         benefit_profile = pd.DataFrame([[0.0] * len(years)], columns=years, index=["Total Benefit"])
@@ -356,11 +338,21 @@ def visualize_from_outputs(
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Generate visualizations from Capital Programme Optimizer outputs.")
-    parser.add_argument("--schedule-csv", type=str, default="output/schedule.csv", help="Path to schedule.csv (default: output/schedule.csv)")
-    parser.add_argument("--cash-flow-csv", type=str, default="output/cash_flow.csv", help="Path to cash_flow.csv (default: output/cash_flow.csv)")
+    parser.add_argument(
+        "--schedule-csv", type=str, default="output/schedule.csv", help="Path to schedule.csv (default: output/schedule.csv)"
+    )
+    parser.add_argument(
+        "--cash-flow-csv",
+        type=str,
+        default="output/cash_flow.csv",
+        help="Path to cash_flow.csv (default: output/cash_flow.csv)",
+    )
     parser.add_argument("--costs-path", type=str, default=None, help="Path to raw costs input (optional, for benefit recalc)")
-    parser.add_argument("--benefits-path", type=str, default=None, help="Path to raw benefits input (optional, for benefit recalc)")
+    parser.add_argument(
+        "--benefits-path", type=str, default=None, help="Path to raw benefits input (optional, for benefit recalc)"
+    )
     parser.add_argument("--output-dir", type=str, default="output", help="Directory to save plots (default: output)")
 
     args = parser.parse_args()
@@ -370,8 +362,9 @@ def main():
         cash_flow_csv=Path(args.cash_flow_csv),
         output_dir=Path(args.output_dir),
         costs_path=Path(args.costs_path) if args.costs_path else None,
-        benefits_path=Path(args.benefits_path) if args.benefits_path else None
+        benefits_path=Path(args.benefits_path) if args.benefits_path else None,
     )
+
 
 if __name__ == "__main__":
     main()
