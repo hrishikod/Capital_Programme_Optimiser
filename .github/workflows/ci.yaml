@@ -12,22 +12,25 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+
             - name: Install uv
               uses: astral-sh/setup-uv@v4
-            - name: Set up Python 3.12
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: "uv.lock"
+
+            - name: "Set up Python"
               uses: actions/setup-python@v4
               with:
-                  python-version: "3.12"
+                  python-version-file: "pyproject.toml"
+
             - name: Install dependencies
-              run: |
-                  uv pip install --system --upgrade pip
-                  if [ -f requirements.txt ]; then uv pip install --system -r requirements.txt; fi
-                  uv pip install --system pytest ruff
+              run: uv sync --all-extras --dev
+
             - name: Lint with Ruff
-              run: |
-                  # Run ruff linter
-                  ruff check . --output-format=github
+              run: uv run ruff check . --output-format=github
+
             - name: Check formatting with Ruff
-              run: ruff format --check .
+              run: uv run ruff format --check .
             # - name: Run tests
             #   run: pytest
