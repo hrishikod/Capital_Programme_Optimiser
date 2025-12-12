@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
 
+
 @dataclass
 class ProjectData:
     projects: Dict[str, Dict[str, Any]]
@@ -13,6 +14,7 @@ class ProjectData:
     ben_kernel_df: pd.DataFrame
     kernels_by_dim: Dict[str, Dict[str, List[float]]]
     dims_order: List[str]
+
 
 class DataLoader:
     def __init__(self, costs_path: str, benefits_path: str, start_fy: int, years: int):
@@ -42,7 +44,7 @@ class DataLoader:
             df = pd.read_csv(self.costs_path)
         else:
             df = pd.read_excel(self.costs_path, sheet_name="Costs", engine="openpyxl")
-            
+
         df.columns = [str(c).strip() for c in df.columns]
         proj_col = [c for c in df.columns if c.lower() == "project"]
         if not proj_col:
@@ -54,17 +56,14 @@ class DataLoader:
 
         # Filter by cost type if column exists
         if "Cost type" in df.columns:
-             cut = df[df["Cost type"].astype(str).str.strip() == str(cost_type).strip()].copy()
+            cut = df[df["Cost type"].astype(str).str.strip() == str(cost_type).strip()].copy()
         else:
-             cut = df.copy()
+            cut = df.copy()
 
         costs_input: Dict[str, List[float]] = {}
         for _, r in cut.iterrows():
             p = self.clean(r[proj_col])
-            vals = [
-                (self.clean_number(r[c]) if c is not None else 0.0)
-                for c in use_cols
-            ]
+            vals = [(self.clean_number(r[c]) if c is not None else 0.0) for c in use_cols]
             costs_input[p] = (pd.Series(vals).fillna(0.0) / 1_000_000.0).tolist()  # M
 
         projects: Dict[str, Dict[str, Any]] = {}
@@ -93,7 +92,7 @@ class DataLoader:
             df = pd.read_csv(self.benefits_path)
         else:
             df = pd.read_excel(self.benefits_path, sheet_name=sheet, engine="openpyxl")
-            
+
         df.columns = [str(c).strip() for c in df.columns]
         if "Project" not in df.columns:
             raise RuntimeError("Benefits file needs 'Project'.")
@@ -117,7 +116,7 @@ class DataLoader:
         for _, c in tcols:
             # Clean number strings
             if df[c].dtype == object:
-                 df[c] = df[c].astype(str).str.replace(",", "").str.replace(" ", "")
+                df[c] = df[c].astype(str).str.replace(",", "").str.replace(" ", "")
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
         ben_kernel_df = df.copy()
@@ -127,7 +126,9 @@ class DataLoader:
         ben_kernel_df = ben_kernel_df[[c for _, c in tcols]]
         return df, ben_kernel_df
 
-    def map_benefit_kernels(self, benef_df: pd.DataFrame, variants: Dict[str, dict]) -> Tuple[List[str], Dict[str, Dict[str, List[float]]]]:
+    def map_benefit_kernels(
+        self, benef_df: pd.DataFrame, variants: Dict[str, dict]
+    ) -> Tuple[List[str], Dict[str, Dict[str, List[float]]]]:
         tcols = [
             c
             for _, c in sorted(
@@ -189,9 +190,8 @@ class DataLoader:
         variants: Dict[str, dict],
         rules: Dict[str, Dict],
         project_selection_mode: str = "auto",
-        whitelist_fallback: bool = True
+        whitelist_fallback: bool = True,
     ) -> Tuple[Dict[str, dict], Dict[str, int], bool]:
-        
         v_norm2canon = {self.norm(v): v for v in variants.keys()}
         v_norm_set = set(v_norm2canon.keys())
         include_true_norm, exclude_true_norm = set(), set()
@@ -212,9 +212,7 @@ class DataLoader:
         mode_req = (project_selection_mode or "auto").strip().lower()
 
         has_include_true_rules = len(include_true_norm) > 0
-        use_whitelist = (mode_req == "whitelist") or (
-            mode_req == "auto" and has_include_true_rules
-        )
+        use_whitelist = (mode_req == "whitelist") or (mode_req == "auto" and has_include_true_rules)
 
         if use_whitelist:
             keep_norm = matched_includes_norm
@@ -236,13 +234,13 @@ class DataLoader:
     def load_all(self, cost_type: str, benefit_sheet: str, rules: Dict[str, Dict]) -> ProjectData:
         projects, variants_all, costs_input_df = self.load_costs(cost_type)
         benef_df, ben_kernel_df = self.load_benefits(benefit_sheet)
-        
+
         # Apply rules to filter variants
         variants, forced_exact, is_whitelist = self.apply_forced_rules(variants_all, rules)
-        
+
         # Map benefits for the kept variants
         dims_order, kernels_by_dim = self.map_benefit_kernels(benef_df, variants)
-        
+
         return ProjectData(
             projects=projects,
             variants=variants,
@@ -250,5 +248,5 @@ class DataLoader:
             benef_df=benef_df,
             ben_kernel_df=ben_kernel_df,
             kernels_by_dim=kernels_by_dim,
-            dims_order=dims_order
+            dims_order=dims_order,
         )
