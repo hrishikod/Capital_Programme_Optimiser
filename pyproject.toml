@@ -1,3 +1,18 @@
+[project]
+name = "capital-programme-optimiser"
+version = "0.1.0"
+description = "Capital Programme Optimizer"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "ortools",
+    "openpyxl",
+    "matplotlib",
+    "mlflow",
+]
+
 [tool.ruff]
 # Exclude legacy directory from linting
 exclude = ["legacy"]
