@@ -1,0 +1,43 @@
+name: CICD Pipeline
+
+on:
+    pull_request:
+        types: [opened, reopened, synchronize]
+    push:
+        branches:
+            - "**"
+    workflow_dispatch:
+        inputs:
+            environment:
+                required: true
+                type: choice
+                options:
+                    - DEV-AAM
+                    - TEST-AAM
+                    - PROD-AAM
+                default: DEV-AAM
+
+jobs:
+    build:
+        name: Build and publish artifacts
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment }}
+        permissions: write-all
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+            - name: Set up Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.12"
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+            - name: Build and publish artifacts
+              run: |
+                  python setup.py sdist bdist_wheel
+                  twine upload dist/*
+            - name: Deploy to environment
+              run: |
+                  python deploy.py
