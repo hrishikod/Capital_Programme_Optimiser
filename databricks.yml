@@ -29,4 +29,4 @@ targets:
     mode: development
     default: true
     workspace:
-      host: ${secrets.DATABRICKS_HOST}
+      host: ${env:DATABRICKS_HOST}
