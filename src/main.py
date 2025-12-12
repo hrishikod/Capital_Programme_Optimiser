@@ -76,9 +76,6 @@ def calculate_pv_coefficients(
         return pv_map
 
 
-
-
-
 @mlflow.trace(name="run_optimization", span_type="flow")
 def run_optimization(args):
     """
