@@ -36,5 +36,5 @@ jobs:
                   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
               run: |
                   echo "Starting deployment to ${{ inputs.environment || 'DEV-AAM' }}..."
-                  # databricks bundle deploy -t ${{ inputs.environment || 'DEV-AAM' }}
+                  databricks bundle deploy -t dev
                   echo "Deployment complete."
