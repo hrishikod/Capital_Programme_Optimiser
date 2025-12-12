@@ -27,3 +27,6 @@ line-length = 127
 # F: Pyflakes
 # I: isort
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/main.py" = ["E402"]
