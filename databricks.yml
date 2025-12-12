@@ -1,0 +1,33 @@
+bundle:
+  name: capital_programme_optimiser
+
+include:
+  - src/
+  - notebooks/
+  - input/
+
+# resources:
+#   jobs:
+#     capital_programme_optimizer_job:
+#       name: capital_programme_optimizer_job
+#       tasks:
+#         - task_key: optimization_task
+#           notebook_task:
+#             notebook_path: notebooks/gps_programme_optimizer.py
+#           job_cluster_key: job_cluster
+#       job_clusters:
+#         - job_cluster_key: job_cluster
+#           new_cluster:
+#             spark_version: 14.3.x-cpu-ml-scala2.12
+#             node_type_id: Standard_D3_v2
+#             num_workers: 1
+#             spark_conf:
+#               spark.master: local[*, 4]
+#               spark.databricks.cluster.profile: singleNode
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${secrets.DATABRICKS_HOST}
