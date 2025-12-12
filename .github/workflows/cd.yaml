@@ -26,9 +26,15 @@ jobs:
             (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'DEV-AAM')
         steps:
             - uses: actions/checkout@v4
+
+            - name: Install Databricks CLI
+              uses: databricks/setup-cli@v0.221.0
+
             - name: Deploy to ${{ inputs.environment || 'DEV-AAM' }}
+              env:
+                  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+                  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
               run: |
                   echo "Starting deployment to ${{ inputs.environment || 'DEV-AAM' }}..."
-                  # Placeholder for deployment logic
-                  # Example: python deploy.py --env ${{ inputs.environment || 'DEV-AAM' }}
+                  # databricks bundle deploy -t ${{ inputs.environment || 'DEV-AAM' }}
                   echo "Deployment complete."
