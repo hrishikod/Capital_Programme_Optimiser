@@ -10,27 +10,13 @@ import logging
 import os
 import sys
 
-# Ensure we can import from the same directory or project root
+# Import DataLoader for on-the-fly benefit calculation.
+# DataLoader may be unavailable if 'data_loader.py' is missing or if this file is run outside the package context.
 try:
-    SCRIPT_PATH = Path(__file__).resolve()
-    SCRIPT_DIR = SCRIPT_PATH.parent
-except NameError:
-    cwd = Path(os.getcwd()).resolve()
-    SCRIPT_DIR = cwd
-
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.append(str(SCRIPT_DIR))
-
-# Import DataLoader for on-the-fly benefit calculation
-try:
-    from data_loader import DataLoader
+    from .data_loader import DataLoader
 except ImportError:
-    # If running as package, try relative import
-    try:
-        from .data_loader import DataLoader
-    except ImportError:
-        logging.warning("Could not import DataLoader. Benefit recalculation will be unavailable.")
-        DataLoader = None
+    logging.warning("Could not import DataLoader. Benefit recalculation will be unavailable. This may occur if 'data_loader.py' is missing or if running outside the package context.")
+    DataLoader = None
 
 
 
