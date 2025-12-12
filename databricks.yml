@@ -28,5 +28,3 @@ targets:
   dev:
     mode: development
     default: true
-    workspace:
-      host: ${env:DATABRICKS_HOST}
