@@ -281,7 +281,7 @@ class CapitalProgrammeOptimizer:
             best_bound = self.solver.Objective().BestBound()
             if abs(obj_val) > 1e-6:
                 gap = abs(obj_val - best_bound) / abs(obj_val)
-        except:
+        except Exception: 
             pass
 
         return OptimizationResult(

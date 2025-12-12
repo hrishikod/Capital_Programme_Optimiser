@@ -15,7 +15,8 @@ try:
     from .data_loader import DataLoader
 except ImportError:
     logging.warning(
-        "Could not import DataLoader. Benefit recalculation will be unavailable. This may occur if 'data_loader.py' is missing or if running outside the package context."
+        "Could not import DataLoader. Benefit recalculation will be unavailable. \n"
+        "This may occur if 'data_loader.py' is missing or if running outside the package context."
     )
     DataLoader = None
 

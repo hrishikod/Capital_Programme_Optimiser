@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import sys
@@ -75,7 +76,7 @@ def calculate_pv_coefficients(
         return pv_map
 
 
-import argparse
+
 
 
 @mlflow.trace(name="run_optimization", span_type="flow")

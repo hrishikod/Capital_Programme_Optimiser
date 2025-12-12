@@ -1,3 +1,4 @@
+import argparse
 import os
 import random
 
@@ -142,8 +143,6 @@ def create_dummy_csv_data(output_dir="input", seed=None):
     df_ben.to_csv(os.path.join(output_dir, "dummy_benefits.csv"), index=False)
     print(f"Created {os.path.join(output_dir, 'dummy_benefits.csv')} with {len(df_ben)} rows.")
 
-
-import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate dummy data for optimization")
