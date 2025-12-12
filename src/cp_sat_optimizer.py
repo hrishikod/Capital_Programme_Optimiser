@@ -330,7 +330,7 @@ class CapitalProgrammeOptimizer:
             best_bound = solver.BestObjectiveBound()
             if abs(obj_val) > 1e-6:
                 gap = abs(obj_val - best_bound) / abs(obj_val)
-        except:
+        except Exception:
             pass
 
         # --- OBJECTIVE VALUE BREAKDOWN ---
