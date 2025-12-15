@@ -1639,7 +1639,7 @@ def resolve_selection_label(
             return text
     return fallback
 
-LOAD_DATA_SCHEMA_VERSION = 4
+LOAD_DATA_SCHEMA_VERSION = 5
 
 
 def _cache_signature(cache_path: Path) -> Tuple[Tuple[str, int, int], ...]:

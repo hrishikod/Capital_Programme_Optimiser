@@ -126,6 +126,7 @@ def _resolve_benefit_rate(results: Dict[str, Dict[str, Any]]) -> float:
 
 _BENEFIT_VALUE_SCALE_OVERRIDES = {
     "GPS27": 1_000_000.0,
+    "DUMMY_CACHE": 1_000_000.0,
 }
 
 _BENEFIT_DATAFRAME_KEYS = {
@@ -1288,5 +1289,4 @@ def extract_project_runs(data: DashboardData, code: str, min_value: float = 1e-6
 
 def scenario_metadata(data: DashboardData, code: str) -> Optional[Dict[str, Any]]:
     return data.scenario_meta_by_code.get(code)
-
 
