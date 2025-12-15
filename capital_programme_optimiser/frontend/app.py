@@ -3670,18 +3670,10 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
     df["BenefitFlowDimension"] = pd.to_numeric(df.get("BenefitFlowDimension"), errors="coerce")
     df["BenefitFlow"] = df["BenefitFlowTotal"]
 
-    year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0)
-
-    discount_base = 1.0 + data.benefit_rate
-
-    discount = np.power(discount_base, year_offsets.to_numpy())
-
-    discount[discount == 0] = 1.0
-
-    df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
+    df["PVBenefitTotal"] = df["BenefitFlowTotal"]
     df["PVBenefit"] = df["PVBenefitTotal"]
     if "BenefitFlowDimension" in df.columns:
-        df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0) / discount
+        df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0)
 
     df["CumPVBenefitTotal"] = df["PVBenefitTotal"].cumsum()
     df["CumPVBenefit"] = df["CumPVBenefitTotal"]
@@ -3717,8 +3709,6 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
     base_years = pd.DataFrame({"Year": data.years})
 
-    rate = 1.0 + data.benefit_rate
-
     ordered_dims = [dim for dim in data.dims if dim in dims_present.tolist()]
 
     remaining_dims = [dim for dim in dims_present.unique().tolist() if dim not in ordered_dims]
@@ -3739,25 +3729,21 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
         merged = base_years.merge(dim_rows, on="Year", how="left").fillna(0.0)
 
-        offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0)
-
         if horizon_years is not None:
 
             try:
 
-                limit = max(int(horizon_years) - 1, 0)
+                limit_year = int(data.start_fy) + int(horizon_years) - 1
 
             except (TypeError, ValueError):
 
-                limit = None
+                limit_year = None
 
-            if limit is not None:
+            if limit_year is not None:
 
-                mask = offsets <= limit
+                mask = merged["Year"].astype(int) <= limit_year
 
                 merged = merged.loc[mask].copy()
-
-                offsets = offsets[mask]
 
         if merged.empty:
 
@@ -3765,11 +3751,7 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
             continue
 
-        discount = np.power(rate, offsets.to_numpy())
-
-        discount[discount == 0] = 1.0
-
-        pv[str(dim)] = float((merged["BenefitFlow"] / discount).sum())
+        pv[str(dim)] = float(pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).sum())
 
     return pv or None
 
