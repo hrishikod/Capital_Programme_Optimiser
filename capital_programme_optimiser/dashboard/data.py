@@ -389,6 +389,10 @@ def _parse_benefit_scenario(stem: str, res: Dict[str, Any]) -> tuple[str, int]:
         if not match:
             return None
         steep = match.group(1).upper()
+        # Guard against accidentally interpreting envelope/buffer tokens as benefit scenarios.
+        # Examples we want to ignore: `_s500`, `_m1500`, `_pm250`, `cash+200`, `yoy+/-100`.
+        if steep.lower() in {"s", "m", "pm", "yoy", "cash"}:
+            return None
         try:
             horizon = int(match.group(2))
         except (TypeError, ValueError):
@@ -397,23 +401,25 @@ def _parse_benefit_scenario(stem: str, res: Dict[str, Any]) -> tuple[str, int]:
 
     scenario = str(res.get("scenario", "")).strip()
     if scenario:
-        direct = _clean(
-            re.fullmatch(r"([A-Za-z]+)(\d{1,3})", scenario, flags=re.IGNORECASE)
-            or re.search(r"([A-Za-z]+)(\d{1,3})", scenario, flags=re.IGNORECASE)
-        )
-        if direct:
-            return direct
+        for direct_match in re.finditer(r"([A-Za-z]+)(\d{1,3})", scenario, flags=re.IGNORECASE):
+            direct = _clean(direct_match)
+            if direct:
+                return direct
 
     # When metadata is missing, try to infer from the cache filename just after the cost type token.
     marker = re.search(r"(REAL|NOM(?:INAL)?)", stem, flags=re.IGNORECASE)
     if marker:
         tail = stem[marker.end() :]
-        inferred = _clean(
-            re.search(r"(?:[_-])([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE)
-            or re.search(r"([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE)
-        )
-        if inferred:
-            return inferred
+        for inferred_match in re.finditer(
+            r"(?:[_-])([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE
+        ):
+            inferred = _clean(inferred_match)
+            if inferred:
+                return inferred
+        for inferred_match in re.finditer(r"([A-Za-z]+)(\d{1,3})", tail, flags=re.IGNORECASE):
+            inferred = _clean(inferred_match)
+            if inferred:
+                return inferred
 
     legacy = _clean(re.search(r"([AB])(\d{2})", stem, flags=re.IGNORECASE))
     if legacy:
@@ -1282,6 +1288,5 @@ def extract_project_runs(data: DashboardData, code: str, min_value: float = 1e-6
 
 def scenario_metadata(data: DashboardData, code: str) -> Optional[Dict[str, Any]]:
     return data.scenario_meta_by_code.get(code)
-
 
 
