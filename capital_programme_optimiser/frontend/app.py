@@ -1639,7 +1639,7 @@ def resolve_selection_label(
             return text
     return fallback
 
-LOAD_DATA_SCHEMA_VERSION = 3
+LOAD_DATA_SCHEMA_VERSION = 4
 
 
 def _cache_signature(cache_path: Path) -> Tuple[Tuple[str, int, int], ...]:
@@ -8679,18 +8679,14 @@ def render_benefits_tab(
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
     st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
-    npv_horizon_options = [60, 50, 35]
-    selected_npv_horizon = int(
-        st.radio(
-            "NPV horizon (years)",
-            npv_horizon_options,
-            index=npv_horizon_options.index(
-                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-            ),
-            horizontal=True,
-            key="npv_horizon_selection",
-        )
-    )
+    npv_horizon_options = [60, 50, 40, 35]
+    selected_npv_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+    try:
+        selected_npv_horizon = int(selected_npv_horizon)
+    except (TypeError, ValueError):
+        selected_npv_horizon = npv_horizon_options[0]
+    if selected_npv_horizon not in npv_horizon_options:
+        selected_npv_horizon = npv_horizon_options[0]
     pv_opt_horizon = (
         pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
         if opt_selection and opt_selection.code
@@ -9699,6 +9695,22 @@ def main() -> None:
         stats_cmp = _scenario_stats(cmp_series)
 
         with st.expander("Programme summary", expanded=False):
+            npv_horizon_options = [60, 50, 40, 35]
+            default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            try:
+                default_horizon = int(default_horizon)
+            except (TypeError, ValueError):
+                default_horizon = npv_horizon_options[0]
+            if default_horizon not in npv_horizon_options:
+                default_horizon = npv_horizon_options[0]
+                st.session_state["npv_horizon_selection"] = default_horizon
+            st.radio(
+                "NPV horizon (years)",
+                npv_horizon_options,
+                index=npv_horizon_options.index(default_horizon),
+                horizontal=True,
+                key="npv_horizon_selection",
+            )
             render_programme_kpis(
                 stats_opt,
                 stats_cmp,
@@ -9801,5 +9813,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

@@ -22,6 +22,38 @@ _DIM_SHORT = {
 }
 
 _SHORT_TO_DIM = {code: name for name, code in _DIM_SHORT.items()}
+_CANONICAL_DIM_BY_LOWER = {name.strip().lower(): name for name in _DIM_SHORT}
+
+
+def _canonicalise_dimension_label(label: Any) -> str:
+    if label is None:
+        return ""
+    text = str(label).strip()
+    if not text:
+        return ""
+    cleaned = " ".join(text.replace("_", " ").replace("-", " ").split())
+    upper = cleaned.upper()
+    if upper in _SHORT_TO_DIM:
+        return _SHORT_TO_DIM[upper]
+    lower = cleaned.lower()
+    if lower in _CANONICAL_DIM_BY_LOWER:
+        return _CANONICAL_DIM_BY_LOWER[lower]
+    return cleaned
+
+
+def _canonicalise_benefit_dim_wide_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if "Year" not in df.columns:
+        return df.copy()
+    out = df.copy()
+    year = out.pop("Year")
+    rename = {c: (_canonicalise_dimension_label(c) or str(c)) for c in out.columns}
+    out = out.rename(columns=rename)
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    if out.columns.has_duplicates:
+        out = out.T.groupby(level=0, sort=False).sum().T
+    out.insert(0, "Year", year)
+    return out
 
 
 def dim_short(dim: str) -> str:
@@ -48,7 +80,6 @@ DEFAULT_PROFILE_LABEL = "Default"
 
 BENEFIT_RATE_DEFAULT = 0.02
 _BENEFIT_RATE_FOLDER_OVERRIDES = {
-    "GPS27": 0.0,
 }
 
 
@@ -645,6 +676,13 @@ def _benefit_dim_from_project_table(df: pd.DataFrame) -> pd.DataFrame:
     melted = melted.dropna(subset=["Year"]).copy()
     melted["Year"] = melted["Year"].astype(int)
     melted["BenefitFlow"] = pd.to_numeric(melted["BenefitFlow"], errors="coerce").fillna(0.0)
+    melted["Dimension"] = (
+        melted["Dimension"]
+        .apply(_canonicalise_dimension_label)
+        .astype(str)
+        .str.strip()
+    )
+    melted = melted[melted["Dimension"].ne("")]
     grouped = (
         melted.groupby(["Year", "Dimension"], as_index=False)["BenefitFlow"]
         .sum()
@@ -658,7 +696,7 @@ def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
     """Return a Year x Dimension wide table from multiple solver outputs."""
     bendim_w = res.get("benefit_flow_by_dim_wide")
     if isinstance(bendim_w, pd.DataFrame) and "Year" in bendim_w.columns:
-        return bendim_w.copy()
+        return _canonicalise_benefit_dim_wide_frame(bendim_w)
 
     bendim_l = res.get("benefit_flow_by_dim_long")
     if isinstance(bendim_l, pd.DataFrame) and {"Year", "Dimension", "BenefitFlow"}.issubset(bendim_l.columns):
@@ -666,11 +704,19 @@ def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
         df_l["Year"] = pd.to_numeric(df_l["Year"], errors="coerce")
         df_l = df_l.dropna(subset=["Year"]).copy()
         df_l["Year"] = df_l["Year"].astype(int)
+        df_l["Dimension"] = (
+            df_l["Dimension"]
+            .apply(_canonicalise_dimension_label)
+            .astype(str)
+            .str.strip()
+        )
+        df_l = df_l[df_l["Dimension"].ne("")]
         df_l["BenefitFlow"] = pd.to_numeric(df_l["BenefitFlow"], errors="coerce").fillna(0.0)
-        return (
+        wide = (
             df_l.pivot_table(index="Year", columns="Dimension", values="BenefitFlow", aggfunc="sum")
             .reset_index()
         )
+        return _canonicalise_benefit_dim_wide_frame(wide)
 
     alt_full = res.get("benefits_by_year_full")
     if isinstance(alt_full, pd.DataFrame) and "Year" in alt_full.columns:
@@ -682,7 +728,7 @@ def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
         if dim_cols_full:
             for c in dim_cols_full:
                 df_full[c] = pd.to_numeric(df_full[c], errors="coerce").fillna(0.0)
-            return df_full[["Year"] + dim_cols_full]
+            return _canonicalise_benefit_dim_wide_frame(df_full[["Year"] + dim_cols_full])
 
     alt = res.get("benefits_by_year")
     if isinstance(alt, pd.DataFrame) and "Year" in alt.columns:
@@ -694,11 +740,11 @@ def _normalise_benefit_dim_wide(res: Dict[str, Any]) -> pd.DataFrame:
         if dim_cols:
             for c in dim_cols:
                 df_alt[c] = pd.to_numeric(df_alt[c], errors="coerce").fillna(0.0)
-            return df_alt[["Year"] + dim_cols]
+            return _canonicalise_benefit_dim_wide_frame(df_alt[["Year"] + dim_cols])
 
     alt_proj = res.get("benefits_by_project_dimension_by_year")
     if isinstance(alt_proj, pd.DataFrame):
-        return _benefit_dim_from_project_table(alt_proj)
+        return _canonicalise_benefit_dim_wide_frame(_benefit_dim_from_project_table(alt_proj))
 
     return pd.DataFrame(columns=["Year"])
 
@@ -819,6 +865,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 obj_dim = inferred_dim.strip()
         if not obj_dim:
             obj_dim = "Total"
+        obj_dim = _canonicalise_dimension_label(obj_dim) or obj_dim or "Total"
 
         cache_file = res.get("_cache_file", f"{stem}.pkl")
         profile_label = _derive_profile_label(cache_file)
@@ -832,7 +879,17 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 profile_label = canonical
 
         pv_by_dim_raw = res.get("benefit_pv_by_dim") or res.get("pv_by_dimension") or {}
-        pv_by_dim = {str(k): float(v) for k, v in (pv_by_dim_raw or {}).items()}
+        pv_by_dim: Dict[str, float] = {}
+        if isinstance(pv_by_dim_raw, dict):
+            for k, v in pv_by_dim_raw.items():
+                dim_key = _canonicalise_dimension_label(k)
+                if not dim_key:
+                    continue
+                try:
+                    dim_val = float(v)
+                except (TypeError, ValueError):
+                    continue
+                pv_by_dim[dim_key] = pv_by_dim.get(dim_key, 0.0) + dim_val
         pv_total_raw = res.get("benefit_pv_total")
         if pv_total_raw is None:
             pv_total_raw = res.get("pv_total")
@@ -1225,8 +1282,6 @@ def extract_project_runs(data: DashboardData, code: str, min_value: float = 1e-6
 
 def scenario_metadata(data: DashboardData, code: str) -> Optional[Dict[str, Any]]:
     return data.scenario_meta_by_code.get(code)
-
-
 
 
 
