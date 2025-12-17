@@ -3613,7 +3613,12 @@ def scenario_selector(
 
     )
 
-def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optional[pd.DataFrame]:
+def build_timeseries(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    apply_discount: Optional[bool] = None,
+) -> Optional[pd.DataFrame]:
 
     if not selection.code:
 
@@ -3670,10 +3675,28 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
     df["BenefitFlowDimension"] = pd.to_numeric(df.get("BenefitFlowDimension"), errors="coerce")
     df["BenefitFlow"] = df["BenefitFlowTotal"]
 
-    df["PVBenefitTotal"] = df["BenefitFlowTotal"]
+    if apply_discount is None:
+        try:
+            import streamlit as st
+        except Exception:
+            apply_discount = False
+        else:
+            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    if apply_discount:
+        year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0)
+        discount_base = 1.0 + data.benefit_rate
+        discount = np.power(discount_base, year_offsets.to_numpy())
+        discount[discount == 0] = 1.0
+        df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
+    else:
+        df["PVBenefitTotal"] = df["BenefitFlowTotal"]
     df["PVBenefit"] = df["PVBenefitTotal"]
     if "BenefitFlowDimension" in df.columns:
-        df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0)
+        if apply_discount:
+            df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0) / discount
+        else:
+            df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0)
 
     df["CumPVBenefitTotal"] = df["PVBenefitTotal"].cumsum()
     df["CumPVBenefit"] = df["CumPVBenefitTotal"]
@@ -3689,7 +3712,13 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
 
     return df
 
-def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizon_years: Optional[int] = None) -> Optional[Dict[str, float]]:
+def pv_by_dimension(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    horizon_years: Optional[int] = None,
+    apply_discount: Optional[bool] = None,
+) -> Optional[Dict[str, float]]:
 
     if not selection.code:
 
@@ -3708,6 +3737,14 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
         return None
 
     base_years = pd.DataFrame({"Year": data.years})
+
+    if apply_discount is None:
+        try:
+            import streamlit as st
+        except Exception:
+            apply_discount = False
+        else:
+            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
 
     ordered_dims = [dim for dim in data.dims if dim in dims_present.tolist()]
 
@@ -3751,7 +3788,15 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
             continue
 
-        pv[str(dim)] = float(pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).sum())
+        values = pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).to_numpy()
+        if apply_discount:
+            offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy()
+            rate = 1.0 + data.benefit_rate
+            discount = np.power(rate, offsets)
+            discount[discount == 0] = 1.0
+            pv[str(dim)] = float((values / discount).sum())
+        else:
+            pv[str(dim)] = float(values.sum())
 
     return pv or None
 
@@ -9677,6 +9722,16 @@ def main() -> None:
         stats_cmp = _scenario_stats(cmp_series)
 
         with st.expander("Programme summary", expanded=False):
+            st.checkbox(
+                "Apply discount rate to benefit flows",
+                value=bool(st.session_state.get("npv_apply_discount", False)),
+                key="npv_apply_discount",
+                help=(
+                    "If unchecked, the dashboard assumes benefit flows in the cache are already discounted to "
+                    "present value (PV contributions) and sums them directly. If checked, the dashboard "
+                    "discounts benefit flows by the rate shown in the NPV label."
+                ),
+            )
             npv_horizon_options = [60, 50, 40, 35]
             default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
             try:
