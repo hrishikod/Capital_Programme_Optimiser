@@ -2022,6 +2022,32 @@ def sorted_years(*dfs: Optional[pd.DataFrame]) -> List[int]:
         years.update(numeric_years.tolist())
     return sorted(years)
 
+MBCM_DISCOUNT_RATE_FIRST = 0.02
+MBCM_DISCOUNT_RATE_LATER = 0.015
+MBCM_DISCOUNT_FIRST_YEARS = 30
+
+
+def mbcm_discount_divisors(offsets: np.ndarray) -> np.ndarray:
+    """Return discount divisors per NZTA MBCM (2% for first 30 years, 1.5% thereafter)."""
+    year_offsets = np.asarray(offsets)
+    if year_offsets.size == 0:
+        return year_offsets.astype(float)
+    year_offsets = np.clip(year_offsets.astype(int), a_min=0, a_max=None)
+    first_years = np.minimum(year_offsets, MBCM_DISCOUNT_FIRST_YEARS)
+    later_years = np.maximum(year_offsets - MBCM_DISCOUNT_FIRST_YEARS, 0)
+    divisors = np.power(1.0 + MBCM_DISCOUNT_RATE_FIRST, first_years) * np.power(
+        1.0 + MBCM_DISCOUNT_RATE_LATER, later_years
+    )
+    divisors[divisors == 0] = 1.0
+    return divisors
+
+
+def mbcm_discount_label() -> str:
+    return (
+        f"{MBCM_DISCOUNT_RATE_FIRST * 100:.1f}% for years 1–{MBCM_DISCOUNT_FIRST_YEARS}, "
+        f"{MBCM_DISCOUNT_RATE_LATER * 100:.1f}% from year {MBCM_DISCOUNT_FIRST_YEARS + 1}+"
+    )
+
 
 
 def _create_export_table(years: Iterable[int]) -> Tuple[pd.DataFrame, pd.Index]:
@@ -2031,12 +2057,10 @@ def _create_export_table(years: Iterable[int]) -> Tuple[pd.DataFrame, pd.Index]:
 
 def pv_to_nominal_index(data: DashboardData, years: Iterable[int]) -> pd.Series:
     """Return discount multipliers to convert PV back to nominal dollars."""
-    base_rate = float(getattr(data, "benefit_rate", 0.0) or 0.0)
     start_year = int(getattr(data, "start_fy", 0))
-    factor = 1.0 + base_rate
     year_index = pd.Index([int(year) for year in years], name="Financial year")
-    offsets = (year_index - start_year).to_numpy()
-    multipliers = np.power(factor, np.clip(offsets, a_min=0, a_max=None))
+    offsets = np.clip((year_index - start_year).to_numpy(dtype=int), a_min=0, a_max=None)
+    multipliers = mbcm_discount_divisors(offsets)
     return pd.Series(multipliers, index=year_index, name="Discount multiplier")
 
 def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
@@ -2645,21 +2669,19 @@ def prepare_capacity_export(series: Optional[pd.DataFrame]) -> Optional[pd.DataF
     return df.rename(columns={"Year": "Financial year"})
 
 
-def format_npv_context(rate: float, *horizon_values: Optional[int]) -> str:
-    """Describe the NPV scope including horizon and discount rate."""
-    rate_pct = float(rate) * 100.0
+def format_npv_context(*horizon_values: Optional[int]) -> str:
+    """Describe the NPV scope including horizon using NZTA MBCM discounting."""
     years = sorted({int(value) for value in horizon_values if value is not None})
+    discount_text = mbcm_discount_label()
     if not years:
-        return f"NPV @ {rate_pct:.1f}% discount"
+        return f"NPV ({discount_text})"
     if len(years) == 1:
-        return f"{years[0]}-year NPV @ {rate_pct:.1f}% discount"
+        return f"{years[0]}-year NPV ({discount_text})"
     horizon_text = '/'.join(str(year) for year in years)
-    return f"{horizon_text}-year NPV @ {rate_pct:.1f}% discount"
+    return f"{horizon_text}-year NPV ({discount_text})"
 
 
 def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horizon_override: Optional[int] = None) -> str:
-
-    rates: List[float] = []
 
     horizons: List[int] = []
 
@@ -2670,18 +2692,6 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
             continue
 
         meta = selection.metadata or {}
-
-        rate = meta.get('BenRate')
-
-        if rate is not None:
-
-            try:
-
-                rates.append(float(rate))
-
-            except (TypeError, ValueError):
-
-                pass
 
         horizon = meta.get('HorizonYears')
 
@@ -2694,12 +2704,6 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
             except (TypeError, ValueError):
 
                 pass
-
-    rate_value: Optional[float] = rates[0] if rates else getattr(data, 'benefit_rate', None)
-
-    if rate_value is None:
-
-        rate_value = 0.0
 
     if horizon_override is not None:
 
@@ -2725,7 +2729,7 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
 
                 pass
 
-    return format_npv_context(rate_value, *horizons)
+    return format_npv_context(*horizons)
 
 
 
@@ -3684,10 +3688,8 @@ def build_timeseries(
             apply_discount = bool(st.session_state.get("npv_apply_discount", False))
 
     if apply_discount:
-        year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0)
-        discount_base = 1.0 + data.benefit_rate
-        discount = np.power(discount_base, year_offsets.to_numpy())
-        discount[discount == 0] = 1.0
+        year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy(dtype=int)
+        discount = mbcm_discount_divisors(year_offsets)
         df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
     else:
         df["PVBenefitTotal"] = df["BenefitFlowTotal"]
@@ -3790,10 +3792,8 @@ def pv_by_dimension(
 
         values = pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).to_numpy()
         if apply_discount:
-            offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy()
-            rate = 1.0 + data.benefit_rate
-            discount = np.power(rate, offsets)
-            discount[discount == 0] = 1.0
+            offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy(dtype=int)
+            discount = mbcm_discount_divisors(offsets)
             pv[str(dim)] = float((values / discount).sum())
         else:
             pv[str(dim)] = float(values.sum())
@@ -9723,13 +9723,14 @@ def main() -> None:
 
         with st.expander("Programme summary", expanded=False):
             st.checkbox(
-                "Apply discount rate to benefit flows",
+                "Apply MBCM discounting to benefit flows",
                 value=bool(st.session_state.get("npv_apply_discount", False)),
                 key="npv_apply_discount",
                 help=(
-                    "If unchecked, the dashboard assumes benefit flows in the cache are already discounted to "
-                    "present value (PV contributions) and sums them directly. If checked, the dashboard "
-                    "discounts benefit flows by the rate shown in the NPV label."
+                    f"NZTA Monetised Benefits and Costs Manual (MBCM) discounting: {mbcm_discount_label()}.\n\n"
+                    "Unchecked: assumes benefit flows in the cache are already discounted to present value (PV "
+                    "contributions) and sums them directly.\n"
+                    "Checked: discounts benefit flows in the dashboard using the MBCM schedule above."
                 ),
             )
             npv_horizon_options = [60, 50, 40, 35]
