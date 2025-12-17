@@ -218,10 +218,13 @@ class CapitalProgrammeOptimizer:
             # Update objective to include PV term
             self.solver.Minimize(self.total_obj_expr - self.pv_expr * self.pv_weight)
 
-    def export_model(self, filepath: str):
-        """Exports the model to an LP file."""
+    def export_model(self, filepath: str, format: str = "lp"):
+        """Exports the model to a file in the specified format ('lp' or 'mps')."""
         with open(filepath, "w") as f:
-            f.write(self.solver.ExportModelAsLpFormat(False))
+            if format.lower() == "mps":
+                f.write(self.solver.ExportModelAsMpsFormat(False, False))
+            else:
+                f.write(self.solver.ExportModelAsLpFormat(False))
 
     def solve(self) -> OptimizationResult:
         status_code = self.solver.Solve()

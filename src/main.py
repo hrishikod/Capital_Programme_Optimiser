@@ -220,12 +220,17 @@ def run_optimization(args):
     )
     optimizer.set_pv_coefficients(pv_map)
 
-    # Export LP
+    # Export model
     lp_dir = project_root / "linear-program-files"
     lp_dir.mkdir(exist_ok=True)
-    lp_file = lp_dir / "model.lp"
-    logging.info(f"Exporting model to {lp_file}...")
-    optimizer.export_model(str(lp_file))
+    ext = args.export_format.lower()
+    lp_file = lp_dir / f"model.{ext}"
+    logging.info(f"Exporting model to {lp_file} ({args.export_format})...")
+    
+    if args.optimizer == "cp-sat":
+        optimizer.export_model(str(lp_file), format=args.export_format)
+    else:
+        optimizer.export_model(str(lp_file), format=args.export_format)
 
     if args.generate_only:
         logging.info("Model generated. Skipping solve step.")
@@ -301,8 +306,19 @@ def main():
         help="Path to benefits CSV file (default: input/benefits.csv)",
     )
     parser.add_argument("--output-dir", type=str, default="output", help="Directory for output files (default: output)")
+    parser.add_argument(
+        "--export-format",
+        type=str,
+        choices=["lp", "mps"],
+        default="lp",
+        help="Export format for the model (default: lp). Note: CP-SAT only supports its native format.",
+    )
 
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
     args, _ = parser.parse_known_args()
 
     run_optimization(args)
+
+
+if __name__ == "__main__":
+    main()

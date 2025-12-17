@@ -259,8 +259,10 @@ class CapitalProgrammeOptimizer:
                 # Log how many terms were actually added to the model
                 span.set_attribute("active_pv_terms_added", len(pv_terms))
 
-    def export_model(self, filepath: str):
+    def export_model(self, filepath: str, format: str = "lp"):
         """Exports the model to a text file (CP-SAT format)."""
+        if format.lower() == "mps":
+            logging.warning("CP-SAT does not support MPS format. Exporting in native Protobuf text format instead.")
         with open(filepath, "w") as f:
             f.write(str(self.model))
 
