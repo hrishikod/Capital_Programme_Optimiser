@@ -5417,7 +5417,7 @@ def cost_benefit_stack_chart(
     benefit_breakdown: str,
     apply_cost_discount: bool,
     apply_benefit_discount: bool,
-) -> Optional[go.Figure]:
+) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
     if not selection.code:
         return None
 
@@ -5513,6 +5513,7 @@ def cost_benefit_stack_chart(
 
     cost_labels = cost_series.index.astype(str).tolist()
     cost_colors = _sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)
+    cost_legend_items = [(str(label), str(color)) for label, color in zip(cost_labels, cost_colors)]
     for label, color in zip(cost_labels, cost_colors):
         value_m = float(cost_series.get(label, 0.0))
         value_dollars = value_m * 1_000_000.0
@@ -5521,7 +5522,6 @@ def cost_benefit_stack_chart(
                 x=["Costs"],
                 y=[value_dollars],
                 name=str(label),
-                legend="legend",
                 marker=dict(color=color, line=segment_outline),
                 text=[_segment_text(value_dollars, cost_total_dollars)],
                 textposition="inside",
@@ -5534,6 +5534,7 @@ def cost_benefit_stack_chart(
 
     benefit_labels = benefit_series.index.astype(str).tolist()
     benefit_colors = _sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)
+    benefit_legend_items = [(str(label), str(color)) for label, color in zip(benefit_labels, benefit_colors)]
     for label, color in zip(benefit_labels, benefit_colors):
         value_m = float(benefit_series.get(label, 0.0))
         value_dollars = value_m * 1_000_000.0
@@ -5542,7 +5543,6 @@ def cost_benefit_stack_chart(
                 x=["Benefits"],
                 y=[value_dollars],
                 name=str(label),
-                legend="legend2",
                 marker=dict(color=color, line=segment_outline),
                 text=[_segment_text(value_dollars, benefit_total_dollars)],
                 textposition="inside",
@@ -5553,21 +5553,6 @@ def cost_benefit_stack_chart(
             )
         )
 
-    def _legend_entry_width(labels: List[str]) -> int:
-        if not labels:
-            return 120
-        longest = max(len(str(label)) for label in labels)
-        approx = int(longest * 6.5 + 45)
-        width = int(np.clip(approx, 110, 190))
-        if len(labels) >= 12:
-            width = max(110, int(width * 0.85))
-        elif len(labels) >= 8:
-            width = max(110, int(width * 0.92))
-        return int(width)
-
-    cost_entry_width = _legend_entry_width(cost_labels)
-    benefit_entry_width = _legend_entry_width(benefit_labels)
-
     fig.update_layout(
         title=f"NPV costs vs benefits stack {horizon_years_int}Y - {selection_label}",
         template=plotly_template(),
@@ -5576,29 +5561,8 @@ def cost_benefit_stack_chart(
         barcornerradius=6,
         uniformtext=dict(minsize=10, mode="hide"),
         hoverlabel=dict(namelength=-1),
-        legend=dict(
-            title=dict(text="Costs"),
-            orientation="h",
-            yanchor="top",
-            y=-0.23,
-            xanchor="right",
-            x=0.49,
-            entrywidthmode="pixels",
-            entrywidth=cost_entry_width,
-            font=dict(size=9),
-        ),
-        legend2=dict(
-            title=dict(text="Benefits"),
-            orientation="h",
-            yanchor="top",
-            y=-0.23,
-            xanchor="left",
-            x=0.51,
-            entrywidthmode="pixels",
-            entrywidth=benefit_entry_width,
-            font=dict(size=9),
-        ),
-        margin=dict(l=70, r=20, t=56, b=130),
+        showlegend=False,
+        margin=dict(l=70, r=20, t=56, b=54, autoexpand=False),
         height=480,
     )
 
@@ -5616,7 +5580,110 @@ def cost_benefit_stack_chart(
         gridcolor="rgba(0,0,0,0.08)",
     )
     fig.update_xaxes(title=None, showgrid=False)
-    return fig
+    return fig, cost_legend_items, benefit_legend_items
+
+
+def render_cost_benefit_stack_legend(
+    cost_items: List[Tuple[str, str]],
+    benefit_items: List[Tuple[str, str]],
+    *,
+    columns_per_section: int = 2,
+) -> None:
+    if not cost_items and not benefit_items:
+        return
+
+    divider = "rgba(255, 255, 255, 0.22)" if is_dark_mode() else "rgba(15, 23, 42, 0.14)"
+
+    def _split(items: List[Tuple[str, str]]) -> List[List[Tuple[str, str]]]:
+        if columns_per_section <= 1 or len(items) <= 1:
+            return [items]
+        cols = max(1, int(columns_per_section))
+        per_col = int(math.ceil(len(items) / cols))
+        return [items[i * per_col : (i + 1) * per_col] for i in range(cols)]
+
+    def _item_html(label: str, color: str) -> str:
+        safe_label = html.escape(str(label))
+        safe_color = html.escape(str(color))
+        return (
+            f'<div class="copt-stack-legend-item" title="{safe_label}">'
+            f'<span class="copt-stack-legend-swatch" style="background:{safe_color};"></span>'
+            f'<span class="copt-stack-legend-label">{safe_label}</span>'
+            f"</div>"
+        )
+
+    def _section_html(title: str, items: List[Tuple[str, str]]) -> str:
+        if not items:
+            return ""
+        cols = _split(items)
+        cols_html = "".join(
+            f'<div class="copt-stack-legend-col">{"".join(_item_html(label, color) for label, color in col)}</div>'
+            for col in cols
+            if col
+        )
+        safe_title = html.escape(title)
+        return (
+            '<div class="copt-stack-legend-section">'
+            f'<div class="copt-stack-legend-title">{safe_title}</div>'
+            f'<div class="copt-stack-legend-columns">{cols_html}</div>'
+            "</div>"
+        )
+
+    html_block = f"""
+<style>
+.copt-stack-legend-container {{
+  display: flex;
+  gap: 18px;
+  margin-top: 10px;
+}}
+.copt-stack-legend-section {{
+  flex: 1 1 0;
+  min-width: 0;
+}}
+.copt-stack-legend-section + .copt-stack-legend-section {{
+  border-left: 1px solid {divider};
+  padding-left: 18px;
+}}
+.copt-stack-legend-title {{
+  font-weight: 600;
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+}}
+.copt-stack-legend-columns {{
+  display: flex;
+  gap: 18px;
+}}
+.copt-stack-legend-col {{
+  flex: 1 1 0;
+  min-width: 0;
+}}
+.copt-stack-legend-item {{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0;
+  min-width: 0;
+}}
+.copt-stack-legend-swatch {{
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 10px;
+}}
+.copt-stack-legend-label {{
+  font-size: 0.74rem;
+  line-height: 1.25;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}}
+</style>
+<div class="copt-stack-legend-container">
+  {_section_html("Costs", cost_items)}
+  {_section_html("Benefits", benefit_items)}
+</div>
+"""
+    st.markdown(html_block, unsafe_allow_html=True)
 
 def dimension_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optional[pd.DataFrame]:
 
@@ -9153,7 +9220,7 @@ def render_cash_flow_tab(
             apply_benefit_discount = bool(st.session_state.get("npv_apply_discount", False))
             apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
 
-            stack_fig = cost_benefit_stack_chart(
+            stack_result = cost_benefit_stack_chart(
                 data,
                 stack_selection,
                 selection_label=stack_label or str(getattr(stack_selection, "code", "")),
@@ -9163,11 +9230,17 @@ def render_cash_flow_tab(
                 apply_cost_discount=apply_cost_discount,
                 apply_benefit_discount=apply_benefit_discount,
             )
-            if stack_fig is not None:
+            if stack_result is not None:
+                stack_fig, cost_legend_items, benefit_legend_items = stack_result
                 st.plotly_chart(
                     stack_fig,
                     use_container_width=True,
                     key="overview_cost_benefit_stack_chart",
+                )
+                render_cost_benefit_stack_legend(
+                    cost_legend_items,
+                    benefit_legend_items,
+                    columns_per_section=2,
                 )
             else:
                 st.info("Costs vs benefits breakdown unavailable for this selection.")
