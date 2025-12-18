@@ -5423,7 +5423,9 @@ def cost_benefit_stack_chart(
         cost_group_col = "GPSTier"
         cost_order = ["Must do", "Should do", "Could do", "Unknown"]
 
-    cost_table = _scenario_project_cost_table(data, selection.code, years) or pd.DataFrame()
+    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    if cost_table is None:
+        cost_table = pd.DataFrame()
     cost_project_totals = _discounted_table_totals(
         cost_table,
         years,
@@ -5455,7 +5457,9 @@ def cost_benefit_stack_chart(
         benefit_series = benefit_series[benefit_series.abs() > 1e-9]
     else:
         benefit_group_col = "Region" if benefit_breakdown == "Show regional breakdown" else "ActivityClass"
-        benefit_table = _scenario_project_benefit_table(data, selection.code, years) or pd.DataFrame()
+        benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+        if benefit_table is None:
+            benefit_table = pd.DataFrame()
         benefit_project_totals = _discounted_table_totals(
             benefit_table,
             years,
