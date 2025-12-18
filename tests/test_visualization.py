@@ -1,6 +1,15 @@
+import os
+import sys
+from pathlib import Path
+
 import pandas as pd
 
-from src.visualization import build_benefit_profile, visualize_from_outputs
+# Add project root to path
+cwd = Path(os.getcwd())
+if str(cwd) not in sys.path:
+    sys.path.insert(0, str(cwd))
+
+from src.visualization import build_benefit_profile, visualize_from_outputs  # noqa: E402
 
 
 def test_build_benefit_profile_aligns_benefits_to_start_year():

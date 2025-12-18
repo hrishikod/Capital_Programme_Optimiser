@@ -11,14 +11,14 @@ from pathlib import Path
 
 import mlflow
 
-from main import run_optimization
-
 # Add src to path
 cwd = Path(os.getcwd())
 project_root = cwd
 src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
+
+from main import run_optimization  # noqa: E402
 
 
 def test_mlflow_artifacts():
@@ -45,9 +45,8 @@ def test_mlflow_artifacts():
 
     print(f"Testing MLflow artifact logging with config: {vars(args)}")
 
-    # Use a temporary directory for MLflow tracking
     with tempfile.TemporaryDirectory() as temp_dir:
-        mlflow.set_tracking_uri(f"file://{temp_dir}/mlruns")
+        mlflow.set_tracking_uri(Path(temp_dir).joinpath("mlruns").as_uri())
 
         with mlflow.start_run(run_name=f"test_opt_{args.dimension}_{args.funding_level}"):
             # Log parameters
@@ -97,8 +96,11 @@ def test_mlflow_artifacts():
                         mlflow.log_metric(k, v)
 
                 # Calculate summary metrics from results
-                total_spend = result.spend_profile.iloc[0, :].sum()
-                mlflow.log_metric("total_spend", total_spend)
+                if result.status in ["OPTIMAL", "FEASIBLE"]:
+                    total_spend = result.spend_profile.iloc[0, :].sum()
+                    mlflow.log_metric("total_spend", total_spend)
+                else:
+                    print(f"⚠ Optimization not optimal: {result.status}")
 
                 # Log output data artifacts (CSVs)
                 output_dir = project_root / "output"
@@ -112,7 +114,7 @@ def test_mlflow_artifacts():
                     print(f"✓ Logged log file: {result.log_file}")
                 else:
                     # Fallback logic if log_file not populated
-                    log_dir = project_root / "logs"
+                    log_dir = project_root / "output" / "logs"
                     if log_dir.exists():
                         logs = list(log_dir.glob("*.log"))
                         if logs:

@@ -12,10 +12,7 @@ __pycache__/
 # Input, Output, and intermediate folders
 input/
 output/*
-linear-program-files/
 
-# Logs
-logs/*
 
 # MLFlow
 mlflow.db
