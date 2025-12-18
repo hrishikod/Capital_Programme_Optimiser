@@ -3,9 +3,8 @@
 This project implements an optimization model for the NZTA capital programme, designed to size annual funding envelopes and select projects to maximize benefits under funding constraints.
 
 ## Mathematical Formulation
-
-The detailed mathematical formulation of the optimization problem (using the COPT solver) is documented in:
-*   [COPT_SOLVER_FORMULATION.md](COPT_SOLVER_FORMULATION.md)
+The detailed mathematical formulation of the optimization problem is documented in:
+*   [Linear Program Formulation.md](Linear%20Program%20Formulation.md)
 
 ## Project Structure
 
