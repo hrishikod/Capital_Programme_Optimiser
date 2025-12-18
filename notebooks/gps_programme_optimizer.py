@@ -62,6 +62,7 @@ dbutils.widgets.text("workers", "0", "Num Workers")
 dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
 dbutils.widgets.text("benefits_path", "input/benefits.csv", "Benefits CSV Path")
 dbutils.widgets.text("output_dir", "output", "Output Directory")
+dbutils.widgets.text("model_tag", "", "Model Tag (Optional)")
 
 # COMMAND ----------
 
@@ -83,6 +84,7 @@ args.workers = int(dbutils.widgets.get("workers"))
 args.costs_path = dbutils.widgets.get("costs_path")
 args.benefits_path = dbutils.widgets.get("benefits_path")
 args.output_dir = dbutils.widgets.get("output_dir")
+model_tag = dbutils.widgets.get("model_tag")
 args.generate_only = False
 args.relax = False
 
@@ -97,6 +99,10 @@ print(f"Running optimization with config: {vars(args)}")
 with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
+    
+    # Log model tag if provided
+    if model_tag:
+        mlflow.set_tag("model_tag", model_tag)
 
     # Log input data files as artifacts
     for path_arg, name in [(args.costs_path, "costs"), (args.benefits_path, "benefits")]:
