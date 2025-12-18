@@ -1486,6 +1486,22 @@ def _clean_mapping_value(value: Any) -> Optional[str]:
     return text
 
 
+def _canonicalise_gps_tier(value: Any) -> str:
+    text = _clean_mapping_value(value)
+    if text is None:
+        return "Unknown"
+    normalised = re.sub(r"[\s_-]+", " ", text).strip().lower()
+    if not normalised or normalised == "unknown":
+        return "Unknown"
+    if "must" in normalised:
+        return "Must do"
+    if "should" in normalised:
+        return "Should do"
+    if "could" in normalised:
+        return "Could do"
+    return text.strip()
+
+
 @st.cache_resource(show_spinner=False)
 def load_project_attribute_mapping(
     workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
@@ -5374,6 +5390,8 @@ def _group_totals_by_mapping(
     working["ProjectKey"] = working["Project"].map(_normalise_project_key)
     merged = working.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
     merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
     grouped = merged.groupby(group_col, dropna=False)["Value"].sum().sort_values(ascending=False)
     grouped = grouped[grouped.abs() > 1e-9]
     if preferred_order:
