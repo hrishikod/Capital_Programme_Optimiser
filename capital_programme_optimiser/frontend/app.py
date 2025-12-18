@@ -5505,7 +5505,7 @@ def cost_benefit_stack_chart(
         if share < 0.08:
             return ""
         billions = value_dollars / 1_000_000_000.0
-        return f"{billions:.0f}" if billions >= 1.0 else ""
+        return f"${billions:.0f}b" if billions >= 1.0 else ""
 
     fig = go.Figure()
     gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
@@ -5553,6 +5553,21 @@ def cost_benefit_stack_chart(
             )
         )
 
+    def _legend_entry_width(labels: List[str]) -> int:
+        if not labels:
+            return 120
+        longest = max(len(str(label)) for label in labels)
+        approx = int(longest * 6.5 + 45)
+        width = int(np.clip(approx, 110, 190))
+        if len(labels) >= 12:
+            width = max(110, int(width * 0.85))
+        elif len(labels) >= 8:
+            width = max(110, int(width * 0.92))
+        return int(width)
+
+    cost_entry_width = _legend_entry_width(cost_labels)
+    benefit_entry_width = _legend_entry_width(benefit_labels)
+
     fig.update_layout(
         title=f"NPV costs vs benefits stack {horizon_years_int}Y - {selection_label}",
         template=plotly_template(),
@@ -5568,8 +5583,8 @@ def cost_benefit_stack_chart(
             y=-0.23,
             xanchor="right",
             x=0.49,
-            entrywidthmode="fraction",
-            entrywidth=0.155,
+            entrywidthmode="pixels",
+            entrywidth=cost_entry_width,
             font=dict(size=9),
         ),
         legend2=dict(
@@ -5579,8 +5594,8 @@ def cost_benefit_stack_chart(
             y=-0.23,
             xanchor="left",
             x=0.51,
-            entrywidthmode="fraction",
-            entrywidth=0.155,
+            entrywidthmode="pixels",
+            entrywidth=benefit_entry_width,
             font=dict(size=9),
         ),
         margin=dict(l=70, r=20, t=56, b=130),
