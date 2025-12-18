@@ -131,6 +131,7 @@ OFFICIAL_REGION_ASCII: Dict[str, str] = {
 }
 
 AREA_OUTSIDE_REGION = "Area Outside Region"
+UNMAPPED_REGION_LABEL = "Unmapped"
 DISPLAY_REGION_TITLES: Tuple[str, ...] = tuple(
     name for name in OFFICIAL_REGION_TITLES if name != AREA_OUTSIDE_REGION
 )
@@ -175,6 +176,11 @@ if _NATIONAL_WEIGHT_TOTAL > 0:
 def _is_national_region_label(value: Any) -> bool:
     text = str(value).strip().lower() if value is not None else ""
     return text == "national"
+
+
+def _is_unmapped_region_label(value: Any) -> bool:
+    text = str(value).strip().lower() if value is not None else ""
+    return text == UNMAPPED_REGION_LABEL.lower()
 
 # --- NEW: detect English tails in bilingual/council labels ---
 _ENGLISH_REGION_RE = re.compile(
@@ -847,7 +853,7 @@ def _distribute_national_rows(
     if abs(weight_total - 1.0) > 1e-8:
         weights_map = {k: v / weight_total for k, v in weights_map.items()}
 
-    mask = df[region_col].map(_is_national_region_label)
+    mask = df[region_col].map(_is_national_region_label) | df[region_col].map(_is_unmapped_region_label)
     if not mask.any():
         return df
 
@@ -862,14 +868,15 @@ def _distribute_national_rows(
     nat["_weight_key"] = 1
     weight_df = pd.DataFrame(
         {
-            region_col: list(weights_map.keys()),
+            "_target_region": list(weights_map.keys()),
             "_weight": list(weights_map.values()),
             "_weight_key": 1,
         }
     )
     expanded = nat.merge(weight_df, on="_weight_key", how="inner").drop(columns=["_weight_key"])
+    expanded[region_col] = expanded["_target_region"]
     expanded[value_col] = expanded[value_col] * expanded["_weight"]
-    expanded.drop(columns=["_weight"], inplace=True)
+    expanded.drop(columns=["_weight", "_target_region"], inplace=True)
 
     return pd.concat([base, expanded], ignore_index=True)
 
@@ -1080,12 +1087,12 @@ def _benefit_region_from_raw_result(
 
     mapping_norm = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = long.merge(mapping_norm, on="project_norm", how="left")
-    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+    benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
     benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
 
     region_list = list(regions)
-    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
-        region_list.append("Unmapped")
+    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+        region_list.append(UNMAPPED_REGION_LABEL)
 
     benefit_region = benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
     full_index = pd.MultiIndex.from_product([sorted(valid_years), region_list], names=["Year", "region"])
@@ -1189,11 +1196,11 @@ def _compute_region_benefit_metrics(
         mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
     region_lookup = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = benefit_proj.merge(region_lookup, on="project_norm", how="left")
-    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+    benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
     benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
     region_list = list(regions)
-    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
-        region_list.append("Unmapped")
+    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+        region_list.append(UNMAPPED_REGION_LABEL)
     benefit_region = (
         benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
     )
@@ -1274,18 +1281,19 @@ def compute_region_metrics(
         suffixes=("", "_map"),
     )
 
-    merged["region"] = merged["region"].fillna("Unmapped")
-    merged.loc[merged["region"] == "Unmapped", ["join_key", "join_key_norm"]] = ""
-    merged.loc[merged["region"] == "Unmapped", ["population", "gdp_per_capita"]] = np.nan
+    merged["region"] = merged["region"].fillna(UNMAPPED_REGION_LABEL)
+    merged["region"] = merged["region"].replace({"": UNMAPPED_REGION_LABEL})
+    merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["join_key", "join_key_norm"]] = ""
+    merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["population", "gdp_per_capita"]] = np.nan
 
     merged = _distribute_national_rows(merged, region_col="region", value_col="Spend_M")
 
     region_spend = merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
 
-    if (merged["region"] == "Unmapped").any() and "Unmapped" not in region_info["region"].values:
+    if (merged["region"] == UNMAPPED_REGION_LABEL).any() and UNMAPPED_REGION_LABEL not in region_info["region"].values:
         extra = pd.DataFrame(
             {
-                "region": ["Unmapped"],
+                "region": [UNMAPPED_REGION_LABEL],
                 "join_key": [""],
                 "join_key_norm": [""],
                 "gdp_per_capita": [0.0],

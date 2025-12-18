@@ -6587,6 +6587,7 @@ def build_region_map_figure(
     fill_opacity: float,
     name_field: str,
 ) -> go.Figure:
+    config = REGION_METRIC_CONFIG.get(metric_key, {})
     map_df = map_df.copy()
     map_df["_metric_value"] = pd.to_numeric(map_df.get("_metric_value"), errors="coerce")
     map_df["_has_data"] = map_df["_metric_value"].notna()
@@ -6803,7 +6804,7 @@ def render_region_map(
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"})
     with table_col:
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
-        st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
+        st.markdown(f"**Regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
         st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
         st.dataframe(summary, hide_index=True, width="stretch", height=420)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -6813,7 +6814,7 @@ def render_region_map(
 
 def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) -> pd.DataFrame:
     """
-    Build the top-10 region summary table backing the small map-side table and the
+    Build the region summary table backing the map-side table and the
     server-rendered dataframe. Keeps labels consistent with the rest of the app
     and pre-formats numeric values. Styling (font/colours) is done by CSS.
     """
@@ -6935,8 +6936,8 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     present_keys = [key for key in columns if key in table.columns]
     result = table[present_keys].rename(columns=columns).reset_index(drop=True)
 
-    # Top-10 is enough for the map-side table; the full table is available via export
-    return result.head(10)
+    # Return the full set of regions (16 official regions for the NZRC layer).
+    return result
 
 
 
