@@ -415,16 +415,16 @@ def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Overview", "Programme Schedule", "Cash Flow", "Benefits", "Regions", "Delivery", "Scenario Manager"]
+NAV_TABS = ["Cash Flow", "Programme Schedule", "Benefits", "Regions", "Delivery", "Scenario Manager", "Demo"]
 
 NAV_ICON_MAP = {
-    "Overview": "speedometer",
     "Programme Schedule": "calendar-event",
     "Cash Flow": "cash-coin",
     "Benefits": "graph-up-arrow",
     "Regions": "geo-alt",
     "Delivery": "box-seam",
     "Scenario Manager": "kanban",
+    "Demo": "speedometer",
 }
 
 
@@ -1075,7 +1075,7 @@ def collect_navigation_previews(
     previews: Dict[str, List[Dict[str, Any]]] = {}
     profile_assets, profile_meta = load_interpolated_profile_assets()
 
-    # Overview tab previews
+    # Demo tab previews
     if profile_assets:
         order = profile_meta.get("profile_order") or sorted(profile_assets)
         if order:
@@ -1084,7 +1084,7 @@ def collect_navigation_previews(
                 overview_fig = go.Figure(asset["plot_json"])
                 _append_preview(
                     previews,
-                    "Overview",
+                    "Demo",
                     title=_figure_title(overview_fig, asset.get("title", f"Cash flow - {asset['label']}")),
                     fig=overview_fig,
                 )
@@ -8828,7 +8828,7 @@ def render_benefits_tab(
     apply_discount = bool(st.session_state.get("npv_apply_discount", False))
     headline = "Net present value breakdown" if apply_discount else "Benefit breakdown ($2025)"
     st.markdown(f'<div class="pbi-section-title">{headline}</div>', unsafe_allow_html=True)
-    npv_horizon_options = [60, 50, 40, 35]
+    npv_horizon_options = [60, 50, 40]
     selected_npv_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
     try:
         selected_npv_horizon = int(selected_npv_horizon)
@@ -9609,24 +9609,41 @@ def main() -> None:
     preset_root, saved_root = scenario_utils.ensure_scenario_roots(settings)
     scenario_folders = scenario_utils.list_scenario_folders(settings)
 
-    cache_options = [
-        {
-            "label": "Configured cache (settings.yaml)",
-            "path": settings.cache_dir(),
-            "folder": None,
-        }
-    ]
+    scenario_folders = sorted(
+        scenario_folders,
+        key=lambda folder: 0
+        if str(getattr(folder, "kind", "")).strip().lower() == "preset"
+        and str(getattr(folder, "name", "")).strip().upper() == "GPS27"
+        else 1,
+    )
+
+    configured_cache = {
+        "label": "Configured cache (settings.yaml)",
+        "path": settings.cache_dir(),
+        "folder": None,
+    }
+
+    gps27_option = None
+    folder_options = []
     for folder in scenario_folders:
-        label = f"{folder.kind.title()} / {folder.name}"
+        label = f"{str(folder.kind).title()} / {folder.name}"
         if folder.is_default:
             label += " (default)"
-        cache_options.append(
-            {
-                "label": label,
-                "path": folder.path,
-                "folder": folder,
-            }
-        )
+        option = {
+            "label": label,
+            "path": folder.path,
+            "folder": folder,
+        }
+        if str(getattr(folder, "kind", "")).strip().lower() == "preset" and str(getattr(folder, "name", "")).strip().upper() == "GPS27":
+            gps27_option = option
+        else:
+            folder_options.append(option)
+
+    cache_options = []
+    if gps27_option is not None:
+        cache_options.append(gps27_option)
+    cache_options.append(configured_cache)
+    cache_options.extend(folder_options)
     # ---- Scenario cache (single instance) ----
     labels = [opt["label"] for opt in cache_options]
     default_index = 0
@@ -9855,7 +9872,7 @@ def main() -> None:
                     "Checked: discounts benefit flows in the dashboard using the MBCM schedule above."
                 ),
             )
-            npv_horizon_options = [60, 50, 40, 35]
+            npv_horizon_options = [60, 50, 40]
             default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
             try:
                 default_horizon = int(default_horizon)
@@ -9882,7 +9899,7 @@ def main() -> None:
 
         download_tables: Dict[str, pd.DataFrame] = {}
 
-        if active_tab == "Overview":
+        if active_tab == "Demo":
             download_tables.update(
                 render_overview_tab(
                     data,
@@ -9967,7 +9984,7 @@ def main() -> None:
                 download_tables=download_tables,
             )
 
-        if download_tables and active_tab != "Overview":
+        if download_tables and active_tab != "Demo":
             render_export_download(download_tables)
 
 
