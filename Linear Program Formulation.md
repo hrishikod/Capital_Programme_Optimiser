@@ -16,7 +16,20 @@ This document describes the mathematical formulation of the capital project opti
 * $E_t$: Funding envelope capacity (target) in year $t$ (`funding_target_S`).
 * $S_{v,k}$: Spend of project $v$ in the $k$-th year of its duration ($k=0, \dots, D_v-1$).
 * $D_v$: Duration of project $v$ in years.
-* $W_{v,s}$: PV coefficient (benefit) for starting project $v$ at year $s$.
+*   $\alpha_{pv}$: Small coefficient for the PV term in the objective (e.g. $10^{-4}$ or similar) to ensure it acts as a secondary objective.
+*   **Discount Rates (MBCM Schedule)**:
+    *   $r_1 = 0.02$ (2% per annum) for years $1 \le t \le 30$.
+    *   $r_2 = 0.015$ (1.5% per annum) for years $t > 30$.
+    *   $N = 30$ (Switch year).
+*   **Discount Factor** $D_t$:
+    $$
+    D_t = (1 + r_1)^{\min(t, N)} (1 + r_2)^{\max(0, t - N)}
+    $$
+* $W_{v,s}$: "PV coefficient (benefit) for starting project $v$ at year $s$."
+    $$
+    W_{v,s} = \sum_{k} \frac{B_{v, s, k}}{D_{s+k}}
+    $$
+    where $B_{v,s,k}$ is the monetised benefit realised in model year $t=s+k$ when project $v$ starts at $s$.
 * $Cap_{starts}$: Maximum number of project starts allowed per year (`max_starts_per_year`).
 * $M$: A large constant used for big-M constraints (`net_bigM`), typically sum of all funding targets.
 * $Tier_{i, \text{thresh}}$: Threshold (fraction of envelope) for the $i$-th piecewise soft cap tier. Default tiers:
