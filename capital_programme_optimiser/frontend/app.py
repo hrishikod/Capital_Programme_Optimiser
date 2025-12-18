@@ -4041,10 +4041,6 @@ def cash_chart(
 ) -> go.Figure:
 
     fig = go.Figure()
-    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
-    segment_outline = dict(color=gap_color, width=2)
-    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
-    segment_outline = dict(color=gap_color, width=2)
 
     spend_values = df["Spend"].astype(float) * 1_000_000.0
     closing_values = df["ClosingNet"].astype(float) * 1_000_000.0
@@ -5512,6 +5508,8 @@ def cost_benefit_stack_chart(
         return f"{billions:.0f}" if billions >= 1.0 else ""
 
     fig = go.Figure()
+    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
+    segment_outline = dict(color=gap_color, width=2)
 
     cost_labels = cost_series.index.astype(str).tolist()
     cost_colors = _sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)
