@@ -6313,6 +6313,7 @@ def render_programme_kpis(
     opt_selection: Optional[ScenarioSelection],
     cmp_selection: Optional[ScenarioSelection],
     npv_label: str,
+    npv_horizon_years: int | None = None,
 ) -> None:
     """Render the overview KPI card grid."""
     import streamlit as st
@@ -6345,6 +6346,22 @@ def render_programme_kpis(
     delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
     delta_pv = (opt_pv - cmp_pv) if (opt_pv is not None and cmp_pv is not None) else None
 
+    horizon_years = None
+    if npv_horizon_years is not None:
+        try:
+            horizon_years = int(npv_horizon_years)
+        except (TypeError, ValueError):
+            horizon_years = None
+    if horizon_years is None:
+        match = re.search(r"\b(\d+)\s*-\s*year\b", str(npv_label or ""), flags=re.IGNORECASE)
+        if match:
+            try:
+                horizon_years = int(match.group(1))
+            except (TypeError, ValueError):
+                horizon_years = None
+
+    horizon_prefix = f"{horizon_years}-year " if horizon_years is not None else ""
+
     if delta_pv is None:
         pv_chip_text, pv_chip_state = None, "neutral"
     else:
@@ -6354,13 +6371,13 @@ def render_programme_kpis(
 
     if pv_chip_text:
         delta_pv_card = _kpi_card_html(
-            f"Delta total NPV benefit ({npv_label})",
+            f"Delta Total {horizon_prefix}NPV benefits",
             None,
             body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
         )
     else:
         delta_pv_card = _kpi_card_html(
-            f"Delta total NPV benefit ({npv_label})",
+            f"Delta Total {horizon_prefix}NPV benefits",
             _fmt(delta_pv),
             subtitle=pair_label,
             delta_text=pv_chip_text,
@@ -6392,19 +6409,19 @@ def render_programme_kpis(
 
     cards = [
         f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
-        _kpi_card_html(f"{primary_label} - total spend", _fmt(opt_spend)),
-        _kpi_card_html(f"{comparison_label} - total spend", _fmt(cmp_spend)),
+        _kpi_card_html(f"Total Expenditure ($2025) - {primary_label}", _fmt(opt_spend)),
+        _kpi_card_html(f"Total Expenditure ($2025) - {comparison_label}", _fmt(cmp_spend)),
         _kpi_card_html(
-            "Delta - total spend",
+            "Delta Total Expenditure ($2025)",
             _fmt(delta_spend),
             subtitle=pair_label,
         ),
         _kpi_card_html(
-            f"{primary_label} total NPV benefit ({npv_label})",
+            f"Total {horizon_prefix}NPV benefits - {primary_label}",
             _fmt(opt_pv),
         ),
         _kpi_card_html(
-            f"{comparison_label} total NPV benefit ({npv_label})",
+            f"Total {horizon_prefix}NPV benefits - {comparison_label}",
             _fmt(cmp_pv),
         ),
         delta_pv_card,
@@ -9758,6 +9775,7 @@ def main() -> None:
                 opt_selection=opt_selection,
                 cmp_selection=comp_selection,
                 npv_label=npv_summary_label,
+                npv_horizon_years=summary_horizon_years,
             )
 
         download_tables: Dict[str, pd.DataFrame] = {}
