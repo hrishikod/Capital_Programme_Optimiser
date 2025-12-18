@@ -3871,13 +3871,19 @@ def scenario_metrics(
 
             window = df
 
+    spend_values = pd.to_numeric(window.get("Spend"), errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    year_values = pd.to_numeric(window.get("Year"), errors="coerce").fillna(start_year).astype(int).to_numpy(dtype=int)
+    year_offsets = np.clip(year_values - int(start_year), a_min=0, a_max=None)
+    spend_pv = float((spend_values / mbcm_discount_divisors(year_offsets)).sum()) if spend_values.size else 0.0
+
     return {
 
-        "total_spend": float(window["Spend"].sum()),
+        "total_spend": float(spend_values.sum()),
+        "total_spend_pv": spend_pv,
 
-        "total_benefit": float(window[benefit_col].sum()),
+        "total_benefit": float(pd.to_numeric(window.get(benefit_col), errors="coerce").fillna(0.0).sum()),
 
-        "total_pv": float(window[pv_col].sum()),
+        "total_pv": float(pd.to_numeric(window.get(pv_col), errors="coerce").fillna(0.0).sum()),
 
     }
 
@@ -6431,12 +6437,9 @@ def render_programme_kpis(
     opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
     cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
 
-    opt_spend = float(stats_opt.get("total_spend")) if stats_opt and stats_opt.get("total_spend") is not None else None
-    cmp_spend = float(stats_cmp.get("total_spend")) if stats_cmp and stats_cmp.get("total_spend") is not None else None
     opt_pv = float(stats_opt.get("total_pv")) if stats_opt and stats_opt.get("total_pv") is not None else None
     cmp_pv = float(stats_cmp.get("total_pv")) if stats_cmp and stats_cmp.get("total_pv") is not None else None
 
-    delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
     delta_pv = (opt_pv - cmp_pv) if (opt_pv is not None and cmp_pv is not None) else None
 
     horizon_years = None
@@ -6460,7 +6463,29 @@ def render_programme_kpis(
     except Exception:
         apply_discount = False
 
+    try:
+        apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
+    except Exception:
+        apply_cost_discount = False
+
     benefit_label = "NPV benefits" if apply_discount else "Benefits ($2025)"
+    cost_prefix = horizon_prefix if apply_cost_discount else ""
+    cost_label = "NPV expenditure" if apply_cost_discount else "Expenditure ($2025)"
+
+    def _spend(stats: dict | None) -> float | None:
+        if not stats:
+            return None
+        if apply_cost_discount:
+            value = stats.get("total_spend_pv_horizon")
+            if value is None:
+                value = stats.get("total_spend_pv")
+        else:
+            value = stats.get("total_spend")
+        return float(value) if value is not None else None
+
+    opt_spend = _spend(stats_opt)
+    cmp_spend = _spend(stats_cmp)
+    delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
 
     if delta_pv is None:
         pv_chip_text, pv_chip_state = None, "neutral"
@@ -6509,10 +6534,10 @@ def render_programme_kpis(
 
     cards = [
         f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
-        _kpi_card_html(f"Total Expenditure ($2025) - {primary_label}", _fmt(opt_spend)),
-        _kpi_card_html(f"Total Expenditure ($2025) - {comparison_label}", _fmt(cmp_spend)),
+        _kpi_card_html(f"Total {cost_prefix}{cost_label} - {primary_label}", _fmt(opt_spend)),
+        _kpi_card_html(f"Total {cost_prefix}{cost_label} - {comparison_label}", _fmt(cmp_spend)),
         _kpi_card_html(
-            "Delta Total Expenditure ($2025)",
+            f"Delta Total {cost_prefix}{cost_label}",
             _fmt(delta_spend),
             subtitle=pair_label,
         ),
@@ -9855,6 +9880,9 @@ def main() -> None:
                 benefit_value = horizon_stats.get("total_benefit")
                 if benefit_value is not None:
                     merged_stats["total_benefit_horizon"] = benefit_value
+                spend_pv_value = horizon_stats.get("total_spend_pv")
+                if spend_pv_value is not None:
+                    merged_stats["total_spend_pv_horizon"] = spend_pv_value
             return merged_stats
 
         stats_opt = _scenario_stats(opt_series)
@@ -9870,6 +9898,17 @@ def main() -> None:
                     "Unchecked: assumes benefit flows in the cache are already discounted to present value (PV "
                     "contributions) and sums them directly.\n"
                     "Checked: discounts benefit flows in the dashboard using the MBCM schedule above."
+                ),
+            )
+            st.checkbox(
+                "Apply MBCM discounting to cost flows (KPI cards only)",
+                value=bool(st.session_state.get("npv_apply_cost_discount", False)),
+                key="npv_apply_cost_discount",
+                help=(
+                    f"NZTA Monetised Benefits and Costs Manual (MBCM) discounting: {mbcm_discount_label()}.\n\n"
+                    "Unchecked: KPI expenditure cards show undiscounted totals in $2025.\n"
+                    "Checked: KPI expenditure cards show discounted present values over the selected NPV horizon.\n"
+                    "This toggle does not affect charts or exports."
                 ),
             )
             npv_horizon_options = [60, 50, 40]
