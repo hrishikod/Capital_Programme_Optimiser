@@ -4041,6 +4041,8 @@ def cash_chart(
 ) -> go.Figure:
 
     fig = go.Figure()
+    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
+    segment_outline = dict(color=gap_color, width=2)
 
     spend_values = df["Spend"].astype(float) * 1_000_000.0
     closing_values = df["ClosingNet"].astype(float) * 1_000_000.0
@@ -5520,7 +5522,7 @@ def cost_benefit_stack_chart(
                 y=[value_dollars],
                 name=str(label),
                 legend="legend",
-                marker_color=color,
+                marker=dict(color=color, line=segment_outline),
                 text=[_segment_text(value_dollars, cost_total_dollars)],
                 textposition="inside",
                 textfont=dict(color="white"),
@@ -5540,7 +5542,7 @@ def cost_benefit_stack_chart(
                 y=[value_dollars],
                 name=str(label),
                 legend="legend2",
-                marker_color=color,
+                marker=dict(color=color, line=segment_outline),
                 text=[_segment_text(value_dollars, benefit_total_dollars)],
                 textposition="inside",
                 textfont=dict(color="#111111"),
@@ -5553,6 +5555,8 @@ def cost_benefit_stack_chart(
         title=f"NPV costs vs benefits stack {horizon_years_int}Y - {selection_label}",
         template=plotly_template(),
         barmode="stack",
+        bargap=0.28,
+        barcornerradius=6,
         hoverlabel=dict(namelength=-1),
         legend=dict(
             title=dict(text="Costs"),
