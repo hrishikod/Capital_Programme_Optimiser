@@ -9178,10 +9178,21 @@ def render_cash_flow_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
+    stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
+    stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
+    stack_selection_code = getattr(stack_selection, "code", None)
+    show_stack_chart = bool(stack_selection is not None and stack_selection_code)
+    control_row_spacer_px = 74
     eff_cols = st.columns([2, 3])
     with eff_cols[0]:
+        if show_stack_chart:
+            st.markdown(f'<div style="height:{control_row_spacer_px}px;"></div>', unsafe_allow_html=True)
         eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
         if eff_fig is not None:
+            eff_fig.update_layout(
+                height=480,
+                margin=dict(l=70, r=20, t=56, b=100, autoexpand=False),
+            )
             st.plotly_chart(
                 eff_fig,
                 use_container_width=True,
@@ -9200,9 +9211,7 @@ def render_cash_flow_tab(
             st.info("Select scenarios to view cumulative spend vs benefit.")
 
     with eff_cols[1]:
-        stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
-        stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
-        if stack_selection is not None and getattr(stack_selection, "code", None):
+        if show_stack_chart:
             control_cols = st.columns(2)
             with control_cols[0]:
                 cost_breakdown = st.selectbox(
