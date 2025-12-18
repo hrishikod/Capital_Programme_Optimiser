@@ -80,7 +80,9 @@ def calculate_pv_coefficients(
                     pv_map[(v, s)] = val
 
         span.set_attribute("output_size", len(pv_map))
-        span.set_attribute("discount_rate", discount_rate)
+        span.set_attribute("mbcm_discount_r1", r1)
+        span.set_attribute("mbcm_discount_r2", r2)
+        span.set_attribute("mbcm_discount_switch_year", switch_year)
         span.set_attribute("start_fy", start_fy)
         span.set_attribute("years", years)
         span.set_attribute("dim", dim)
