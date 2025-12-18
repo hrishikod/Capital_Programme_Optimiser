@@ -5330,15 +5330,15 @@ def efficiency_chart(
 
 
 COST_BENEFIT_STACK_COST_OPTIONS = (
-    "Show activity class breakdown",
-    "Show regional breakdown",
-    "Show GPS request tier",
+    "Activity Class",
+    "Region",
+    "GPS Request Tier",
 )
 
 COST_BENEFIT_STACK_BENEFIT_OPTIONS = (
-    "Show strategic dimension breakdown",
-    "Show regional breakdown",
-    "Show activity class breakdown",
+    "Strategic Dimension",
+    "Region",
+    "Activity Class",
 )
 
 
@@ -5435,9 +5435,9 @@ def cost_benefit_stack_chart(
 
     cost_group_col = "ActivityClass"
     cost_order = None
-    if cost_breakdown == "Show regional breakdown":
+    if cost_breakdown == "Region":
         cost_group_col = "Region"
-    elif cost_breakdown == "Show GPS request tier":
+    elif cost_breakdown == "GPS Request Tier":
         cost_group_col = "GPSTier"
         cost_order = ["Must do", "Should do", "Could do", "Unknown"]
 
@@ -5458,7 +5458,7 @@ def cost_benefit_stack_chart(
     )
 
     benefit_series: pd.Series
-    if benefit_breakdown == "Show strategic dimension breakdown":
+    if benefit_breakdown == "Strategic Dimension":
         pv_map = pv_by_dimension(
             data,
             selection,
@@ -5474,7 +5474,7 @@ def cost_benefit_stack_chart(
         benefit_series = benefit_series.reindex(ordered_present + sorted(extras, key=str)).fillna(0.0)
         benefit_series = benefit_series[benefit_series.abs() > 1e-9]
     else:
-        benefit_group_col = "Region" if benefit_breakdown == "Show regional breakdown" else "ActivityClass"
+        benefit_group_col = "Region" if benefit_breakdown == "Region" else "ActivityClass"
         benefit_table = _scenario_project_benefit_table(data, selection.code, years)
         if benefit_table is None:
             benefit_table = pd.DataFrame()
@@ -9107,45 +9107,44 @@ def render_cash_flow_tab(
         stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
         stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
         if stack_selection is not None and getattr(stack_selection, "code", None):
-            stack_cols = st.columns([1, 4, 1])
-            with stack_cols[0]:
-                cost_breakdown = st.radio(
-                    "Costs",
+            control_cols = st.columns(2)
+            with control_cols[0]:
+                cost_breakdown = st.selectbox(
+                    "Breakdown costs by:",
                     list(COST_BENEFIT_STACK_COST_OPTIONS),
                     index=0,
-                    key="cost_benefit_stack_cost_breakdown",
+                    key="cost_benefit_stack_cost_breakdown_select",
                 )
-            with stack_cols[2]:
-                benefit_breakdown = st.radio(
-                    "Benefits",
+            with control_cols[1]:
+                benefit_breakdown = st.selectbox(
+                    "Breakdown benefits by:",
                     list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
                     index=0,
-                    key="cost_benefit_stack_benefit_breakdown",
+                    key="cost_benefit_stack_benefit_breakdown_select",
                 )
 
             horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
             apply_benefit_discount = bool(st.session_state.get("npv_apply_discount", False))
             apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
 
-            with stack_cols[1]:
-                stack_fig = cost_benefit_stack_chart(
-                    data,
-                    stack_selection,
-                    selection_label=stack_label or str(getattr(stack_selection, "code", "")),
-                    horizon_years=horizon_years,
-                    cost_breakdown=cost_breakdown,
-                    benefit_breakdown=benefit_breakdown,
-                    apply_cost_discount=apply_cost_discount,
-                    apply_benefit_discount=apply_benefit_discount,
+            stack_fig = cost_benefit_stack_chart(
+                data,
+                stack_selection,
+                selection_label=stack_label or str(getattr(stack_selection, "code", "")),
+                horizon_years=horizon_years,
+                cost_breakdown=cost_breakdown,
+                benefit_breakdown=benefit_breakdown,
+                apply_cost_discount=apply_cost_discount,
+                apply_benefit_discount=apply_benefit_discount,
+            )
+            if stack_fig is not None:
+                st.plotly_chart(
+                    stack_fig,
+                    use_container_width=True,
+                    key="overview_cost_benefit_stack_chart",
                 )
-                if stack_fig is not None:
-                    st.plotly_chart(
-                        stack_fig,
-                        use_container_width=True,
-                        key="overview_cost_benefit_stack_chart",
-                    )
-                else:
-                    st.info("Costs vs benefits breakdown unavailable for this selection.")
+            else:
+                st.info("Costs vs benefits breakdown unavailable for this selection.")
         else:
             st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
