@@ -5456,6 +5456,7 @@ def cost_benefit_stack_chart(
         group_col=cost_group_col,
         preferred_order=cost_order,
     )
+    cost_series = cost_series.sort_values(ascending=False)
 
     benefit_series: pd.Series
     if benefit_breakdown == "Strategic Dimension":
@@ -5473,6 +5474,7 @@ def cost_benefit_stack_chart(
         extras = [dim for dim in benefit_series.index if dim not in ordered_present]
         benefit_series = benefit_series.reindex(ordered_present + sorted(extras, key=str)).fillna(0.0)
         benefit_series = benefit_series[benefit_series.abs() > 1e-9]
+        benefit_series = benefit_series.sort_values(ascending=False)
     else:
         benefit_group_col = "Region" if benefit_breakdown == "Region" else "ActivityClass"
         benefit_table = _scenario_project_benefit_table(data, selection.code, years)
@@ -5489,6 +5491,7 @@ def cost_benefit_stack_chart(
             mapping,
             group_col=benefit_group_col,
         )
+        benefit_series = benefit_series.sort_values(ascending=False)
 
     cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
     benefit_total_dollars = float(benefit_series.sum() * 1_000_000.0) if not benefit_series.empty else 0.0
@@ -5512,7 +5515,7 @@ def cost_benefit_stack_chart(
     segment_outline = dict(color=gap_color, width=2)
 
     cost_labels = cost_series.index.astype(str).tolist()
-    cost_colors = _sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)
+    cost_colors = list(reversed(_sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)))
     cost_legend_items = [(str(label), str(color)) for label, color in zip(cost_labels, cost_colors)]
     for label, color in zip(cost_labels, cost_colors):
         value_m = float(cost_series.get(label, 0.0))
@@ -5533,7 +5536,7 @@ def cost_benefit_stack_chart(
         )
 
     benefit_labels = benefit_series.index.astype(str).tolist()
-    benefit_colors = _sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)
+    benefit_colors = list(reversed(_sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)))
     benefit_legend_items = [(str(label), str(color)) for label, color in zip(benefit_labels, benefit_colors)]
     for label, color in zip(benefit_labels, benefit_colors):
         value_m = float(benefit_series.get(label, 0.0))
