@@ -4043,6 +4043,8 @@ def cash_chart(
     fig = go.Figure()
     gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
     segment_outline = dict(color=gap_color, width=2)
+    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
+    segment_outline = dict(color=gap_color, width=2)
 
     spend_values = df["Spend"].astype(float) * 1_000_000.0
     closing_values = df["ClosingNet"].astype(float) * 1_000_000.0
