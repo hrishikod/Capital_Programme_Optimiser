@@ -69,6 +69,7 @@ ROOT_PARENT = ROOT_FILE.parent
 
 INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles_new.pkl"
 PCT_BAR_PATH = ROOT_FILE / "scenario_sets" / "Pct_bar.pkl"
+COST_BENEFIT_STREAMS_PATH = ROOT_FILE / "Cost_benefit_streams.xlsx"
 INTERPOLATED_PROFILE_ANIMATION_SECONDS = 16.0
 
 for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
@@ -1472,6 +1473,83 @@ def _normalise_project_key(name: str) -> str:
         return ''
     normalised = str(name).strip().lower()
     return re.sub(r'\s+', ' ', normalised)
+
+
+def _clean_mapping_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+@st.cache_resource(show_spinner=False)
+def load_project_attribute_mapping(
+    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
+) -> pd.DataFrame:
+    """Load project-to-attribute mappings used for breakdown charts."""
+
+    def _read_sheet(sheet_name: str, column_map: Dict[str, str]) -> pd.DataFrame:
+        if not workbook_path.exists():
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+        try:
+            df = pd.read_excel(workbook_path, sheet_name=sheet_name, engine="openpyxl")
+        except Exception:
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+
+        df = df.copy()
+        df.columns = [str(col).strip() for col in df.columns]
+        lookup = {str(col).strip().lower(): col for col in df.columns}
+        project_col = lookup.get("project")
+        if project_col is None:
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+
+        out = pd.DataFrame()
+        out["Project"] = df[project_col].map(_clean_mapping_value)
+        out = out.dropna(subset=["Project"]).copy()
+        out["Project"] = out["Project"].astype(str).str.strip()
+        out = out[out["Project"].ne("")]
+        out["ProjectKey"] = out["Project"].map(_normalise_project_key)
+
+        for out_col, src_col_name in column_map.items():
+            src_col = lookup.get(str(src_col_name).strip().lower())
+            out[out_col] = df[src_col].map(_clean_mapping_value) if src_col is not None else None
+
+        out = out.drop_duplicates(subset=["ProjectKey"], keep="first")
+        return out[["ProjectKey", "Project", *column_map.keys()]]
+
+    costs = _read_sheet(
+        "Costs",
+        {
+            "Region": "Region",
+            "ActivityClass": "Activity Class",
+            "GPSTier": "GPS Request Tier",
+        },
+    )
+    benefits = _read_sheet(
+        "Benefits Linear 40yrs",
+        {
+            "Region": "Region",
+            "ActivityClass": "Activity Class",
+        },
+    )
+
+    if costs.empty and benefits.empty:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier"])
+
+    merged = costs.set_index("ProjectKey").combine_first(benefits.set_index("ProjectKey")).reset_index()
+    for col in ("Project", "Region", "ActivityClass", "GPSTier"):
+        if col not in merged.columns:
+            merged[col] = None
+    merged = merged[["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier"]].copy()
+    merged["Region"] = merged["Region"].fillna("Unknown")
+    merged["ActivityClass"] = merged["ActivityClass"].fillna("Unknown")
+    merged["GPSTier"] = merged["GPSTier"].fillna("Unknown")
+    return merged
+
 
 def rgba_from_hex(hex_color: str, alpha: float) -> str:
     '''Return an rgba string for a hex colour code or existing rgba string.'''
@@ -5234,6 +5312,245 @@ def efficiency_chart(
 
     return fig
 
+
+COST_BENEFIT_STACK_COST_OPTIONS = (
+    "Show activity class breakdown",
+    "Show regional breakdown",
+    "Show GPS request tier",
+)
+
+COST_BENEFIT_STACK_BENEFIT_OPTIONS = (
+    "Show strategic dimension breakdown",
+    "Show regional breakdown",
+    "Show activity class breakdown",
+)
+
+
+def _sample_stack_palette(name: str, n: int, *, start: float, end: float) -> List[str]:
+    if n <= 0:
+        return []
+    if n == 1:
+        positions = [(start + end) / 2.0]
+    else:
+        positions = np.linspace(start, end, n).tolist()
+    return plc.sample_colorscale(name, positions, colortype="rgb")
+
+
+def _discounted_table_totals(
+    table: pd.DataFrame,
+    years: List[int],
+    *,
+    start_year: int,
+    apply_discount: bool,
+) -> pd.Series:
+    if table.empty or "Project" not in table.columns:
+        return pd.Series(dtype=float)
+    safe_years = [int(y) for y in years if y in table.columns]
+    if not safe_years:
+        return pd.Series(dtype=float)
+    values = table[safe_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    if apply_discount:
+        offsets = np.clip(np.asarray(safe_years, dtype=int) - int(start_year), a_min=0, a_max=None)
+        divisors = mbcm_discount_divisors(offsets)
+        totals = (values / divisors).sum(axis=1)
+    else:
+        totals = values.sum(axis=1)
+    return pd.Series(totals, index=table["Project"].astype(str).to_numpy())
+
+
+def _group_totals_by_mapping(
+    project_totals: pd.Series,
+    mapping: pd.DataFrame,
+    *,
+    group_col: str,
+    preferred_order: Optional[List[str]] = None,
+) -> pd.Series:
+    if project_totals.empty:
+        return pd.Series(dtype=float)
+    working = pd.DataFrame({"Project": project_totals.index, "Value": project_totals.to_numpy(dtype=float)})
+    working = working[working["Value"].abs() > 1e-9]
+    if working.empty:
+        return pd.Series(dtype=float)
+    working["ProjectKey"] = working["Project"].map(_normalise_project_key)
+    merged = working.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    grouped = merged.groupby(group_col, dropna=False)["Value"].sum().sort_values(ascending=False)
+    grouped = grouped[grouped.abs() > 1e-9]
+    if preferred_order:
+        lookup = {str(label).strip().lower(): label for label in grouped.index}
+        ordered: List[str] = []
+        for label in preferred_order:
+            key = str(label).strip().lower()
+            match = lookup.get(key)
+            if match is not None and match not in ordered:
+                ordered.append(match)
+        extras = [label for label in grouped.index if label not in ordered]
+        grouped = grouped.reindex(ordered + extras)
+    return grouped
+
+
+def cost_benefit_stack_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    selection_label: str,
+    horizon_years: int,
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    apply_cost_discount: bool,
+    apply_benefit_discount: bool,
+) -> Optional[go.Figure]:
+    if not selection.code:
+        return None
+
+    start_year = int(getattr(data, "start_fy", 0) or 0)
+    try:
+        horizon_years_int = int(horizon_years)
+    except (TypeError, ValueError):
+        horizon_years_int = int(getattr(data, "model_years", 0) or 0)
+    if horizon_years_int <= 0:
+        horizon_years_int = int(getattr(data, "model_years", 0) or 0) or 60
+    end_year = start_year + horizon_years_int - 1
+    years = [int(y) for y in getattr(data, "years", []) if y is not None and start_year <= int(y) <= end_year]
+
+    mapping = load_project_attribute_mapping()
+
+    cost_group_col = "ActivityClass"
+    cost_order = None
+    if cost_breakdown == "Show regional breakdown":
+        cost_group_col = "Region"
+    elif cost_breakdown == "Show GPS request tier":
+        cost_group_col = "GPSTier"
+        cost_order = ["Must do", "Should do", "Could do", "Unknown"]
+
+    cost_table = _scenario_project_cost_table(data, selection.code, years) or pd.DataFrame()
+    cost_project_totals = _discounted_table_totals(
+        cost_table,
+        years,
+        start_year=start_year,
+        apply_discount=apply_cost_discount,
+    )
+    cost_series = _group_totals_by_mapping(
+        cost_project_totals,
+        mapping,
+        group_col=cost_group_col,
+        preferred_order=cost_order,
+    )
+
+    benefit_series: pd.Series
+    if benefit_breakdown == "Show strategic dimension breakdown":
+        pv_map = pv_by_dimension(
+            data,
+            selection,
+            horizon_years=horizon_years_int,
+            apply_discount=apply_benefit_discount,
+        ) or {}
+        benefit_series = pd.Series(pv_map, dtype=float)
+        benefit_series.index = benefit_series.index.astype(str)
+        benefit_series = benefit_series[benefit_series.index.str.strip().str.lower() != "total"]
+        ordered_dims = [dim for dim in getattr(data, "dims", []) if str(dim).strip().lower() != "total"]
+        ordered_present = [dim for dim in ordered_dims if dim in benefit_series.index]
+        extras = [dim for dim in benefit_series.index if dim not in ordered_present]
+        benefit_series = benefit_series.reindex(ordered_present + sorted(extras, key=str)).fillna(0.0)
+        benefit_series = benefit_series[benefit_series.abs() > 1e-9]
+    else:
+        benefit_group_col = "Region" if benefit_breakdown == "Show regional breakdown" else "ActivityClass"
+        benefit_table = _scenario_project_benefit_table(data, selection.code, years) or pd.DataFrame()
+        benefit_project_totals = _discounted_table_totals(
+            benefit_table,
+            years,
+            start_year=start_year,
+            apply_discount=apply_benefit_discount,
+        )
+        benefit_series = _group_totals_by_mapping(
+            benefit_project_totals,
+            mapping,
+            group_col=benefit_group_col,
+        )
+
+    cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
+    benefit_total_dollars = float(benefit_series.sum() * 1_000_000.0) if not benefit_series.empty else 0.0
+    if abs(cost_total_dollars) <= 1e-6 and abs(benefit_total_dollars) <= 1e-6:
+        return None
+    axis_samples = [val for val in (cost_total_dollars, benefit_total_dollars) if np.isfinite(val)]
+    if not axis_samples:
+        return None
+
+    def _segment_text(value_dollars: float, total_dollars: float) -> str:
+        if total_dollars <= 0 or value_dollars <= 0:
+            return ""
+        share = value_dollars / total_dollars if total_dollars else 0.0
+        if share < 0.08:
+            return ""
+        billions = value_dollars / 1_000_000_000.0
+        return f"{billions:.0f}" if billions >= 1.0 else ""
+
+    fig = go.Figure()
+
+    cost_labels = cost_series.index.astype(str).tolist()
+    cost_colors = _sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)
+    for label, color in zip(cost_labels, cost_colors):
+        value_m = float(cost_series.get(label, 0.0))
+        value_dollars = value_m * 1_000_000.0
+        fig.add_trace(
+            go.Bar(
+                x=["Outflows"],
+                y=[value_dollars],
+                name=f"Costs: {label}",
+                marker_color=color,
+                text=[_segment_text(value_dollars, cost_total_dollars)],
+                textposition="inside",
+                textfont=dict(color="white"),
+                customdata=[format_large_amount(value_dollars)],
+                hovertemplate=f"<b>Costs: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+            )
+        )
+
+    benefit_labels = benefit_series.index.astype(str).tolist()
+    benefit_colors = _sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)
+    for label, color in zip(benefit_labels, benefit_colors):
+        value_m = float(benefit_series.get(label, 0.0))
+        value_dollars = value_m * 1_000_000.0
+        fig.add_trace(
+            go.Bar(
+                x=["Inflows"],
+                y=[value_dollars],
+                name=f"Benefits: {label}",
+                marker_color=color,
+                text=[_segment_text(value_dollars, benefit_total_dollars)],
+                textposition="inside",
+                textfont=dict(color="#111111"),
+                customdata=[format_large_amount(value_dollars)],
+                hovertemplate=f"<b>Benefits: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=f"NPV costs vs benefits stack {horizon_years_int}Y - {selection_label}",
+        template=plotly_template(),
+        barmode="stack",
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(y=-0.28, font=dict(size=9)),
+        margin=dict(l=70, r=20, t=56, b=130),
+        height=460,
+    )
+
+    ticks_vals, ticks_text, _ = compute_cash_axis_ticks(
+        [cost_total_dollars, benefit_total_dollars],
+        force_unit="b",
+    )
+    fig.update_yaxes(
+        title=None,
+        tickmode="array",
+        tickvals=ticks_vals,
+        ticktext=ticks_text,
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="rgba(0,0,0,0.08)",
+    )
+    fig.update_xaxes(title=None, showgrid=False)
+    return fig
+
 def dimension_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optional[pd.DataFrame]:
 
     if not selection.code:
@@ -8724,22 +9041,71 @@ def render_cash_flow_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
-    eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
-    if eff_fig is not None:
-        st.plotly_chart(
-            eff_fig,
-            use_container_width=True,
-            key="overview_efficiency_chart",
-        )
-        efficiency_export = prepare_efficiency_export(
-            data,
-            opt_series,
-            cmp_series,
-            opt_selection,
-            comp_selection,
-        )
-        if efficiency_export is not None:
-            export_tables["Cumulative spend vs benefit"] = efficiency_export
+    eff_cols = st.columns([2, 1])
+    with eff_cols[0]:
+        eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
+        if eff_fig is not None:
+            st.plotly_chart(
+                eff_fig,
+                use_container_width=True,
+                key="overview_efficiency_chart",
+            )
+            efficiency_export = prepare_efficiency_export(
+                data,
+                opt_series,
+                cmp_series,
+                opt_selection,
+                comp_selection,
+            )
+            if efficiency_export is not None:
+                export_tables["Cumulative spend vs benefit"] = efficiency_export
+        else:
+            st.info("Select scenarios to view cumulative spend vs benefit.")
+
+    with eff_cols[1]:
+        stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
+        stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
+        if stack_selection is not None and getattr(stack_selection, "code", None):
+            control_cols = st.columns(2)
+            with control_cols[0]:
+                cost_breakdown = st.radio(
+                    "Costs",
+                    list(COST_BENEFIT_STACK_COST_OPTIONS),
+                    index=0,
+                    key="cost_benefit_stack_cost_breakdown",
+                )
+            with control_cols[1]:
+                benefit_breakdown = st.radio(
+                    "Benefits",
+                    list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
+                    index=0,
+                    key="cost_benefit_stack_benefit_breakdown",
+                )
+
+            horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+            apply_benefit_discount = bool(st.session_state.get("npv_apply_discount", False))
+            apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
+
+            stack_fig = cost_benefit_stack_chart(
+                data,
+                stack_selection,
+                selection_label=stack_label or str(getattr(stack_selection, "code", "")),
+                horizon_years=horizon_years,
+                cost_breakdown=cost_breakdown,
+                benefit_breakdown=benefit_breakdown,
+                apply_cost_discount=apply_cost_discount,
+                apply_benefit_discount=apply_benefit_discount,
+            )
+            if stack_fig is not None:
+                st.plotly_chart(
+                    stack_fig,
+                    use_container_width=True,
+                    key="overview_cost_benefit_stack_chart",
+                )
+            else:
+                st.info("Costs vs benefits breakdown unavailable for this selection.")
+        else:
+            st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
     show_cumulative_cash = st.checkbox(
         "Show cumulative benefits vs cost",
@@ -9901,14 +10267,14 @@ def main() -> None:
                 ),
             )
             st.checkbox(
-                "Apply MBCM discounting to cost flows (KPI cards only)",
+                "Apply MBCM discounting to cost flows",
                 value=bool(st.session_state.get("npv_apply_cost_discount", False)),
                 key="npv_apply_cost_discount",
                 help=(
                     f"NZTA Monetised Benefits and Costs Manual (MBCM) discounting: {mbcm_discount_label()}.\n\n"
-                    "Unchecked: KPI expenditure cards show undiscounted totals in $2025.\n"
-                    "Checked: KPI expenditure cards show discounted present values over the selected NPV horizon.\n"
-                    "This toggle does not affect charts or exports."
+                    "Unchecked: expenditure totals are shown undiscounted in $2025.\n"
+                    "Checked: annual spend flows are discounted to present value over the selected NPV horizon.\n"
+                    "This toggle affects KPI expenditure cards and the costs vs benefits stack chart."
                 ),
             )
             npv_horizon_options = [60, 50, 40]
