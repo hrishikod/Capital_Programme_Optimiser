@@ -2191,17 +2191,17 @@ def prepare_cumulative_cash_export(
         if aligned_cost.notna().any():
             export[f"{label_prefix} cumulative cost ($)"] = scale_series_to_nzd(aligned_cost)
 
-    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
-    if isinstance(revenue_series, pd.Series) and not revenue_series.empty:
-        aligned_revenue = pd.to_numeric(revenue_series, errors="coerce").reindex(index)
-        if aligned_revenue.notna().any():
-            is_real = "PV" in (revenue_label or "")
-            revenue_label_text = (
-                f"{label_prefix} cumulative revenue (real $)"
+    benefit_series, benefit_label = _benefit_series_and_label(df, selection, prefix="")
+    if isinstance(benefit_series, pd.Series) and not benefit_series.empty:
+        aligned_benefit = pd.to_numeric(benefit_series, errors="coerce").reindex(index)
+        if aligned_benefit.notna().any():
+            is_real = "PV" in (benefit_label or "")
+            benefit_label_text = (
+                f"{label_prefix} cumulative benefits (real $2025)"
                 if is_real
-                else f"{label_prefix} cumulative revenue ($)"
+                else f"{label_prefix} cumulative benefits ($)"
             )
-            export[revenue_label_text] = scale_series_to_nzd(aligned_revenue)
+            export[benefit_label_text] = scale_series_to_nzd(aligned_benefit)
 
     if export.shape[1] <= 1:
         return None
@@ -4012,7 +4012,7 @@ def cash_chart(
     return fig
 
 
-def cumulative_revenue_vs_cost_chart(
+def cumulative_benefits_vs_cost_chart(
     df: pd.DataFrame,
     selection: ScenarioSelection,
     *,
@@ -4021,10 +4021,10 @@ def cumulative_revenue_vs_cost_chart(
     line_color: str = COMPARISON_COLOR,
 ) -> go.Figure:
     """
-    Show cumulative cost (stack-like bar per FY) vs cumulative revenue (improvements) as a line.
+    Show cumulative cost (stack-like bar per FY) vs cumulative benefits as a line.
    - Uses 'CumSpend' for cumulative costs.
-   - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
-   - Axis tick labels automatically switch between $m / $b.
+    - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
+    - Axis tick labels automatically switch between $m / $b.
     """
     fig = go.Figure()
 
@@ -4032,12 +4032,12 @@ def cumulative_revenue_vs_cost_chart(
     cum_cost = pd.to_numeric(df.get("CumSpend", 0.0), errors="coerce").fillna(0.0) * 1_000_000.0
 
     # Re-use existing helper to pick PV vs nominal series from confidence setting.
-    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
-    cum_revenue = pd.to_numeric(revenue_series, errors="coerce").fillna(0.0) * 1_000_000.0
-    is_real = "PV" in (revenue_label or "")
+    benefit_series, benefit_label = _benefit_series_and_label(df, selection, prefix="")
+    cum_benefit = pd.to_numeric(benefit_series, errors="coerce").fillna(0.0) * 1_000_000.0
+    is_real = "PV" in (benefit_label or "")
 
     # --- Axis ticks ($m / $b) ---
-    sample_values = np.concatenate([cum_cost.to_numpy(), cum_revenue.to_numpy()]) if len(df) else np.array([0.0])
+    sample_values = np.concatenate([cum_cost.to_numpy(), cum_benefit.to_numpy()]) if len(df) else np.array([0.0])
     tick_vals, tick_text, unit_label = compute_cash_axis_ticks(sample_values, force_unit="b")
 
     # --- Traces ---
@@ -4054,17 +4054,19 @@ def cumulative_revenue_vs_cost_chart(
         )
     )
 
-    # Line = cumulative revenue from improvements
-    rev_display_name = "Cumulative revenue (improvements, real $)" if is_real else "Cumulative revenue (improvements)"
+    # Line = cumulative benefits
+    benefit_display_name = (
+        "Cumulative benefits (real $2025)" if is_real else "Cumulative benefits ($)"
+    )
     fig.add_trace(
         go.Scatter(
             x=df["Year"],
-            y=cum_revenue,
-            name=rev_display_name,
+            y=cum_benefit,
+            name=benefit_display_name,
             mode="lines",
             line=dict(color=line_color, width=3.0),
-            customdata=[format_large_amount(v) for v in cum_revenue],
-            hovertemplate=f"<b>{rev_display_name}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            customdata=[format_large_amount(v) for v in cum_benefit],
+            hovertemplate=f"<b>{benefit_display_name}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
         )
     )
 
@@ -8597,7 +8599,7 @@ def render_cash_flow_tab(
             export_tables["Cumulative spend vs benefit"] = efficiency_export
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
     show_cumulative_cash = st.checkbox(
-        "Show cumulative revenue vs cost",
+        "Show cumulative benefits vs cost",
         value=st.session_state.get("show_overview_cumulative_cash", False),
         key="show_overview_cumulative_cash",
     )
@@ -8612,10 +8614,10 @@ def render_cash_flow_tab(
     with cash_cols[0]:
         if opt_series is not None:
             if show_cumulative_cash:
-                opt_fig = cumulative_revenue_vs_cost_chart(
+                opt_fig = cumulative_benefits_vs_cost_chart(
                     opt_series,
                     opt_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {opt_label}",
+                    title=f"Cumulative benefits vs cumulative cost - {opt_label}",
                 )
             else:
                 opt_fig = cash_chart(
@@ -8639,7 +8641,7 @@ def render_cash_flow_tab(
             )
             if export is not None:
                 export_name = (
-                    f"Cumulative revenue vs cost - {opt_label}"
+                    f"Cumulative benefits vs cost - {opt_label}"
                     if show_cumulative_cash
                     else f"Cash flow - {opt_label}"
                 )
@@ -8653,10 +8655,10 @@ def render_cash_flow_tab(
     with cash_cols[1]:
         if cmp_series is not None:
             if show_cumulative_cash:
-                cmp_fig = cumulative_revenue_vs_cost_chart(
+                cmp_fig = cumulative_benefits_vs_cost_chart(
                     cmp_series,
                     comp_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {cmp_label}",
+                    title=f"Cumulative benefits vs cumulative cost - {cmp_label}",
                 )
             else:
                 cmp_fig = cash_chart(
@@ -8680,7 +8682,7 @@ def render_cash_flow_tab(
             )
             if export is not None:
                 export_name = (
-                    f"Cumulative revenue vs cost - {cmp_label}"
+                    f"Cumulative benefits vs cost - {cmp_label}"
                     if show_cumulative_cash
                     else f"Cash flow - {cmp_label}"
                 )
