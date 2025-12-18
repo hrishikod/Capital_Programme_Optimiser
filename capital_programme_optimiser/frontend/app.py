@@ -2328,6 +2328,20 @@ def prepare_waterfall_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    if apply_discount:
+        primary_col = f"{primary_label} NPV ($)"
+        comparison_col = f"{comparison_label} NPV ($)"
+        delta_col = "Delta ($)"
+    else:
+        primary_col = f"{primary_label} Benefits ($2025)"
+        comparison_col = f"{comparison_label} Benefits ($2025)"
+        delta_col = "Delta ($2025)"
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2346,9 +2360,9 @@ def prepare_waterfall_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{primary_label} NPV ($)": opt_val * 1_000_000.0,
-                f"{comparison_label} NPV ($)": cmp_val * 1_000_000.0,
-                "Delta ($)": (opt_val - cmp_val) * 1_000_000.0,
+                primary_col: opt_val * 1_000_000.0,
+                comparison_col: cmp_val * 1_000_000.0,
+                delta_col: (opt_val - cmp_val) * 1_000_000.0,
             }
         )
     total_dim = next((dim for dim in ordered_dims if str(dim).strip().lower() == "total"), None)
@@ -2359,9 +2373,9 @@ def prepare_waterfall_export(
     rows.append(
         {
             "Dimension": "Total",
-            f"{primary_label} NPV ($)": total_opt * 1_000_000.0,
-            f"{comparison_label} NPV ($)": total_cmp * 1_000_000.0,
-            "Delta ($)": (total_opt - total_cmp) * 1_000_000.0,
+            primary_col: total_opt * 1_000_000.0,
+            comparison_col: total_cmp * 1_000_000.0,
+            delta_col: (total_opt - total_cmp) * 1_000_000.0,
         }
     )
     return pd.DataFrame(rows)
@@ -2377,6 +2391,14 @@ def prepare_bridge_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    metric_token = "NPV" if apply_discount else "Benefits ($2025)"
+    value_col = "Value ($)" if apply_discount else "Value ($2025)"
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2400,18 +2422,18 @@ def prepare_bridge_export(
     total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
     bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
     rows = [
-        {"Step": f"{primary_label} NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
+        {"Step": f"{primary_label} {metric_token} total", value_col: total_opt * 1_000_000.0, "Measure": "relative"}
     ]
     for dim, delta in zip(dim_sequence, bridge_diffs):
         rows.append(
             {
-                "Step": f"{dim} delta NPV",
-                "Value ($)": (-delta) * 1_000_000.0,
+                "Step": f"{dim} delta {metric_token}",
+                value_col: (-delta) * 1_000_000.0,
                 "Measure": "relative",
             }
         )
     rows.append(
-        {"Step": f"{comparison_label} NPV total", "Value ($)": total_cmp * 1_000_000.0, "Measure": "total"}
+        {"Step": f"{comparison_label} {metric_token} total", value_col: total_cmp * 1_000_000.0, "Measure": "total"}
     )
     return pd.DataFrame(rows)
 
@@ -2426,6 +2448,18 @@ def prepare_radar_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    if apply_discount:
+        primary_col = f"{primary_label} NPV ($)"
+        comparison_col = f"{comparison_label} NPV ($)"
+    else:
+        primary_col = f"{primary_label} Benefits ($2025)"
+        comparison_col = f"{comparison_label} Benefits ($2025)"
     if pv_opt is None and opt_selection and opt_selection.code:
         kwargs = {}
         if horizon_years is not None:
@@ -2456,8 +2490,8 @@ def prepare_radar_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{primary_label} NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
-                f"{comparison_label} NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
+                primary_col: float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                comparison_col: float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
             }
         )
     return pd.DataFrame(rows)
@@ -2669,19 +2703,24 @@ def prepare_capacity_export(series: Optional[pd.DataFrame]) -> Optional[pd.DataF
     return df.rename(columns={"Year": "Financial year"})
 
 
-def format_npv_context(*horizon_values: Optional[int]) -> str:
-    """Describe the NPV scope including horizon using NZTA MBCM discounting."""
+def format_npv_context(*horizon_values: Optional[int], apply_discount: bool = True) -> str:
+    """Describe the benefit scope including horizon."""
     years = sorted({int(value) for value in horizon_values if value is not None})
-    discount_text = mbcm_discount_label()
+    label = "NPV" if apply_discount else "Benefits ($2025)"
     if not years:
-        return f"NPV ({discount_text})"
+        return label
     if len(years) == 1:
-        return f"{years[0]}-year NPV ({discount_text})"
-    horizon_text = '/'.join(str(year) for year in years)
-    return f"{horizon_text}-year NPV ({discount_text})"
+        return f"{years[0]}-year {label}"
+    horizon_text = "/".join(str(year) for year in years)
+    return f"{horizon_text}-year {label}"
 
 
-def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horizon_override: Optional[int] = None) -> str:
+def npv_context_label(
+    data: DashboardData,
+    *selections: ScenarioSelection,
+    horizon_override: Optional[int] = None,
+    apply_discount: Optional[bool] = None,
+) -> str:
 
     horizons: List[int] = []
 
@@ -2729,7 +2768,15 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
 
                 pass
 
-    return format_npv_context(*horizons)
+    if apply_discount is None:
+        try:
+            import streamlit as st
+        except Exception:
+            apply_discount = False
+        else:
+            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    return format_npv_context(*horizons, apply_discount=bool(apply_discount))
 
 
 
@@ -4697,15 +4744,34 @@ def benefit_waterfall_chart(
 
     fig = go.Figure()
 
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    metric_token = "NPV" if apply_discount else "Benefit"
+    metric_phrase = "NPV" if apply_discount else "benefit"
+
     if not opt_selection.code or not cmp_selection.code:
 
-        fig.add_annotation(text="Select both scenarios to view the NPV waterfall", showarrow=False)
+        fig.add_annotation(
+            text=f"Select both scenarios to view the {metric_phrase} waterfall",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
         return fig
 
-    context_label = npv_context_label(data, opt_selection, cmp_selection, horizon_override=horizon_years)
+    context_label = npv_context_label(
+        data,
+        opt_selection,
+        cmp_selection,
+        horizon_override=horizon_years,
+        apply_discount=apply_discount,
+    )
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
@@ -4715,7 +4781,10 @@ def benefit_waterfall_chart(
 
     if not pv_opt or not pv_cmp:
 
-        fig.add_annotation(text="Dimension-level NPV data unavailable for the selected scenarios", showarrow=False)
+        fig.add_annotation(
+            text=f"Dimension-level {metric_phrase} data unavailable for the selected scenarios",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4743,10 +4812,10 @@ def benefit_waterfall_chart(
 
         total_dim = next((dim for dim in dims if str(dim).lower() == "total"), None)
 
-    delta_labels = [f"{dim} delta NPV" for dim in dim_sequence]
+    delta_labels = [f"{dim} delta {metric_token}" for dim in dim_sequence]
     delta_values = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    net_delta_label = "Net delta NPV"
+    net_delta_label = f"Net delta {metric_token}"
     net_delta_value = (
         pv_opt.get(total_dim, sum(pv_opt.values())) - pv_cmp.get(total_dim, sum(pv_cmp.values()))
         if total_dim
@@ -4762,7 +4831,7 @@ def benefit_waterfall_chart(
 
         go.Waterfall(
 
-            name="Delta Benefit Real",
+            name=f"Delta {metric_token}",
 
             orientation="v",
 
@@ -4788,7 +4857,7 @@ def benefit_waterfall_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} delta by dimension ({primary_label} - {comparison_label})",
+        title=f"Delta {context_label} by dimension - {primary_label} vs {comparison_label}",
 
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
@@ -4823,6 +4892,16 @@ def benefit_bridge_chart(
 
     fig = go.Figure()
 
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    metric_token = "NPV" if apply_discount else "Benefit"
+    metric_phrase = "NPV" if apply_discount else "benefit"
+
     primary_label = scenario_primary_label()
 
     comparison_label = scenario_comparison_label()
@@ -4836,12 +4915,16 @@ def benefit_bridge_chart(
         cmp_selection,
 
         horizon_override=horizon_years,
+        apply_discount=apply_discount,
 
     )
 
     if not opt_selection.code or not cmp_selection.code:
 
-        fig.add_annotation(text="Select both scenarios to build the NPV bridge", showarrow=False)
+        fig.add_annotation(
+            text=f"Select both scenarios to build the {metric_phrase} bridge",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4853,7 +4936,10 @@ def benefit_bridge_chart(
 
     if not pv_opt or not pv_cmp:
 
-        fig.add_annotation(text="Missing dimension NPV data for bridge", showarrow=False)
+        fig.add_annotation(
+            text=f"Missing dimension {metric_phrase} data for bridge",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4879,16 +4965,20 @@ def benefit_bridge_chart(
 
     bridge_diffs = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    bridge_labels = [f"{dim} delta NPV" for dim in dim_sequence]
-    primary_internal = f"{primary_label} NPV total"
-    comparison_internal = f"{comparison_label} NPV total"
+    bridge_labels = [f"{dim} delta {metric_token}" for dim in dim_sequence]
+    primary_internal = f"{primary_label} {metric_token} total"
+    comparison_internal = f"{comparison_label} {metric_token} total"
     tickvals: Optional[List[str]] = None
     ticktext: Optional[List[str]] = None
     if primary_label == comparison_label:
-        primary_internal = f"{primary_label} NPV total (1)"
-        comparison_internal = f"{comparison_label} NPV total (2)"
+        primary_internal = f"{primary_label} {metric_token} total (1)"
+        comparison_internal = f"{comparison_label} {metric_token} total (2)"
         tickvals = [primary_internal, *bridge_labels, comparison_internal]
-        ticktext = [f"{primary_label} NPV total", *bridge_labels, f"{comparison_label} NPV total"]
+        ticktext = [
+            f"{primary_label} {metric_token} total",
+            *bridge_labels,
+            f"{comparison_label} {metric_token} total",
+        ]
     labels = [primary_internal] + bridge_labels + [comparison_internal]
 
     measures = ["absolute"] + ["relative"] * len(dim_sequence) + ["total"]
@@ -4896,16 +4986,19 @@ def benefit_bridge_chart(
     values = [total_opt] + [-delta for delta in bridge_diffs] + [total_cmp]
 
     hovertexts = [
-        f"{primary_label} NPV total: {total_opt:,.0f} m",
-        *[f"{dim} delta NPV: {delta:,.0f} m" for dim, delta in zip(dim_sequence, bridge_diffs)],
-        f"{comparison_label} NPV total: {total_cmp:,.0f} m",
+        f"{primary_label} {metric_token} total: {total_opt:,.0f} m",
+        *[
+            f"{dim} delta {metric_token}: {delta:,.0f} m"
+            for dim, delta in zip(dim_sequence, bridge_diffs)
+        ],
+        f"{comparison_label} {metric_token} total: {total_cmp:,.0f} m",
     ]
 
     fig.add_trace(
 
         go.Waterfall(
 
-            name="NPV bridge",
+            name=f"{metric_token} bridge",
 
             orientation="v",
 
@@ -4933,7 +5026,7 @@ def benefit_bridge_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} bridge ({primary_label} to {comparison_label})",
+        title=f"Bridge {context_label} - {primary_label} to {comparison_label}",
 
         template=plotly_template(),
 
@@ -6362,6 +6455,13 @@ def render_programme_kpis(
 
     horizon_prefix = f"{horizon_years}-year " if horizon_years is not None else ""
 
+    try:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    except Exception:
+        apply_discount = False
+
+    benefit_label = "NPV benefits" if apply_discount else "Benefits ($2025)"
+
     if delta_pv is None:
         pv_chip_text, pv_chip_state = None, "neutral"
     else:
@@ -6371,13 +6471,13 @@ def render_programme_kpis(
 
     if pv_chip_text:
         delta_pv_card = _kpi_card_html(
-            f"Delta Total {horizon_prefix}NPV benefits",
+            f"Delta Total {horizon_prefix}{benefit_label}",
             None,
             body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
         )
     else:
         delta_pv_card = _kpi_card_html(
-            f"Delta Total {horizon_prefix}NPV benefits",
+            f"Delta Total {horizon_prefix}{benefit_label}",
             _fmt(delta_pv),
             subtitle=pair_label,
             delta_text=pv_chip_text,
@@ -6417,11 +6517,11 @@ def render_programme_kpis(
             subtitle=pair_label,
         ),
         _kpi_card_html(
-            f"Total {horizon_prefix}NPV benefits - {primary_label}",
+            f"Total {horizon_prefix}{benefit_label} - {primary_label}",
             _fmt(opt_pv),
         ),
         _kpi_card_html(
-            f"Total {horizon_prefix}NPV benefits - {comparison_label}",
+            f"Total {horizon_prefix}{benefit_label} - {comparison_label}",
             _fmt(cmp_pv),
         ),
         delta_pv_card,
@@ -7902,7 +8002,7 @@ def render_overview_tab(
     )
 
     npv_card_html = _kpi_card_html(
-        f"Optimiser NPV ({npv_label})",
+        f"Optimiser {npv_label}",
         value=f'<span id="{component_id}-npv-value">--</span>',
         delta_text="Dartboard delivery plan",
         delta_state="neutral",
@@ -8725,7 +8825,9 @@ def render_benefits_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
-    st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
+    apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    headline = "Net present value breakdown" if apply_discount else "Benefit breakdown ($2025)"
+    st.markdown(f'<div class="pbi-section-title">{headline}</div>', unsafe_allow_html=True)
     npv_horizon_options = [60, 50, 40, 35]
     selected_npv_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
     try:
@@ -8764,7 +8866,7 @@ def render_benefits_tab(
             pv_cmp=pv_cmp_horizon,
         )
         if waterfall_export is not None:
-            export_tables["NPV Waterfall"] = waterfall_export
+            export_tables["NPV Waterfall" if apply_discount else "Benefits Waterfall ($2025)"] = waterfall_export
     with pv_col2:
         bridge_fig = benefit_bridge_chart(
             data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
@@ -8784,7 +8886,7 @@ def render_benefits_tab(
             pv_cmp=pv_cmp_horizon,
         )
         if bridge_export is not None:
-            export_tables["NPV Bridge"] = bridge_export
+            export_tables["NPV Bridge" if apply_discount else "Benefits Bridge ($2025)"] = bridge_export
     radar_fig = benefit_radar_chart(
         data,
         opt_selection,
