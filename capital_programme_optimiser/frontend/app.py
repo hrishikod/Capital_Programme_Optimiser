@@ -5498,9 +5498,10 @@ def cost_benefit_stack_chart(
         value_dollars = value_m * 1_000_000.0
         fig.add_trace(
             go.Bar(
-                x=["Outflows"],
+                x=["Costs"],
                 y=[value_dollars],
-                name=f"Costs: {label}",
+                name=str(label),
+                legend="legend",
                 marker_color=color,
                 text=[_segment_text(value_dollars, cost_total_dollars)],
                 textposition="inside",
@@ -5517,9 +5518,10 @@ def cost_benefit_stack_chart(
         value_dollars = value_m * 1_000_000.0
         fig.add_trace(
             go.Bar(
-                x=["Inflows"],
+                x=["Benefits"],
                 y=[value_dollars],
-                name=f"Benefits: {label}",
+                name=str(label),
+                legend="legend2",
                 marker_color=color,
                 text=[_segment_text(value_dollars, benefit_total_dollars)],
                 textposition="inside",
@@ -5534,9 +5536,26 @@ def cost_benefit_stack_chart(
         template=plotly_template(),
         barmode="stack",
         hoverlabel=dict(namelength=-1),
-        legend=legend_bottom(y=-0.28, font=dict(size=9)),
-        margin=dict(l=70, r=20, t=56, b=130),
-        height=460,
+        legend=dict(
+            title=dict(text="Costs"),
+            orientation="v",
+            yanchor="top",
+            y=-0.18,
+            xanchor="right",
+            x=0.49,
+            font=dict(size=9),
+        ),
+        legend2=dict(
+            title=dict(text="Benefits"),
+            orientation="v",
+            yanchor="top",
+            y=-0.18,
+            xanchor="left",
+            x=0.51,
+            font=dict(size=9),
+        ),
+        margin=dict(l=70, r=20, t=56, b=170),
+        height=480,
     )
 
     ticks_vals, ticks_text, _ = compute_cash_axis_ticks(
@@ -9045,7 +9064,7 @@ def render_cash_flow_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
-    eff_cols = st.columns([2, 1])
+    eff_cols = st.columns([2, 3])
     with eff_cols[0]:
         eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
         if eff_fig is not None:
@@ -9070,15 +9089,15 @@ def render_cash_flow_tab(
         stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
         stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
         if stack_selection is not None and getattr(stack_selection, "code", None):
-            control_cols = st.columns(2)
-            with control_cols[0]:
+            stack_cols = st.columns([1, 4, 1])
+            with stack_cols[0]:
                 cost_breakdown = st.radio(
                     "Costs",
                     list(COST_BENEFIT_STACK_COST_OPTIONS),
                     index=0,
                     key="cost_benefit_stack_cost_breakdown",
                 )
-            with control_cols[1]:
+            with stack_cols[2]:
                 benefit_breakdown = st.radio(
                     "Benefits",
                     list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
@@ -9090,24 +9109,25 @@ def render_cash_flow_tab(
             apply_benefit_discount = bool(st.session_state.get("npv_apply_discount", False))
             apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
 
-            stack_fig = cost_benefit_stack_chart(
-                data,
-                stack_selection,
-                selection_label=stack_label or str(getattr(stack_selection, "code", "")),
-                horizon_years=horizon_years,
-                cost_breakdown=cost_breakdown,
-                benefit_breakdown=benefit_breakdown,
-                apply_cost_discount=apply_cost_discount,
-                apply_benefit_discount=apply_benefit_discount,
-            )
-            if stack_fig is not None:
-                st.plotly_chart(
-                    stack_fig,
-                    use_container_width=True,
-                    key="overview_cost_benefit_stack_chart",
+            with stack_cols[1]:
+                stack_fig = cost_benefit_stack_chart(
+                    data,
+                    stack_selection,
+                    selection_label=stack_label or str(getattr(stack_selection, "code", "")),
+                    horizon_years=horizon_years,
+                    cost_breakdown=cost_breakdown,
+                    benefit_breakdown=benefit_breakdown,
+                    apply_cost_discount=apply_cost_discount,
+                    apply_benefit_discount=apply_benefit_discount,
                 )
-            else:
-                st.info("Costs vs benefits breakdown unavailable for this selection.")
+                if stack_fig is not None:
+                    st.plotly_chart(
+                        stack_fig,
+                        use_container_width=True,
+                        key="overview_cost_benefit_stack_chart",
+                    )
+                else:
+                    st.info("Costs vs benefits breakdown unavailable for this selection.")
         else:
             st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
