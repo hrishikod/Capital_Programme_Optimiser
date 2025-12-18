@@ -7,7 +7,6 @@ from pathlib import Path
 
 import mlflow
 
-
 # Determine paths robustly (handles Databricks environments)
 try:
     SCRIPT_PATH = Path(__file__).resolve()
