@@ -9240,7 +9240,7 @@ def render_cash_flow_tab(
                 render_cost_benefit_stack_legend(
                     cost_legend_items,
                     benefit_legend_items,
-                    columns_per_section=2,
+                    columns_per_section=3,
                 )
             else:
                 st.info("Costs vs benefits breakdown unavailable for this selection.")
