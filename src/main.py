@@ -47,13 +47,13 @@ def calculate_pv_coefficients(
 ):
     with mlflow.start_span(name="calculate_pv_coefficients", span_type="TOOL") as span:
         pv_map = {}
-        
+
         # MBCM Piecewise Discounting Schedule
         # 2.0% for first 30 years, 1.5% thereafter
         r1 = 0.02
         r2 = 0.015
         switch_year = 30
-        
+
         disc_vec = np.zeros(years)
         for t in range(years):
             if t <= switch_year:
