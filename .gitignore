@@ -16,3 +16,6 @@ linear-program-files/
 
 # Logs
 logs/*
+
+# MLFlow
+mlflow.db
