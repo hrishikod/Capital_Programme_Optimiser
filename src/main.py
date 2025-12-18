@@ -145,8 +145,8 @@ def run_optimization(args):
         logging.error(f"Error: Benefits file not found at {benefits_file}")
 
     # Setup Logging
-    log_dir = project_root / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = project_root / "output" / "logs"
+    log_dir.mkdir(exist_ok=True, parents=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"run_{timestamp}.log"
 
@@ -235,8 +235,8 @@ def run_optimization(args):
     optimizer.set_pv_coefficients(pv_map)
 
     # Export LP
-    lp_dir = project_root / "linear-program-files"
-    lp_dir.mkdir(exist_ok=True)
+    lp_dir = project_root / "output" / "lp"
+    lp_dir.mkdir(exist_ok=True, parents=True)
     lp_file = lp_dir / "model.lp"
     logging.info(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
