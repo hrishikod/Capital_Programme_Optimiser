@@ -8,7 +8,9 @@ The detailed mathematical formulation of the optimization problem is documented 
 
 ## Project Structure
 
-*   **`src/`**: Contains the main solver implementation in a Jupyter Notebook (`git_copt_solver.ipynb`). This is the core optimization logic.
+*   **`src/`**: Contains the source code for the optimization logic and data processing.
+*   **`notebooks/`**: Contains Jupyter notebooks, including `git_copt_solver.ipynb`.
+*   **`output/`**: Directory where logs (`output/logs/`) and generated LP files (`output/lp/`) are stored.
 *   **`legacy/`**: Contains a previous refactored version of the toolkit, including a CLI, Streamlit dashboard, and configuration files. This is retained for reference.
 
 ## Dependencies
@@ -60,7 +62,7 @@ python src/main.py --funding-level 2000 --dimension "Safety" --overflow-tiers "0
 
 Alternatively, you can use the Jupyter Notebook:
 
-1.  Navigate to the `src` directory.
+1.  Navigate to the `notebooks` directory.
 2.  Open `git_copt_solver.ipynb` in Jupyter Lab or Notebook.
 3.  Configure the parameters at the top of the notebook.
 4.  Run all cells to execute the optimization.
