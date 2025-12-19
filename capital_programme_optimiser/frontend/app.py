@@ -4185,17 +4185,11 @@ def _annual_spend_breakdown_by_attribute(
     if pivot.empty:
         return None
 
-    if group_col == "GPSTier":
-        preferred = ["Must do", "Should do", "Could do", "Unknown"]
-        ordered = [col for col in preferred if col in pivot.columns]
-        ordered.extend([col for col in pivot.columns if col not in ordered])
-        pivot = pivot[ordered]
-    else:
-        totals = pivot.sum(axis=0).sort_values(ascending=False)
-        ordered = totals.index.tolist()
-        if "Unknown" in ordered:
-            ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
-        pivot = pivot[ordered]
+    totals = pivot.sum(axis=0).sort_values(ascending=False)
+    ordered = totals.index.tolist()
+    if "Unknown" in ordered:
+        ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
+    pivot = pivot[ordered]
 
     return pivot
 
@@ -4281,7 +4275,7 @@ def cash_chart(
             if palette_count == 1
             else np.linspace(0.55, 0.95, palette_count).tolist()
         )
-        palette = plc.sample_colorscale("Blues", palette_positions, colortype="rgb")
+        palette = list(reversed(plc.sample_colorscale("Blues", palette_positions, colortype="rgb")))
         palette_iter = iter(palette)
         for label in group_labels:
             if label.strip().lower() == "unknown":
