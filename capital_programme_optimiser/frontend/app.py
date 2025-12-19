@@ -2946,6 +2946,17 @@ def _sorted_profile_labels(labels: Iterable[str]) -> List[str]:
     return ordered
 
 
+def _preferred_option_index(options: List[str], preferred: Optional[str]) -> int:
+    if not options:
+        return 0
+    target = str(preferred or "").strip().lower()
+    if target:
+        for idx, option in enumerate(options):
+            if str(option).strip().lower() == target:
+                return idx
+    return 0
+
+
 def profile_options(
 
     data: DashboardData,
@@ -4048,6 +4059,75 @@ def _effective_year_range(
         min_year = max_year
     return (min_year, max_year)
 
+
+def _annual_spend_breakdown_by_attribute(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    group_col: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    if group_col not in {"ActivityClass", "GPSTier"}:
+        return None
+
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+
+    year_cols = [int(year) for year in years if year is not None and int(year) in subset.columns]
+    if not year_cols:
+        return None
+
+    values = subset[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    values.insert(0, "Project", subset["Project"].astype(str))
+    long = values.melt(id_vars="Project", value_vars=year_cols, var_name="Year", value_name="Spend")
+    long["Spend"] = pd.to_numeric(long["Spend"], errors="coerce").fillna(0.0)
+    long = long[long["Spend"].abs() > 1e-9]
+    if long.empty:
+        return None
+    long["Year"] = pd.to_numeric(long["Year"], errors="coerce").astype(int)
+    long["ProjectKey"] = long["Project"].map(_normalise_project_key)
+
+    mapping = load_project_attribute_mapping()
+    if mapping.empty or group_col not in mapping.columns:
+        return None
+
+    merged = long.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
+
+    pivot = (
+        merged.pivot_table(index="Year", columns=group_col, values="Spend", aggfunc="sum", fill_value=0.0)
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+    if pivot.empty:
+        return None
+
+    if group_col == "GPSTier":
+        preferred = ["Must do", "Should do", "Could do", "Unknown"]
+        ordered = [col for col in preferred if col in pivot.columns]
+        ordered.extend([col for col in pivot.columns if col not in ordered])
+        pivot = pivot[ordered]
+    else:
+        totals = pivot.sum(axis=0).sort_values(ascending=False)
+        ordered = totals.index.tolist()
+        if "Unknown" in ordered:
+            ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
+        pivot = pivot[ordered]
+
+    return pivot
+
+
 def cash_chart(
 
     df: pd.DataFrame,
@@ -4057,6 +4137,8 @@ def cash_chart(
     *,
 
     color: str,
+
+    spend_breakdown: str = "Total",
 
     data: Optional[DashboardData] = None,
 
@@ -4087,27 +4169,66 @@ def cash_chart(
         np.concatenate(non_empty_samples) if non_empty_samples else [0.0]
     )
 
-    fig.add_trace(
+    breakdown_key = re.sub(r"\s+", " ", str(spend_breakdown or "Total").strip().lower())
+    group_col: Optional[str] = None
+    if breakdown_key == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
+        group_col = "GPSTier"
 
-        go.Bar(
-
-            x=df["Year"],
-
-            y=spend_values,
-
-            name="Annual spend",
-
-            marker_color=color,
-
-            opacity=BAR_OPACITY,
-
-            customdata=[format_large_amount(val) for val in spend_values],
-
-            hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
-
+    breakdown_table: Optional[pd.DataFrame] = None
+    if group_col and data is not None and selection is not None:
+        years = pd.to_numeric(df["Year"], errors="coerce").dropna().astype(int).tolist()
+        breakdown_table = _annual_spend_breakdown_by_attribute(
+            data,
+            selection,
+            group_col=group_col,
+            years=years,
         )
 
-    )
+    if breakdown_table is None or breakdown_table.empty:
+        fig.add_trace(
+            go.Bar(
+                x=df["Year"],
+                y=spend_values,
+                name="Annual spend",
+                marker_color=color,
+                opacity=BAR_OPACITY,
+                customdata=[format_large_amount(val) for val in spend_values],
+                hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+            )
+        )
+    else:
+        group_labels = [str(col) for col in breakdown_table.columns]
+        unknown_mask = [label.strip().lower() == "unknown" for label in group_labels]
+        palette_count = len(group_labels) - sum(1 for flag in unknown_mask if flag)
+        if palette_count <= 0:
+            palette_count = len(group_labels)
+        palette_positions = (
+            [(0.55 + 0.95) / 2.0]
+            if palette_count == 1
+            else np.linspace(0.55, 0.95, palette_count).tolist()
+        )
+        palette = plc.sample_colorscale("Blues", palette_positions, colortype="rgb")
+        palette_iter = iter(palette)
+        for label in group_labels:
+            if label.strip().lower() == "unknown":
+                trace_color = "rgb(156, 163, 175)"
+            else:
+                trace_color = next(palette_iter, "rgb(59, 130, 246)")
+            values_m = pd.to_numeric(breakdown_table[label], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            values_dollars = values_m * 1_000_000.0
+            fig.add_trace(
+                go.Bar(
+                    x=df["Year"],
+                    y=values_dollars,
+                    name=f"Spend: {label}",
+                    marker_color=trace_color,
+                    opacity=BAR_OPACITY,
+                    customdata=[format_large_amount(val) for val in values_dollars],
+                    hovertemplate=f"<b>Spend: {html.escape(label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+                )
+            )
 
     fig.add_trace(
 
@@ -4170,7 +4291,7 @@ def cash_chart(
 
         title=title,
 
-        barmode="overlay",
+        barmode="stack" if breakdown_table is not None and not breakdown_table.empty else "overlay",
 
         legend=legend_bottom(),
 
@@ -5362,6 +5483,12 @@ def efficiency_chart(
 COST_BENEFIT_STACK_COST_OPTIONS = (
     "Activity Class",
     "Region",
+    "GPS Request Tier",
+)
+
+CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS = (
+    "Total",
+    "Activity Class",
     "GPS Request Tier",
 )
 
@@ -9313,6 +9440,13 @@ def render_cash_flow_tab(
         value=st.session_state.get("show_overview_cumulative_cash", False),
         key="show_overview_cumulative_cash",
     )
+    spend_breakdown = st.selectbox(
+        "Breakdown annual spend by:",
+        list(CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS),
+        index=0,
+        key="cash_flow_profile_spend_breakdown",
+        disabled=show_cumulative_cash,
+    )
     cash_axis_range = None
     if not show_cumulative_cash:
         cash_axis_range = _effective_year_range(
@@ -9334,6 +9468,7 @@ def render_cash_flow_tab(
                     opt_series,
                     f"Cash flow - {opt_label}",
                     color=PRIMARY_COLOR,
+                    spend_breakdown=spend_breakdown,
                     data=data,
                     selection=opt_selection,
                     comparison_selection=comp_selection,
@@ -9375,6 +9510,7 @@ def render_cash_flow_tab(
                     cmp_series,
                     f"Cash flow - {cmp_label}",
                     color=PRIMARY_COLOR,
+                    spend_breakdown=spend_breakdown,
                     data=data,
                     selection=comp_selection,
                     comparison_selection=opt_selection,
@@ -10292,35 +10428,24 @@ def main() -> None:
         with scenario_cols[0]:
             st.subheader(f"{SCENARIO_PRIMARY_NAME} Profile")
             opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-            opt_default_index = (
-                opt_profiles.index(DEFAULT_PROFILE_LABEL)
-                if DEFAULT_PROFILE_LABEL in opt_profiles
-                else 0
-            )
+            opt_default_index = _preferred_option_index(opt_profiles, "MBCM objective best")
+            if st.session_state.get("opt_profile_select") not in opt_profiles:
+                st.session_state["opt_profile_select"] = opt_profiles[opt_default_index]
             selected_opt_profile = st.selectbox(
                 f"{SCENARIO_PRIMARY_NAME} profile",
                 opt_profiles,
-                index=opt_default_index,
                 key="opt_profile_select",
                 label_visibility="collapsed",
             )
         with scenario_cols[1]:
             st.subheader(f"{SCENARIO_COMPARISON_NAME} Profile")
             cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-            cmp_default_index = next(
-                (i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"),
-                None,
-            )
-            if cmp_default_index is None:
-                cmp_default_index = (
-                    cmp_profiles.index(DEFAULT_PROFILE_LABEL)
-                    if DEFAULT_PROFILE_LABEL in cmp_profiles
-                    else 0
-            )
+            cmp_default_index = _preferred_option_index(cmp_profiles, "217 start")
+            if st.session_state.get("cmp_profile_select") not in cmp_profiles:
+                st.session_state["cmp_profile_select"] = cmp_profiles[cmp_default_index]
             selected_cmp_profile = st.selectbox(
                 f"{SCENARIO_COMPARISON_NAME} profile",
                 cmp_profiles,
-                index=cmp_default_index,
                 key="cmp_profile_select",
                 label_visibility="collapsed",
             )
