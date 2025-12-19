@@ -5845,45 +5845,6 @@ def cost_benefit_stack_chart(
             )
         )
 
-    if compare_code:
-        def _net_label(amount: float) -> str:
-            try:
-                value = float(amount)
-            except (TypeError, ValueError):
-                return ""
-            if not math.isfinite(value) or abs(value) <= 1e-6:
-                return ""
-            sign = "+" if value > 0 else "-"
-            abs_value = abs(value)
-            if abs_value >= 1_000_000_000:
-                bill = abs_value / 1_000_000_000.0
-                text = f"{bill:.1f}".rstrip("0").rstrip(".")
-                return f"Net {sign}${text}b"
-            return f"Net {sign}${abs_value / 1_000_000.0:.0f}m"
-
-        marker_color = "#E2E8F0" if is_dark_mode() else "#0F172A"
-        text_positions = [
-            "bottom center" if cost_total_dollars < 0 else "top center",
-            "bottom center" if benefit_total_dollars < 0 else "top center",
-        ]
-        fig.add_trace(
-            go.Scatter(
-                x=[x_cost, x_benefit],
-                y=[cost_total_dollars, benefit_total_dollars],
-                mode="markers+text",
-                marker=dict(
-                    color=marker_color,
-                    size=8,
-                    line=dict(color=gap_color, width=2),
-                ),
-                text=[_net_label(cost_total_dollars), _net_label(benefit_total_dollars)],
-                textposition=text_positions,
-                textfont=dict(color=marker_color, size=12),
-                hoverinfo="skip",
-                showlegend=False,
-            )
-        )
-
     title_horizon = (
         f" {pv_horizon_years_int}Y"
         if (cost_value_basis == VALUE_BASIS_PV or benefit_value_basis == VALUE_BASIS_PV)
@@ -9605,10 +9566,21 @@ def render_cash_flow_tab(
                 benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
                 cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
                 if benefit_value_basis != cost_value_basis:
-                    st.warning(
-                        f"Costs are shown in `{cost_value_basis}` but benefits are shown in `{benefit_value_basis}`. "
-                        "Align the value bases for an apples-to-apples comparison."
-                    )
+                    mismatch_signature = f"{cost_value_basis}||{benefit_value_basis}"
+                    dismiss_key = "basis_mismatch_warning_dismissed"
+                    if st.session_state.get(dismiss_key) != mismatch_signature:
+                        warn_cols = st.columns([0.965, 0.035])
+                        with warn_cols[0]:
+                            st.warning(
+                                f"Costs are shown in `{cost_value_basis}` but benefits are shown in `{benefit_value_basis}`. "
+                                "Align the value bases for an apples-to-apples comparison."
+                            )
+                        with warn_cols[1]:
+                            if st.button("✕", key="basis_mismatch_warning_close", help="Dismiss this message"):
+                                st.session_state[dismiss_key] = mismatch_signature
+                                st.rerun()
+                else:
+                    st.session_state.pop("basis_mismatch_warning_dismissed", None)
                 pv_horizon_years = (
                     int(st.session_state.get("npv_horizon_selection", 60))
                     if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
