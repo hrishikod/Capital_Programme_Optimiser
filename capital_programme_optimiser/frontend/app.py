@@ -9512,7 +9512,10 @@ def render_cash_flow_tab(
                         columns_per_section=3,
                     )
                 else:
-                    st.info("Costs vs benefits breakdown unavailable for this selection.")
+                    if compare_selection is not None and getattr(compare_selection, "code", None):
+                        st.info("No differences found for this breakdown (delta is zero or data missing).")
+                    else:
+                        st.info("Costs vs benefits breakdown unavailable for this selection.")
         else:
             st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
