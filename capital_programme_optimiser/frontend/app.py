@@ -9516,107 +9516,73 @@ def render_cash_flow_tab(
         else:
             st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
-    show_cumulative_cash = st.checkbox(
-        "Show cumulative benefits vs cost",
-        value=st.session_state.get("show_overview_cumulative_cash", False),
-        key="show_overview_cumulative_cash",
+    breakdown_options = list(CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS)
+    breakdown_default_index = (
+        breakdown_options.index("GPS Request Tier") if "GPS Request Tier" in breakdown_options else 0
     )
+    if st.session_state.get("cash_flow_profile_spend_breakdown") not in breakdown_options:
+        st.session_state["cash_flow_profile_spend_breakdown"] = breakdown_options[breakdown_default_index]
     spend_breakdown = st.selectbox(
         "Breakdown annual spend by:",
-        list(CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS),
-        index=0,
+        breakdown_options,
+        index=breakdown_default_index,
         key="cash_flow_profile_spend_breakdown",
-        disabled=show_cumulative_cash,
     )
-    cash_axis_range = None
-    if not show_cumulative_cash:
-        cash_axis_range = _effective_year_range(
-            [opt_series, cmp_series],
-            value_column="Spend",
-        )
+    cash_axis_range = _effective_year_range(
+        [opt_series, cmp_series],
+        value_column="Spend",
+    )
     cash_cols = st.columns(2)
-    profile_label = "cumulative profile" if show_cumulative_cash else "cash flow profile"
+    profile_label = "cash flow profile"
     with cash_cols[0]:
         if opt_series is not None:
-            if show_cumulative_cash:
-                opt_fig = cumulative_benefits_vs_cost_chart(
-                    opt_series,
-                    opt_selection,
-                    title=f"Cumulative benefits vs cumulative cost - {opt_label}",
-                )
-            else:
-                opt_fig = cash_chart(
-                    opt_series,
-                    f"Cash flow - {opt_label}",
-                    color=PRIMARY_COLOR,
-                    spend_breakdown=spend_breakdown,
-                    data=data,
-                    selection=opt_selection,
-                    comparison_selection=comp_selection,
-                    x_axis_year_range=cash_axis_range,
-                )
+            opt_fig = cash_chart(
+                opt_series,
+                f"Cash flow - {opt_label}",
+                color=PRIMARY_COLOR,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=opt_selection,
+                comparison_selection=comp_selection,
+                x_axis_year_range=cash_axis_range,
+            )
             st.plotly_chart(
                 opt_fig,
                 use_container_width=True,
                 key="overview_cash_flow_opt_chart",
             )
-            export = (
-                prepare_cumulative_cash_export(opt_series, opt_selection, label_prefix=opt_label)
-                if show_cumulative_cash
-                else prepare_cash_export(opt_series, label_prefix=opt_label)
-            )
+            export = prepare_cash_export(opt_series, label_prefix=opt_label)
             if export is not None:
-                export_name = (
-                    f"Cumulative benefits vs cost - {opt_label}"
-                    if show_cumulative_cash
-                    else f"Cash flow - {opt_label}"
-                )
+                export_name = f"Cash flow - {opt_label}"
                 export_tables[export_name] = export
         elif opt_selection.code:
-            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
-            st.warning(f"{issue_label} unavailable for the {opt_label} selection.")
+            st.warning(f"Cash flow data unavailable for the {opt_label} selection.")
         else:
             st.info(f"Select {opt_label} to view the {profile_label}.")
 
     with cash_cols[1]:
         if cmp_series is not None:
-            if show_cumulative_cash:
-                cmp_fig = cumulative_benefits_vs_cost_chart(
-                    cmp_series,
-                    comp_selection,
-                    title=f"Cumulative benefits vs cumulative cost - {cmp_label}",
-                )
-            else:
-                cmp_fig = cash_chart(
-                    cmp_series,
-                    f"Cash flow - {cmp_label}",
-                    color=PRIMARY_COLOR,
-                    spend_breakdown=spend_breakdown,
-                    data=data,
-                    selection=comp_selection,
-                    comparison_selection=opt_selection,
-                    x_axis_year_range=cash_axis_range,
-                )
+            cmp_fig = cash_chart(
+                cmp_series,
+                f"Cash flow - {cmp_label}",
+                color=PRIMARY_COLOR,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=comp_selection,
+                comparison_selection=opt_selection,
+                x_axis_year_range=cash_axis_range,
+            )
             st.plotly_chart(
                 cmp_fig,
                 use_container_width=True,
                 key="overview_cash_flow_cmp_chart",
             )
-            export = (
-                prepare_cumulative_cash_export(cmp_series, comp_selection, label_prefix=cmp_label)
-                if show_cumulative_cash
-                else prepare_cash_export(cmp_series, label_prefix=cmp_label)
-            )
+            export = prepare_cash_export(cmp_series, label_prefix=cmp_label)
             if export is not None:
-                export_name = (
-                    f"Cumulative benefits vs cost - {cmp_label}"
-                    if show_cumulative_cash
-                    else f"Cash flow - {cmp_label}"
-                )
+                export_name = f"Cash flow - {cmp_label}"
                 export_tables[export_name] = export
         elif comp_selection.code:
-            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
-            st.warning(f"{issue_label} unavailable for the {cmp_label} selection.")
+            st.warning(f"Cash flow data unavailable for the {cmp_label} selection.")
         else:
             st.info(f"Select {cmp_label} to view the {profile_label}.")
 
