@@ -5570,9 +5570,14 @@ def cost_benefit_stack_chart(
     benefit_breakdown: str,
     cost_value_basis: str,
     benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
 ) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
-    if not selection.code:
+    if not selection or not selection.code:
         return None
+
+    compare_code = getattr(compare_selection, "code", None) if compare_selection is not None else None
+    if compare_code == selection.code:
+        compare_code = None
 
     start_year = int(getattr(data, "start_fy", 0) or 0)
     model_years = int(getattr(data, "model_years", 0) or 0) or 60
@@ -5595,50 +5600,47 @@ def cost_benefit_stack_chart(
     mapping = load_project_attribute_mapping()
 
     cost_group_col = "ActivityClass"
-    cost_order = None
+    cost_order: Optional[List[str]] = None
     if cost_breakdown == "Region":
         cost_group_col = "Region"
     elif cost_breakdown == "GPS Request Tier":
         cost_group_col = "GPSTier"
         cost_order = ["Must do", "Should do", "Could do", "Unknown"]
 
-    cost_table = _scenario_project_cost_table(data, selection.code, cost_years)
-    if cost_table is None:
-        cost_table = pd.DataFrame()
-    cost_project_totals = _discounted_table_totals(
-        cost_table,
-        cost_years,
-        start_year=start_year,
-        value_basis=cost_value_basis,
-    )
-    cost_series = _group_totals_by_mapping(
-        cost_project_totals,
-        mapping,
-        group_col=cost_group_col,
-        preferred_order=cost_order,
-    )
-    cost_series = cost_series.sort_values(ascending=False)
+    def _cost_series_for(code: str) -> pd.Series:
+        cost_table = _scenario_project_cost_table(data, code, cost_years)
+        if cost_table is None:
+            cost_table = pd.DataFrame()
+        cost_project_totals = _discounted_table_totals(
+            cost_table,
+            cost_years,
+            start_year=start_year,
+            value_basis=cost_value_basis,
+        )
+        series = _group_totals_by_mapping(
+            cost_project_totals,
+            mapping,
+            group_col=cost_group_col,
+            preferred_order=cost_order,
+        )
+        return series.astype(float)
 
-    benefit_series: pd.Series
-    if benefit_breakdown == "Strategic Dimension":
-        pv_map = pv_by_dimension(
-            data,
-            selection,
-            horizon_years=pv_horizon_years_int if benefit_value_basis == VALUE_BASIS_PV else None,
-            value_basis=benefit_value_basis,
-        ) or {}
-        benefit_series = pd.Series(pv_map, dtype=float)
-        benefit_series.index = benefit_series.index.astype(str)
-        benefit_series = benefit_series[benefit_series.index.str.strip().str.lower() != "total"]
-        ordered_dims = [dim for dim in getattr(data, "dims", []) if str(dim).strip().lower() != "total"]
-        ordered_present = [dim for dim in ordered_dims if dim in benefit_series.index]
-        extras = [dim for dim in benefit_series.index if dim not in ordered_present]
-        benefit_series = benefit_series.reindex(ordered_present + sorted(extras, key=str)).fillna(0.0)
-        benefit_series = benefit_series[benefit_series.abs() > 1e-9]
-        benefit_series = benefit_series.sort_values(ascending=False)
-    else:
+    def _benefit_series_for(selection_value: ScenarioSelection) -> pd.Series:
+        if benefit_breakdown == "Strategic Dimension":
+            pv_map = pv_by_dimension(
+                data,
+                selection_value,
+                horizon_years=pv_horizon_years_int if benefit_value_basis == VALUE_BASIS_PV else None,
+                value_basis=benefit_value_basis,
+            ) or {}
+            series = pd.Series(pv_map, dtype=float)
+            series.index = series.index.astype(str)
+            series = series[series.index.str.strip().str.lower() != "total"]
+            series = series[series.abs() > 1e-9]
+            return series.astype(float)
+
         benefit_group_col = "Region" if benefit_breakdown == "Region" else "ActivityClass"
-        benefit_table = _scenario_project_benefit_table(data, selection.code, benefit_years)
+        benefit_table = _scenario_project_benefit_table(data, selection_value.code, benefit_years)
         if benefit_table is None:
             benefit_table = pd.DataFrame()
         benefit_project_totals = _discounted_table_totals(
@@ -5647,22 +5649,56 @@ def cost_benefit_stack_chart(
             start_year=start_year,
             value_basis=benefit_value_basis,
         )
-        benefit_series = _group_totals_by_mapping(
+        series = _group_totals_by_mapping(
             benefit_project_totals,
             mapping,
             group_col=benefit_group_col,
         )
-        benefit_series = benefit_series.sort_values(ascending=False)
+        return series.astype(float)
+
+    cost_series = _cost_series_for(selection.code)
+    benefit_series = _benefit_series_for(selection)
+
+    if compare_code and compare_selection is not None and compare_selection.code:
+        cost_series_cmp = _cost_series_for(compare_selection.code)
+        benefit_series_cmp = _benefit_series_for(compare_selection)
+
+        cost_index = cost_series.index.union(cost_series_cmp.index)
+        benefit_index = benefit_series.index.union(benefit_series_cmp.index)
+        cost_series = cost_series.reindex(cost_index, fill_value=0.0) - cost_series_cmp.reindex(
+            cost_index, fill_value=0.0
+        )
+        benefit_series = benefit_series.reindex(benefit_index, fill_value=0.0) - benefit_series_cmp.reindex(
+            benefit_index, fill_value=0.0
+        )
+        cost_series = cost_series[cost_series.abs() > 1e-9]
+        benefit_series = benefit_series[benefit_series.abs() > 1e-9]
+
+        if not cost_series.empty:
+            cost_series = cost_series.reindex(cost_series.abs().sort_values(ascending=False).index)
+        if not benefit_series.empty:
+            benefit_series = benefit_series.reindex(benefit_series.abs().sort_values(ascending=False).index)
+    else:
+        if not cost_series.empty:
+            cost_series = cost_series.sort_values(ascending=False)
+        if not benefit_series.empty:
+            benefit_series = benefit_series.sort_values(ascending=False)
 
     cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
     benefit_total_dollars = float(benefit_series.sum() * 1_000_000.0) if not benefit_series.empty else 0.0
-    if abs(cost_total_dollars) <= 1e-6 and abs(benefit_total_dollars) <= 1e-6:
-        return None
-    axis_samples = [val for val in (cost_total_dollars, benefit_total_dollars) if np.isfinite(val)]
-    if not axis_samples:
+    axis_samples = []
+    if not cost_series.empty:
+        axis_samples.extend((cost_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
+    if not benefit_series.empty:
+        axis_samples.extend((benefit_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
+    axis_samples.extend([cost_total_dollars, benefit_total_dollars])
+    axis_samples = [val for val in axis_samples if np.isfinite(val)]
+    if not axis_samples or max(abs(val) for val in axis_samples) <= 1e-6:
         return None
 
     def _segment_text(value_dollars: float, total_dollars: float) -> str:
+        if compare_code:
+            return ""
         if total_dollars <= 0 or value_dollars <= 0:
             return ""
         share = value_dollars / total_dollars if total_dollars else 0.0
@@ -5675,6 +5711,11 @@ def cost_benefit_stack_chart(
     gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
     segment_outline = dict(color=gap_color, width=2)
 
+    x_cost = "Costs Δ" if compare_code else "Costs"
+    x_benefit = "Benefits Δ" if compare_code else "Benefits"
+    hover_cost_prefix = "Costs Δ" if compare_code else "Costs"
+    hover_benefit_prefix = "Benefits Δ" if compare_code else "Benefits"
+
     cost_labels = cost_series.index.astype(str).tolist()
     cost_colors = list(reversed(_sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)))
     cost_legend_items = [(str(label), str(color)) for label, color in zip(cost_labels, cost_colors)]
@@ -5683,7 +5724,7 @@ def cost_benefit_stack_chart(
         value_dollars = value_m * 1_000_000.0
         fig.add_trace(
             go.Bar(
-                x=["Costs"],
+                x=[x_cost],
                 y=[value_dollars],
                 name=str(label),
                 marker=dict(color=color, line=segment_outline),
@@ -5692,7 +5733,7 @@ def cost_benefit_stack_chart(
                 insidetextfont=dict(color="white", size=12),
                 constraintext="inside",
                 customdata=[format_large_amount(value_dollars)],
-                hovertemplate=f"<b>Costs: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+                hovertemplate=f"<b>{hover_cost_prefix}: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
             )
         )
 
@@ -5704,7 +5745,7 @@ def cost_benefit_stack_chart(
         value_dollars = value_m * 1_000_000.0
         fig.add_trace(
             go.Bar(
-                x=["Benefits"],
+                x=[x_benefit],
                 y=[value_dollars],
                 name=str(label),
                 marker=dict(color=color, line=segment_outline),
@@ -5713,7 +5754,7 @@ def cost_benefit_stack_chart(
                 insidetextfont=dict(color="#111111", size=12),
                 constraintext="inside",
                 customdata=[format_large_amount(value_dollars)],
-                hovertemplate=f"<b>Benefits: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+                hovertemplate=f"<b>{hover_benefit_prefix}: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
             )
         )
 
@@ -5722,8 +5763,9 @@ def cost_benefit_stack_chart(
         if (cost_value_basis == VALUE_BASIS_PV or benefit_value_basis == VALUE_BASIS_PV)
         else ""
     )
+    title_prefix = "Costs vs benefits delta" if compare_code else "Costs vs benefits stack"
     fig.update_layout(
-        title=f"Costs vs benefits stack{title_horizon} - {selection_label}",
+        title=f"{title_prefix}{title_horizon} - {selection_label}",
         template=plotly_template(),
         barmode="stack",
         bargap=0.28,
@@ -5736,7 +5778,7 @@ def cost_benefit_stack_chart(
     )
 
     ticks_vals, ticks_text, _ = compute_cash_axis_ticks(
-        [cost_total_dollars, benefit_total_dollars],
+        axis_samples,
         force_unit="b",
     )
     fig.update_yaxes(
@@ -9350,10 +9392,9 @@ def render_cash_flow_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
-    stack_selection = opt_selection if getattr(opt_selection, "code", None) else comp_selection
-    stack_label = opt_label if getattr(opt_selection, "code", None) else cmp_label
-    stack_selection_code = getattr(stack_selection, "code", None)
-    show_stack_chart = bool(stack_selection is not None and stack_selection_code)
+    opt_code = getattr(opt_selection, "code", None) if opt_selection is not None else None
+    cmp_code = getattr(comp_selection, "code", None) if comp_selection is not None else None
+    show_stack_chart = bool(opt_code or cmp_code)
     control_row_spacer_px = 74
     eff_cols = st.columns([2, 3])
     with eff_cols[0]:
@@ -9384,54 +9425,90 @@ def render_cash_flow_tab(
 
     with eff_cols[1]:
         if show_stack_chart:
-            control_cols = st.columns(2)
-            with control_cols[0]:
-                cost_breakdown = st.selectbox(
-                    "Breakdown costs by:",
-                    list(COST_BENEFIT_STACK_COST_OPTIONS),
-                    index=0,
-                    key="cost_benefit_stack_cost_breakdown_select",
-                )
-            with control_cols[1]:
-                benefit_breakdown = st.selectbox(
-                    "Breakdown benefits by:",
-                    list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
-                    index=0,
-                    key="cost_benefit_stack_benefit_breakdown_select",
-                )
+            stack_view_options: List[str] = []
+            stack_view_payload: Dict[
+                str, Tuple[ScenarioSelection, Optional[ScenarioSelection], str]
+            ] = {}
+            opt_label_clean = (opt_label or "").strip() or str(opt_code or scenario_primary_label())
+            cmp_label_clean = (cmp_label or "").strip() or str(cmp_code or scenario_comparison_label())
+            if opt_code:
+                stack_view_options.append(opt_label_clean)
+                stack_view_payload[opt_label_clean] = (opt_selection, None, opt_label_clean)
+            if cmp_code:
+                stack_view_options.append(cmp_label_clean)
+                stack_view_payload[cmp_label_clean] = (comp_selection, None, cmp_label_clean)
+            if opt_code and cmp_code:
+                delta_label = f"NPV [{opt_label_clean}] - NPV [{cmp_label_clean}]"
+                stack_view_options.append(delta_label)
+                stack_view_payload[delta_label] = (opt_selection, comp_selection, delta_label)
 
-            benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
-            cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
-            pv_horizon_years = (
-                int(st.session_state.get("npv_horizon_selection", 60))
-                if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
-                else None
-            )
-
-            stack_result = cost_benefit_stack_chart(
-                data,
-                stack_selection,
-                selection_label=stack_label or str(getattr(stack_selection, "code", "")),
-                pv_horizon_years=pv_horizon_years,
-                cost_breakdown=cost_breakdown,
-                benefit_breakdown=benefit_breakdown,
-                cost_value_basis=cost_value_basis,
-                benefit_value_basis=benefit_value_basis,
-            )
-            if stack_result is not None:
-                stack_fig, cost_legend_items, benefit_legend_items = stack_result
-                st.plotly_chart(
-                    stack_fig,
-                    use_container_width=True,
-                    key="overview_cost_benefit_stack_chart",
-                )
-                render_cost_benefit_stack_legend(
-                    cost_legend_items,
-                    benefit_legend_items,
-                    columns_per_section=3,
-                )
+            if not stack_view_options:
+                st.info("Select a scenario to view costs vs benefits.")
             else:
-                st.info("Costs vs benefits breakdown unavailable for this selection.")
+                view_key = "npv_stack_view_select"
+                if st.session_state.get(view_key) not in stack_view_options:
+                    st.session_state[view_key] = stack_view_options[0]
+
+                control_cols = st.columns(3)
+                with control_cols[0]:
+                    stack_view = st.selectbox(
+                        "NPV stack view:",
+                        stack_view_options,
+                        key=view_key,
+                    )
+                with control_cols[1]:
+                    cost_breakdown = st.selectbox(
+                        "Breakdown costs by:",
+                        list(COST_BENEFIT_STACK_COST_OPTIONS),
+                        index=0,
+                        key="cost_benefit_stack_cost_breakdown_select",
+                    )
+                with control_cols[2]:
+                    benefit_breakdown = st.selectbox(
+                        "Breakdown benefits by:",
+                        list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
+                        index=0,
+                        key="cost_benefit_stack_benefit_breakdown_select",
+                    )
+
+                selection, compare_selection, selection_label = stack_view_payload.get(
+                    stack_view,
+                    (opt_selection if opt_code else comp_selection, None, stack_view),
+                )
+
+                benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+                cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+                pv_horizon_years = (
+                    int(st.session_state.get("npv_horizon_selection", 60))
+                    if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
+                    else None
+                )
+
+                stack_result = cost_benefit_stack_chart(
+                    data,
+                    selection,
+                    selection_label=selection_label or str(getattr(selection, "code", "")),
+                    pv_horizon_years=pv_horizon_years,
+                    cost_breakdown=cost_breakdown,
+                    benefit_breakdown=benefit_breakdown,
+                    cost_value_basis=cost_value_basis,
+                    benefit_value_basis=benefit_value_basis,
+                    compare_selection=compare_selection,
+                )
+                if stack_result is not None:
+                    stack_fig, cost_legend_items, benefit_legend_items = stack_result
+                    st.plotly_chart(
+                        stack_fig,
+                        use_container_width=True,
+                        key="overview_cost_benefit_stack_chart",
+                    )
+                    render_cost_benefit_stack_legend(
+                        cost_legend_items,
+                        benefit_legend_items,
+                        columns_per_section=3,
+                    )
+                else:
+                    st.info("Costs vs benefits breakdown unavailable for this selection.")
         else:
             st.info("Select a scenario to view costs vs benefits.")
     st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
