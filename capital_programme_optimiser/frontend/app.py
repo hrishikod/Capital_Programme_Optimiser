@@ -5710,19 +5710,71 @@ def cost_benefit_stack_chart(
 
     cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
     benefit_total_dollars = float(benefit_series.sum()) if not benefit_series.empty else 0.0
+    cost_abs_total_dollars = float(cost_series.abs().sum() * 1_000_000.0) if not cost_series.empty else 0.0
+    benefit_abs_total_dollars = float(benefit_series.abs().sum()) if not benefit_series.empty else 0.0
+    cost_positive_dollars = 0.0
+    cost_negative_dollars = 0.0
+    benefit_positive_dollars = 0.0
+    benefit_negative_dollars = 0.0
+    if compare_code:
+        if not cost_series.empty:
+            cost_positive_dollars = float(cost_series[cost_series > 0].sum() * 1_000_000.0)
+            cost_negative_dollars = float(cost_series[cost_series < 0].sum() * 1_000_000.0)
+        if not benefit_series.empty:
+            benefit_positive_dollars = float(benefit_series[benefit_series > 0].sum())
+            benefit_negative_dollars = float(benefit_series[benefit_series < 0].sum())
     axis_samples = []
     if not cost_series.empty:
         axis_samples.extend((cost_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
     if not benefit_series.empty:
         axis_samples.extend((benefit_series.astype(float).to_numpy(dtype=float)).tolist())
     axis_samples.extend([cost_total_dollars, benefit_total_dollars])
+    if compare_code:
+        axis_samples.extend(
+            [
+                cost_positive_dollars,
+                cost_negative_dollars,
+                benefit_positive_dollars,
+                benefit_negative_dollars,
+            ]
+        )
     axis_samples = [val for val in axis_samples if np.isfinite(val)]
     if not axis_samples or max(abs(val) for val in axis_samples) <= 1e-6:
         return None
 
-    def _segment_text(value_dollars: float, total_dollars: float) -> str:
-        if compare_code:
+    def _segment_text(
+        value_dollars: float,
+        *,
+        total_dollars: float,
+        abs_total_dollars: float,
+    ) -> str:
+        try:
+            value_dollars = float(value_dollars)
+        except (TypeError, ValueError):
             return ""
+        if not math.isfinite(value_dollars):
+            return ""
+
+        def _format_billions(value_billions: float) -> str:
+            value_billions = abs(float(value_billions))
+            if value_billions >= 10:
+                return f"{value_billions:.0f}"
+            text = f"{value_billions:.1f}"
+            return text.rstrip("0").rstrip(".")
+
+        if compare_code:
+            denom = float(abs_total_dollars) if abs_total_dollars else 0.0
+            if denom <= 0:
+                return ""
+            share = abs(value_dollars) / denom
+            if share < 0.08:
+                return ""
+            abs_billions = abs(value_dollars) / 1_000_000_000.0
+            if abs_billions < 0.5:
+                return ""
+            sign = "+" if value_dollars > 0 else "-"
+            return f"{sign}${_format_billions(abs_billions)}b"
+
         if total_dollars <= 0 or value_dollars <= 0:
             return ""
         share = value_dollars / total_dollars if total_dollars else 0.0
@@ -5735,10 +5787,10 @@ def cost_benefit_stack_chart(
     gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
     segment_outline = dict(color=gap_color, width=2)
 
-    x_cost = "Costs Δ" if compare_code else "Costs"
-    x_benefit = "Benefits Δ" if compare_code else "Benefits"
-    hover_cost_prefix = "Costs Δ" if compare_code else "Costs"
-    hover_benefit_prefix = "Benefits Δ" if compare_code else "Benefits"
+    x_cost = "Costs \u0394" if compare_code else "Costs"
+    x_benefit = "Benefits \u0394" if compare_code else "Benefits"
+    hover_cost_prefix = "Costs \u0394" if compare_code else "Costs"
+    hover_benefit_prefix = "Benefits \u0394" if compare_code else "Benefits"
 
     cost_labels = cost_series.index.astype(str).tolist()
     cost_colors = list(reversed(_sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)))
@@ -5752,7 +5804,13 @@ def cost_benefit_stack_chart(
                 y=[value_dollars],
                 name=str(label),
                 marker=dict(color=color, line=segment_outline),
-                text=[_segment_text(value_dollars, cost_total_dollars)],
+                text=[
+                    _segment_text(
+                        value_dollars,
+                        total_dollars=cost_total_dollars,
+                        abs_total_dollars=cost_abs_total_dollars,
+                    )
+                ],
                 textposition="inside",
                 insidetextfont=dict(color="white", size=12),
                 constraintext="inside",
@@ -5772,12 +5830,57 @@ def cost_benefit_stack_chart(
                 y=[value_dollars],
                 name=str(label),
                 marker=dict(color=color, line=segment_outline),
-                text=[_segment_text(value_dollars, benefit_total_dollars)],
+                text=[
+                    _segment_text(
+                        value_dollars,
+                        total_dollars=benefit_total_dollars,
+                        abs_total_dollars=benefit_abs_total_dollars,
+                    )
+                ],
                 textposition="inside",
                 insidetextfont=dict(color="#111111", size=12),
                 constraintext="inside",
                 customdata=[format_large_amount(value_dollars)],
                 hovertemplate=f"<b>{hover_benefit_prefix}: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+            )
+        )
+
+    if compare_code:
+        def _net_label(amount: float) -> str:
+            try:
+                value = float(amount)
+            except (TypeError, ValueError):
+                return ""
+            if not math.isfinite(value) or abs(value) <= 1e-6:
+                return ""
+            sign = "+" if value > 0 else "-"
+            abs_value = abs(value)
+            if abs_value >= 1_000_000_000:
+                bill = abs_value / 1_000_000_000.0
+                text = f"{bill:.1f}".rstrip("0").rstrip(".")
+                return f"Net {sign}${text}b"
+            return f"Net {sign}${abs_value / 1_000_000.0:.0f}m"
+
+        marker_color = "#E2E8F0" if is_dark_mode() else "#0F172A"
+        text_positions = [
+            "bottom center" if cost_total_dollars < 0 else "top center",
+            "bottom center" if benefit_total_dollars < 0 else "top center",
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=[x_cost, x_benefit],
+                y=[cost_total_dollars, benefit_total_dollars],
+                mode="markers+text",
+                marker=dict(
+                    color=marker_color,
+                    size=8,
+                    line=dict(color=gap_color, width=2),
+                ),
+                text=[_net_label(cost_total_dollars), _net_label(benefit_total_dollars)],
+                textposition=text_positions,
+                textfont=dict(color=marker_color, size=12),
+                hoverinfo="skip",
+                showlegend=False,
             )
         )
 
@@ -5790,7 +5893,7 @@ def cost_benefit_stack_chart(
     fig.update_layout(
         title=f"{title_prefix}{title_horizon} - {selection_label}",
         template=plotly_template(),
-        barmode="stack",
+        barmode="relative" if compare_code else "stack",
         bargap=0.28,
         barcornerradius=6,
         uniformtext=dict(minsize=10, mode="hide"),
