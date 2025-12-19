@@ -5599,6 +5599,28 @@ def cost_benefit_stack_chart(
 
     mapping = load_project_attribute_mapping()
 
+    def _benefit_scale_to_dollars(selection_value: ScenarioSelection, series: pd.Series) -> float:
+        if series is None or series.empty:
+            return 1.0
+        pv_total_raw: Optional[float] = None
+        raw = _raw_result_for_code(data, getattr(selection_value, "code", None))
+        if isinstance(raw, dict):
+            pv_total_raw = raw.get("benefit_pv_total")
+            if pv_total_raw is None:
+                pv_total_raw = raw.get("pv_total")
+        candidates: List[float] = []
+        for candidate in (pv_total_raw, series.sum()):
+            if candidate is None:
+                continue
+            try:
+                candidates.append(abs(float(candidate)))
+            except (TypeError, ValueError):
+                continue
+        magnitude = max(candidates) if candidates else 0.0
+        if magnitude <= 0:
+            return 1.0
+        return 1_000_000.0 if magnitude < 10_000_000.0 else 1.0
+
     cost_group_col = "ActivityClass"
     cost_order: Optional[List[str]] = None
     if cost_breakdown == "Region":
@@ -5658,10 +5680,12 @@ def cost_benefit_stack_chart(
 
     cost_series = _cost_series_for(selection.code)
     benefit_series = _benefit_series_for(selection)
+    benefit_series = benefit_series * _benefit_scale_to_dollars(selection, benefit_series)
 
     if compare_code and compare_selection is not None and compare_selection.code:
         cost_series_cmp = _cost_series_for(compare_selection.code)
         benefit_series_cmp = _benefit_series_for(compare_selection)
+        benefit_series_cmp = benefit_series_cmp * _benefit_scale_to_dollars(compare_selection, benefit_series_cmp)
 
         cost_index = cost_series.index.union(cost_series_cmp.index)
         benefit_index = benefit_series.index.union(benefit_series_cmp.index)
@@ -10534,7 +10558,11 @@ def main() -> None:
         st.divider()
         basis_cols = st.columns(2)
         with basis_cols[0]:
-            default_benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+            default_benefit_basis = _resolve_value_basis(
+                "npv_benefit_value_basis",
+                "npv_apply_discount",
+                default=VALUE_BASIS_PV,
+            )
             benefit_basis = st.selectbox(
                 "Benefits value basis",
                 list(VALUE_BASIS_OPTIONS),
@@ -10546,7 +10574,11 @@ def main() -> None:
                 ),
             )
         with basis_cols[1]:
-            default_cost_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+            default_cost_basis = _resolve_value_basis(
+                "npv_cost_value_basis",
+                "npv_apply_cost_discount",
+                default=VALUE_BASIS_PV,
+            )
             cost_basis = st.selectbox(
                 "Costs value basis",
                 list(VALUE_BASIS_OPTIONS),
