@@ -2138,9 +2138,39 @@ def mbcm_discount_divisors(offsets: np.ndarray) -> np.ndarray:
 
 def mbcm_discount_label() -> str:
     return (
-        f"{MBCM_DISCOUNT_RATE_FIRST * 100:.1f}% for years 1–{MBCM_DISCOUNT_FIRST_YEARS}, "
+        f"{MBCM_DISCOUNT_RATE_FIRST * 100:.1f}% for years 1-{MBCM_DISCOUNT_FIRST_YEARS}, "
         f"{MBCM_DISCOUNT_RATE_LATER * 100:.1f}% from year {MBCM_DISCOUNT_FIRST_YEARS + 1}+"
     )
+
+
+VALUE_BASIS_PV = "PV'd at MBCM rates"
+VALUE_BASIS_REAL = "Real $2025"
+VALUE_BASIS_NOMINAL = "Nominal"
+VALUE_BASIS_OPTIONS = (VALUE_BASIS_PV, VALUE_BASIS_REAL, VALUE_BASIS_NOMINAL)
+
+
+def _resolve_value_basis(session_key: str, legacy_apply_key: str, *, default: str = VALUE_BASIS_REAL) -> str:
+    """Resolve the selected value basis, falling back to legacy checkbox state when present."""
+    basis = st.session_state.get(session_key)
+    if basis in VALUE_BASIS_OPTIONS:
+        return str(basis)
+    legacy = st.session_state.get(legacy_apply_key)
+    if legacy is not None:
+        return VALUE_BASIS_PV if bool(legacy) else VALUE_BASIS_REAL
+    return default
+
+
+def value_basis_multiplier(start_year: int, years: np.ndarray, basis: str) -> np.ndarray:
+    """Return per-year multipliers to convert base $2025 flows into the selected basis."""
+    year_values = np.asarray(years, dtype=int)
+    offsets = np.clip(year_values - int(start_year), a_min=0, a_max=None)
+    divisors = mbcm_discount_divisors(offsets)
+    basis_norm = (basis or "").strip().lower()
+    if basis_norm.startswith("pv"):
+        return np.divide(1.0, divisors, out=np.ones_like(divisors, dtype=float), where=divisors != 0)
+    if basis_norm.startswith("nom"):
+        return divisors.astype(float)
+    return np.ones_like(divisors, dtype=float)
 
 
 
@@ -3861,6 +3891,7 @@ def pv_by_dimension(
     *,
     horizon_years: Optional[int] = None,
     apply_discount: Optional[bool] = None,
+    value_basis: Optional[str] = None,
 ) -> Optional[Dict[str, float]]:
 
     if not selection.code:
@@ -3881,13 +3912,15 @@ def pv_by_dimension(
 
     base_years = pd.DataFrame({"Year": data.years})
 
-    if apply_discount is None:
-        try:
-            import streamlit as st
-        except Exception:
-            apply_discount = False
-        else:
-            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    if value_basis is None:
+        if apply_discount is None:
+            try:
+                import streamlit as st
+            except Exception:
+                apply_discount = False
+            else:
+                apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+        value_basis = VALUE_BASIS_PV if apply_discount else VALUE_BASIS_REAL
 
     ordered_dims = [dim for dim in data.dims if dim in dims_present.tolist()]
 
@@ -3931,13 +3964,10 @@ def pv_by_dimension(
 
             continue
 
-        values = pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).to_numpy()
-        if apply_discount:
-            offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy(dtype=int)
-            discount = mbcm_discount_divisors(offsets)
-            pv[str(dim)] = float((values / discount).sum())
-        else:
-            pv[str(dim)] = float(values.sum())
+        values = pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        year_values = pd.to_numeric(merged["Year"], errors="coerce").fillna(data.start_fy).astype(int).to_numpy(dtype=int)
+        multipliers = value_basis_multiplier(int(data.start_fy), year_values, str(value_basis))
+        pv[str(dim)] = float((values * multipliers).sum())
 
     return pv or None
 
@@ -5357,7 +5387,7 @@ def _discounted_table_totals(
     years: List[int],
     *,
     start_year: int,
-    apply_discount: bool,
+    value_basis: str,
 ) -> pd.Series:
     if table.empty or "Project" not in table.columns:
         return pd.Series(dtype=float)
@@ -5365,12 +5395,8 @@ def _discounted_table_totals(
     if not safe_years:
         return pd.Series(dtype=float)
     values = table[safe_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
-    if apply_discount:
-        offsets = np.clip(np.asarray(safe_years, dtype=int) - int(start_year), a_min=0, a_max=None)
-        divisors = mbcm_discount_divisors(offsets)
-        totals = (values / divisors).sum(axis=1)
-    else:
-        totals = values.sum(axis=1)
+    multipliers = value_basis_multiplier(int(start_year), np.asarray(safe_years, dtype=int), value_basis)
+    totals = (values * multipliers).sum(axis=1)
     return pd.Series(totals, index=table["Project"].astype(str).to_numpy())
 
 
@@ -5412,24 +5438,32 @@ def cost_benefit_stack_chart(
     selection: ScenarioSelection,
     *,
     selection_label: str,
-    horizon_years: int,
+    pv_horizon_years: Optional[int],
     cost_breakdown: str,
     benefit_breakdown: str,
-    apply_cost_discount: bool,
-    apply_benefit_discount: bool,
+    cost_value_basis: str,
+    benefit_value_basis: str,
 ) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
     if not selection.code:
         return None
 
     start_year = int(getattr(data, "start_fy", 0) or 0)
+    model_years = int(getattr(data, "model_years", 0) or 0) or 60
+    years_full = [
+        int(y)
+        for y in getattr(data, "years", [])
+        if y is not None and start_year <= int(y) <= (start_year + model_years - 1)
+    ]
     try:
-        horizon_years_int = int(horizon_years)
+        pv_horizon_years_int = int(pv_horizon_years) if pv_horizon_years is not None else model_years
     except (TypeError, ValueError):
-        horizon_years_int = int(getattr(data, "model_years", 0) or 0)
-    if horizon_years_int <= 0:
-        horizon_years_int = int(getattr(data, "model_years", 0) or 0) or 60
-    end_year = start_year + horizon_years_int - 1
-    years = [int(y) for y in getattr(data, "years", []) if y is not None and start_year <= int(y) <= end_year]
+        pv_horizon_years_int = model_years
+    if pv_horizon_years_int <= 0:
+        pv_horizon_years_int = model_years
+    pv_end_year = start_year + pv_horizon_years_int - 1
+    years_pv = [year for year in years_full if year <= pv_end_year]
+    cost_years = years_pv if cost_value_basis == VALUE_BASIS_PV else years_full
+    benefit_years = years_pv if benefit_value_basis == VALUE_BASIS_PV else years_full
 
     mapping = load_project_attribute_mapping()
 
@@ -5441,14 +5475,14 @@ def cost_benefit_stack_chart(
         cost_group_col = "GPSTier"
         cost_order = ["Must do", "Should do", "Could do", "Unknown"]
 
-    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    cost_table = _scenario_project_cost_table(data, selection.code, cost_years)
     if cost_table is None:
         cost_table = pd.DataFrame()
     cost_project_totals = _discounted_table_totals(
         cost_table,
-        years,
+        cost_years,
         start_year=start_year,
-        apply_discount=apply_cost_discount,
+        value_basis=cost_value_basis,
     )
     cost_series = _group_totals_by_mapping(
         cost_project_totals,
@@ -5463,8 +5497,8 @@ def cost_benefit_stack_chart(
         pv_map = pv_by_dimension(
             data,
             selection,
-            horizon_years=horizon_years_int,
-            apply_discount=apply_benefit_discount,
+            horizon_years=pv_horizon_years_int if benefit_value_basis == VALUE_BASIS_PV else None,
+            value_basis=benefit_value_basis,
         ) or {}
         benefit_series = pd.Series(pv_map, dtype=float)
         benefit_series.index = benefit_series.index.astype(str)
@@ -5477,14 +5511,14 @@ def cost_benefit_stack_chart(
         benefit_series = benefit_series.sort_values(ascending=False)
     else:
         benefit_group_col = "Region" if benefit_breakdown == "Region" else "ActivityClass"
-        benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+        benefit_table = _scenario_project_benefit_table(data, selection.code, benefit_years)
         if benefit_table is None:
             benefit_table = pd.DataFrame()
         benefit_project_totals = _discounted_table_totals(
             benefit_table,
-            years,
+            benefit_years,
             start_year=start_year,
-            apply_discount=apply_benefit_discount,
+            value_basis=benefit_value_basis,
         )
         benefit_series = _group_totals_by_mapping(
             benefit_project_totals,
@@ -5556,8 +5590,13 @@ def cost_benefit_stack_chart(
             )
         )
 
+    title_horizon = (
+        f" {pv_horizon_years_int}Y"
+        if (cost_value_basis == VALUE_BASIS_PV or benefit_value_basis == VALUE_BASIS_PV)
+        else ""
+    )
     fig.update_layout(
-        title=f"NPV costs vs benefits stack {horizon_years_int}Y - {selection_label}",
+        title=f"Costs vs benefits stack{title_horizon} - {selection_label}",
         template=plotly_template(),
         barmode="stack",
         bargap=0.28,
@@ -6860,13 +6899,12 @@ def _kpi_card_html(
 
 
 def render_programme_kpis(
-    stats_opt: dict | None,
-    stats_cmp: dict | None,
+    opt_series: pd.DataFrame | None,
+    cmp_series: pd.DataFrame | None,
     *,
+    data: DashboardData,
     opt_selection: Optional[ScenarioSelection],
     cmp_selection: Optional[ScenarioSelection],
-    npv_label: str,
-    npv_horizon_years: int | None = None,
 ) -> None:
     """Render the overview KPI card grid."""
     import streamlit as st
@@ -6891,73 +6929,80 @@ def render_programme_kpis(
     opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
     cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
 
-    opt_pv = float(stats_opt.get("total_pv")) if stats_opt and stats_opt.get("total_pv") is not None else None
-    cmp_pv = float(stats_cmp.get("total_pv")) if stats_cmp and stats_cmp.get("total_pv") is not None else None
-
-    delta_pv = (opt_pv - cmp_pv) if (opt_pv is not None and cmp_pv is not None) else None
-
-    horizon_years = None
-    if npv_horizon_years is not None:
+    benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+    cost_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+    pv_horizon_years = None
+    if benefit_basis == VALUE_BASIS_PV or cost_basis == VALUE_BASIS_PV:
         try:
-            horizon_years = int(npv_horizon_years)
+            pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
         except (TypeError, ValueError):
-            horizon_years = None
-    if horizon_years is None:
-        match = re.search(r"\b(\d+)\s*-\s*year\b", str(npv_label or ""), flags=re.IGNORECASE)
-        if match:
-            try:
-                horizon_years = int(match.group(1))
-            except (TypeError, ValueError):
-                horizon_years = None
+            pv_horizon_years = 60
 
-    horizon_prefix = f"{horizon_years}-year " if horizon_years is not None else ""
+    def _basis_label(kind: str, basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if kind == "benefit":
+            if basis_norm.startswith("pv"):
+                return "NPV benefits"
+            if basis_norm.startswith("nom"):
+                return "Benefits (nominal)"
+            return "Benefits ($2025)"
+        if basis_norm.startswith("pv"):
+            return "NPV expenditure"
+        if basis_norm.startswith("nom"):
+            return "Expenditure (nominal)"
+        return "Expenditure ($2025)"
 
-    try:
-        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
-    except Exception:
-        apply_discount = False
-
-    try:
-        apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
-    except Exception:
-        apply_cost_discount = False
-
-    benefit_label = "NPV benefits" if apply_discount else "Benefits ($2025)"
-    cost_prefix = horizon_prefix if apply_cost_discount else ""
-    cost_label = "NPV expenditure" if apply_cost_discount else "Expenditure ($2025)"
-
-    def _spend(stats: dict | None) -> float | None:
-        if not stats:
+    def _total_from_series(series: pd.DataFrame | None, column: str, basis: str) -> float | None:
+        if series is None or series.empty:
             return None
-        if apply_cost_discount:
-            value = stats.get("total_spend_pv_horizon")
-            if value is None:
-                value = stats.get("total_spend_pv")
-        else:
-            value = stats.get("total_spend")
-        return float(value) if value is not None else None
+        if "Year" not in series.columns:
+            return None
+        values = pd.to_numeric(series.get(column), errors="coerce").fillna(0.0)
+        years = pd.to_numeric(series.get("Year"), errors="coerce").fillna(data.start_fy).astype(int)
+        mask = years.notna()
+        if not mask.any():
+            return None
+        values = values.loc[mask].astype(float)
+        years = years.loc[mask].astype(int)
+        if basis == VALUE_BASIS_PV and pv_horizon_years:
+            limit_year = int(data.start_fy) + int(pv_horizon_years) - 1
+            horizon_mask = years <= limit_year
+            values = values.loc[horizon_mask]
+            years = years.loc[horizon_mask]
+        multipliers = value_basis_multiplier(int(data.start_fy), years.to_numpy(dtype=int), basis)
+        return float((values.to_numpy(dtype=float) * multipliers).sum())
 
-    opt_spend = _spend(stats_opt)
-    cmp_spend = _spend(stats_cmp)
+    benefit_col = "BenefitFlowTotal" if opt_series is not None and "BenefitFlowTotal" in opt_series.columns else "BenefitFlow"
+    opt_benefit = _total_from_series(opt_series, benefit_col, benefit_basis)
+    cmp_benefit = _total_from_series(cmp_series, benefit_col, benefit_basis)
+    delta_benefit = (opt_benefit - cmp_benefit) if (opt_benefit is not None and cmp_benefit is not None) else None
+
+    opt_spend = _total_from_series(opt_series, "Spend", cost_basis)
+    cmp_spend = _total_from_series(cmp_series, "Spend", cost_basis)
     delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
 
-    if delta_pv is None:
+    benefit_label = _basis_label("benefit", benefit_basis)
+    cost_label = _basis_label("cost", cost_basis)
+    benefit_prefix = f"{pv_horizon_years}-year " if (benefit_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
+    cost_prefix = f"{pv_horizon_years}-year " if (cost_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
+
+    if delta_benefit is None:
         pv_chip_text, pv_chip_state = None, "neutral"
     else:
-        sign = "&#9650;" if delta_pv >= 0 else "&#9660;"
-        pv_chip_state = "up" if delta_pv >= 0 else "down"
-        pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {comparison_label}"
+        sign = "&#9650;" if delta_benefit >= 0 else "&#9660;"
+        pv_chip_state = "up" if delta_benefit >= 0 else "down"
+        pv_chip_text = f"{sign} {_fmt(delta_benefit)} vs {comparison_label}"
 
     if pv_chip_text:
         delta_pv_card = _kpi_card_html(
-            f"Delta Total {horizon_prefix}{benefit_label}",
+            f"Delta Total {benefit_prefix}{benefit_label}",
             None,
             body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
         )
     else:
         delta_pv_card = _kpi_card_html(
-            f"Delta Total {horizon_prefix}{benefit_label}",
-            _fmt(delta_pv),
+            f"Delta Total {benefit_prefix}{benefit_label}",
+            _fmt(delta_benefit),
             subtitle=pair_label,
             delta_text=pv_chip_text,
             delta_state=pv_chip_state,
@@ -6996,12 +7041,12 @@ def render_programme_kpis(
             subtitle=pair_label,
         ),
         _kpi_card_html(
-            f"Total {horizon_prefix}{benefit_label} - {primary_label}",
-            _fmt(opt_pv),
+            f"Total {benefit_prefix}{benefit_label} - {primary_label}",
+            _fmt(opt_benefit),
         ),
         _kpi_card_html(
-            f"Total {horizon_prefix}{benefit_label} - {comparison_label}",
-            _fmt(cmp_pv),
+            f"Total {benefit_prefix}{benefit_label} - {comparison_label}",
+            _fmt(cmp_benefit),
         ),
         delta_pv_card,
         '</div>',
@@ -9228,19 +9273,23 @@ def render_cash_flow_tab(
                     key="cost_benefit_stack_benefit_breakdown_select",
                 )
 
-            horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
-            apply_benefit_discount = bool(st.session_state.get("npv_apply_discount", False))
-            apply_cost_discount = bool(st.session_state.get("npv_apply_cost_discount", False))
+            benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+            cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+            pv_horizon_years = (
+                int(st.session_state.get("npv_horizon_selection", 60))
+                if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
+                else None
+            )
 
             stack_result = cost_benefit_stack_chart(
                 data,
                 stack_selection,
                 selection_label=stack_label or str(getattr(stack_selection, "code", "")),
-                horizon_years=horizon_years,
+                pv_horizon_years=pv_horizon_years,
                 cost_breakdown=cost_breakdown,
                 benefit_breakdown=benefit_breakdown,
-                apply_cost_discount=apply_cost_discount,
-                apply_benefit_discount=apply_benefit_discount,
+                cost_value_basis=cost_value_basis,
+                benefit_value_basis=benefit_value_basis,
             )
             if stack_result is not None:
                 stack_fig, cost_legend_items, benefit_legend_items = stack_result
@@ -10307,6 +10356,63 @@ def main() -> None:
                 show_benefit_controls=False,
             )
 
+        st.divider()
+        basis_cols = st.columns(2)
+        with basis_cols[0]:
+            default_benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+            benefit_basis = st.selectbox(
+                "Benefits value basis",
+                list(VALUE_BASIS_OPTIONS),
+                index=list(VALUE_BASIS_OPTIONS).index(default_benefit_basis),
+                key="npv_benefit_value_basis",
+                help=(
+                    "Choose how benefits are expressed in KPI cards and breakdown charts.\n\n"
+                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
+                ),
+            )
+        with basis_cols[1]:
+            default_cost_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+            cost_basis = st.selectbox(
+                "Costs value basis",
+                list(VALUE_BASIS_OPTIONS),
+                index=list(VALUE_BASIS_OPTIONS).index(default_cost_basis),
+                key="npv_cost_value_basis",
+                help=(
+                    "Choose how costs are expressed in KPI cards and breakdown charts.\n\n"
+                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
+                ),
+            )
+
+        pv_controls_enabled = benefit_basis == VALUE_BASIS_PV or cost_basis == VALUE_BASIS_PV
+        npv_horizon_options = [60, 50, 40]
+        if pv_controls_enabled:
+            default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            try:
+                default_horizon = int(default_horizon)
+            except (TypeError, ValueError):
+                default_horizon = npv_horizon_options[0]
+            if default_horizon not in npv_horizon_options:
+                default_horizon = npv_horizon_options[0]
+                st.session_state["npv_horizon_selection"] = default_horizon
+            st.selectbox(
+                "PV horizon (years)",
+                npv_horizon_options,
+                index=npv_horizon_options.index(default_horizon),
+                key="npv_horizon_selection",
+            )
+        else:
+            st.selectbox(
+                "PV horizon (years)",
+                ["N/A"],
+                index=0,
+                disabled=True,
+                key="npv_horizon_selection_na",
+            )
+
+        # Maintain legacy toggle keys for existing charts that expect boolean switches.
+        st.session_state["npv_apply_discount"] = benefit_basis == VALUE_BASIS_PV
+        st.session_state["npv_apply_cost_discount"] = cost_basis == VALUE_BASIS_PV
+
     opt_series = build_timeseries(data, opt_selection)
     cmp_series = build_timeseries(data, comp_selection)
     raw_opt_label = resolve_selection_label(
@@ -10371,87 +10477,25 @@ def main() -> None:
     st.session_state["active_tab"] = active_tab
 
     with content_col:
-        summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
-        npv_summary_label = npv_context_label(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_override=summary_horizon_years,
-        )
-
-        def _scenario_stats(series: pd.DataFrame | None) -> dict | None:
-            if series is None:
-                return None
-            full_stats = scenario_metrics(series, start_year=data.start_fy)
-            horizon_stats = scenario_metrics(
-                series,
-                start_year=data.start_fy,
-                horizon_years=summary_horizon_years,
-            )
-            if not full_stats:
-                return horizon_stats
-            merged_stats = dict(full_stats)
-            if horizon_stats:
-                pv_value = horizon_stats.get("total_pv")
-                if pv_value is not None:
-                    merged_stats["total_pv"] = pv_value
-                benefit_value = horizon_stats.get("total_benefit")
-                if benefit_value is not None:
-                    merged_stats["total_benefit_horizon"] = benefit_value
-                spend_pv_value = horizon_stats.get("total_spend_pv")
-                if spend_pv_value is not None:
-                    merged_stats["total_spend_pv_horizon"] = spend_pv_value
-            return merged_stats
-
-        stats_opt = _scenario_stats(opt_series)
-        stats_cmp = _scenario_stats(cmp_series)
+        benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+        if benefit_basis == VALUE_BASIS_PV:
+            try:
+                summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+            except (TypeError, ValueError):
+                summary_horizon_years = 60
+            npv_summary_label = format_npv_context(summary_horizon_years, apply_discount=True)
+        elif benefit_basis == VALUE_BASIS_NOMINAL:
+            npv_summary_label = "Benefits (nominal)"
+        else:
+            npv_summary_label = "Benefits ($2025)"
 
         with st.expander("Programme summary", expanded=False):
-            st.checkbox(
-                "Apply MBCM discounting to benefit flows",
-                value=bool(st.session_state.get("npv_apply_discount", False)),
-                key="npv_apply_discount",
-                help=(
-                    f"NZTA Monetised Benefits and Costs Manual (MBCM) discounting: {mbcm_discount_label()}.\n\n"
-                    "Unchecked: assumes benefit flows in the cache are already discounted to present value (PV "
-                    "contributions) and sums them directly.\n"
-                    "Checked: discounts benefit flows in the dashboard using the MBCM schedule above."
-                ),
-            )
-            st.checkbox(
-                "Apply MBCM discounting to cost flows",
-                value=bool(st.session_state.get("npv_apply_cost_discount", False)),
-                key="npv_apply_cost_discount",
-                help=(
-                    f"NZTA Monetised Benefits and Costs Manual (MBCM) discounting: {mbcm_discount_label()}.\n\n"
-                    "Unchecked: expenditure totals are shown undiscounted in $2025.\n"
-                    "Checked: annual spend flows are discounted to present value over the selected NPV horizon.\n"
-                    "This toggle affects KPI expenditure cards and the costs vs benefits stack chart."
-                ),
-            )
-            npv_horizon_options = [60, 50, 40]
-            default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-            try:
-                default_horizon = int(default_horizon)
-            except (TypeError, ValueError):
-                default_horizon = npv_horizon_options[0]
-            if default_horizon not in npv_horizon_options:
-                default_horizon = npv_horizon_options[0]
-                st.session_state["npv_horizon_selection"] = default_horizon
-            st.radio(
-                "NPV horizon (years)",
-                npv_horizon_options,
-                index=npv_horizon_options.index(default_horizon),
-                horizontal=True,
-                key="npv_horizon_selection",
-            )
             render_programme_kpis(
-                stats_opt,
-                stats_cmp,
+                opt_series,
+                cmp_series,
+                data=data,
                 opt_selection=opt_selection,
                 cmp_selection=comp_selection,
-                npv_label=npv_summary_label,
-                npv_horizon_years=summary_horizon_years,
             )
 
         download_tables: Dict[str, pd.DataFrame] = {}
