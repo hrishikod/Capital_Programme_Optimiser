@@ -2220,44 +2220,116 @@ def prepare_efficiency_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    cost_basis = _resolve_value_basis(
+        "npv_cost_value_basis",
+        "npv_apply_cost_discount",
+        default=VALUE_BASIS_PV,
+    )
+    benefit_basis = _resolve_value_basis(
+        "npv_benefit_value_basis",
+        "npv_apply_discount",
+        default=VALUE_BASIS_PV,
+    )
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+    start_year = int(getattr(data, "start_fy", 2025) or 2025)
+
+    def _basis_descriptor(basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if basis_norm.startswith("pv"):
+            return "PV"
+        if basis_norm.startswith("nom"):
+            return "nominal"
+        return "real $2025"
+
+    def _scale_to_dollars(values: pd.Series) -> float:
+        values = pd.to_numeric(values, errors="coerce").fillna(0.0)
+        magnitude = float(values.abs().max()) if not values.empty else 0.0
+        if magnitude >= 10_000_000.0:
+            return 1.0
+        return 1_000_000.0
+
+    def _cumulative_series_dollars(
+        frame: pd.DataFrame,
+        *,
+        flow_column: str,
+        basis: str,
+        horizon_years: Optional[int],
+    ) -> pd.Series:
+        years_raw = pd.to_numeric(frame.get("Year"), errors="coerce")
+        flows_raw = pd.to_numeric(frame.get(flow_column), errors="coerce").fillna(0.0)
+        mask = years_raw.notna()
+        if not mask.any():
+            return pd.Series(dtype=float)
+        years = years_raw[mask].astype(int)
+        flows = flows_raw[mask].astype(float)
+        if basis == VALUE_BASIS_PV and horizon_years:
+            limit_year = int(start_year) + int(horizon_years) - 1
+            flows = flows.where(years <= limit_year, 0.0)
+        multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), basis)
+        adjusted = flows.to_numpy(dtype=float) * multipliers
+        cumulative = np.cumsum(adjusted)
+        scale = _scale_to_dollars(flows)
+        return pd.Series(cumulative * scale, index=years.to_numpy(dtype=int), dtype=float)
+
     years = sorted_years(opt_df, cmp_df)
     if not years:
         return None
     export, index = _create_export_table(years)
     if opt_df is not None and not opt_df.empty:
-        cum_spend = series_from_df(opt_df, "CumSpend")
-        if not cum_spend.empty:
-            aligned_spend = cum_spend.reindex(index)
+        spend_series = _cumulative_series_dollars(
+            opt_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        if not spend_series.empty:
+            aligned_spend = spend_series.reindex(index)
             if aligned_spend.notna().any():
-                export[f"{primary_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
-        if not series_opt.empty:
-            year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
-            mask = year_values.notna()
-            if mask.any():
-                aligned = pd.Series(
-                    series_opt[mask].astype(float).to_numpy(),
-                    index=year_values[mask].astype(int).to_numpy(),
-                ).reindex(index)
-                if aligned.notna().any():
-                    export[f"{label_opt} ($)"] = scale_series_to_nzd(aligned)
+                export[
+                    f"{primary_label} cumulative {_basis_descriptor(cost_basis)} spend ($)"
+                ] = aligned_spend
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in opt_df.columns else "BenefitFlow"
+        benefit_series = _cumulative_series_dollars(
+            opt_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        if not benefit_series.empty:
+            aligned = benefit_series.reindex(index)
+            if aligned.notna().any():
+                export[
+                    f"{primary_label} cumulative {_basis_descriptor(benefit_basis)} benefit ($)"
+                ] = aligned
     if cmp_df is not None and not cmp_df.empty:
-        cum_spend_cmp = series_from_df(cmp_df, "CumSpend")
-        if not cum_spend_cmp.empty:
-            aligned_cmp_spend = cum_spend_cmp.reindex(index)
+        spend_series_cmp = _cumulative_series_dollars(
+            cmp_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        if not spend_series_cmp.empty:
+            aligned_cmp_spend = spend_series_cmp.reindex(index)
             if aligned_cmp_spend.notna().any():
-                export[f"{comparison_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_cmp_spend)
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
-        if not series_cmp.empty:
-            year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
-            mask = year_values.notna()
-            if mask.any():
-                aligned = pd.Series(
-                    series_cmp[mask].astype(float).to_numpy(),
-                    index=year_values[mask].astype(int).to_numpy(),
-                ).reindex(index)
-                if aligned.notna().any():
-                    export[f"{label_cmp} ($)"] = scale_series_to_nzd(aligned)
+                export[
+                    f"{comparison_label} cumulative {_basis_descriptor(cost_basis)} spend ($)"
+                ] = aligned_cmp_spend
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in cmp_df.columns else "BenefitFlow"
+        benefit_series_cmp = _cumulative_series_dollars(
+            cmp_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        if not benefit_series_cmp.empty:
+            aligned = benefit_series_cmp.reindex(index)
+            if aligned.notna().any():
+                export[
+                    f"{comparison_label} cumulative {_basis_descriptor(benefit_basis)} benefit ($)"
+                ] = aligned
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -5342,23 +5414,88 @@ def efficiency_chart(
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
+    cost_basis = _resolve_value_basis(
+        "npv_cost_value_basis",
+        "npv_apply_cost_discount",
+        default=VALUE_BASIS_PV,
+    )
+    benefit_basis = _resolve_value_basis(
+        "npv_benefit_value_basis",
+        "npv_apply_discount",
+        default=VALUE_BASIS_PV,
+    )
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+
+    def _start_year() -> int:
+        for frame in (opt_df, cmp_df):
+            if frame is None or frame.empty:
+                continue
+            years_raw = pd.to_numeric(frame.get("Year"), errors="coerce").dropna()
+            if not years_raw.empty:
+                return int(years_raw.min())
+        return 2025
+
+    start_year = _start_year()
+
+    def _basis_descriptor(basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if basis_norm.startswith("pv"):
+            return "PV"
+        if basis_norm.startswith("nom"):
+            return "nominal"
+        return "real $2025"
+
+    def _scale_to_dollars(values: pd.Series) -> float:
+        values = pd.to_numeric(values, errors="coerce").fillna(0.0)
+        magnitude = float(values.abs().max()) if not values.empty else 0.0
+        if magnitude >= 10_000_000.0:
+            return 1.0
+        return 1_000_000.0
+
+    def _cumulative_flow(
+        frame: pd.DataFrame,
+        *,
+        flow_column: str,
+        basis: str,
+        horizon_years: Optional[int],
+    ) -> Tuple[pd.Series, pd.Series]:
+        years = pd.to_numeric(frame.get("Year"), errors="coerce").fillna(start_year).astype(int)
+        flows = pd.to_numeric(frame.get(flow_column), errors="coerce").fillna(0.0).astype(float)
+        if basis == VALUE_BASIS_PV and horizon_years:
+            limit_year = int(start_year) + int(horizon_years) - 1
+            flows = flows.where(years <= limit_year, 0.0)
+        multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), basis)
+        adjusted = flows.to_numpy(dtype=float) * multipliers
+        cumulative = pd.Series(np.cumsum(adjusted), index=frame.index, dtype=float)
+        return years, cumulative
+
     axis_samples: List[np.ndarray] = []
 
     series_opt = label_opt = None
 
     if opt_df is not None and not opt_df.empty:
-        spend_values = pd.to_numeric(opt_df["CumSpend"], errors="coerce").fillna(0.0) * 1_000_000.0
-        axis_samples.append(spend_values.to_numpy())
+        cost_years, cost_cum = _cumulative_flow(
+            opt_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        spend_scale = _scale_to_dollars(pd.to_numeric(opt_df.get("Spend"), errors="coerce").fillna(0.0))
+        spend_values = cost_cum * spend_scale
+        axis_samples.append(spend_values.to_numpy(dtype=float))
 
         fig.add_trace(
 
             go.Bar(
 
-                x=opt_df["Year"],
+                x=cost_years,
 
                 y=spend_values,
 
-                name=f"{primary_label} cumulative spend",
+                name=f"{primary_label} cumulative {_basis_descriptor(cost_basis)} spend",
 
                 marker_color=BRIGHT_PRIMARY_COLOR,
 
@@ -5366,31 +5503,49 @@ def efficiency_chart(
 
                 customdata=spend_values / 1_000_000_000.0,
 
-                hovertemplate=f"<b>{primary_label} cumulative spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
+                hovertemplate=f"<b>{primary_label} cumulative {_basis_descriptor(cost_basis)} spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
             )
 
         )
 
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
-        if isinstance(series_opt, pd.Series):
-            series_opt = pd.to_numeric(series_opt, errors="coerce").fillna(0.0) * 1_000_000.0
-            axis_samples.append(series_opt.to_numpy())
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in opt_df.columns else "BenefitFlow"
+        benefit_years_opt, benefit_cum_opt = _cumulative_flow(
+            opt_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        benefit_scale = _scale_to_dollars(
+            pd.to_numeric(opt_df.get(benefit_flow_col), errors="coerce").fillna(0.0)
+        )
+        series_opt = benefit_cum_opt * benefit_scale
+        label_opt = f"{primary_label} cumulative {_basis_descriptor(benefit_basis)} benefit"
+        axis_samples.append(series_opt.to_numpy(dtype=float))
 
     series_cmp = label_cmp = None
 
     if cmp_df is not None and not cmp_df.empty:
 
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
-        if isinstance(series_cmp, pd.Series):
-            series_cmp = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0) * 1_000_000.0
-            axis_samples.append(series_cmp.to_numpy())
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in cmp_df.columns else "BenefitFlow"
+        benefit_years_cmp, benefit_cum_cmp = _cumulative_flow(
+            cmp_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        benefit_scale = _scale_to_dollars(
+            pd.to_numeric(cmp_df.get(benefit_flow_col), errors="coerce").fillna(0.0)
+        )
+        series_cmp = benefit_cum_cmp * benefit_scale
+        label_cmp = f"{comparison_label} cumulative {_basis_descriptor(benefit_basis)} benefit"
+        axis_samples.append(series_cmp.to_numpy(dtype=float))
 
         fig.add_trace(
 
             go.Scatter(
 
-                x=cmp_df["Year"],
+                x=benefit_years_cmp,
 
                 y=series_cmp,
 
@@ -5426,7 +5581,7 @@ def efficiency_chart(
 
             go.Scatter(
 
-                x=opt_df["Year"],
+                x=benefit_years_opt,
 
                 y=series_opt,
 
@@ -10633,22 +10788,6 @@ def main() -> None:
         st.divider()
         basis_cols = st.columns(2)
         with basis_cols[0]:
-            default_benefit_basis = _resolve_value_basis(
-                "npv_benefit_value_basis",
-                "npv_apply_discount",
-                default=VALUE_BASIS_PV,
-            )
-            benefit_basis = st.selectbox(
-                "Benefits value basis",
-                list(VALUE_BASIS_OPTIONS),
-                index=list(VALUE_BASIS_OPTIONS).index(default_benefit_basis),
-                key="npv_benefit_value_basis",
-                help=(
-                    "Choose how benefits are expressed in KPI cards and breakdown charts.\n\n"
-                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
-                ),
-            )
-        with basis_cols[1]:
             default_cost_basis = _resolve_value_basis(
                 "npv_cost_value_basis",
                 "npv_apply_cost_discount",
@@ -10661,6 +10800,22 @@ def main() -> None:
                 key="npv_cost_value_basis",
                 help=(
                     "Choose how costs are expressed in KPI cards and breakdown charts.\n\n"
+                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
+                ),
+            )
+        with basis_cols[1]:
+            default_benefit_basis = _resolve_value_basis(
+                "npv_benefit_value_basis",
+                "npv_apply_discount",
+                default=VALUE_BASIS_PV,
+            )
+            benefit_basis = st.selectbox(
+                "Benefits value basis",
+                list(VALUE_BASIS_OPTIONS),
+                index=list(VALUE_BASIS_OPTIONS).index(default_benefit_basis),
+                key="npv_benefit_value_basis",
+                help=(
+                    "Choose how benefits are expressed in KPI cards and breakdown charts.\n\n"
                     f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
                 ),
             )
