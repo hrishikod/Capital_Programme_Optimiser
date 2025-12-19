@@ -5685,12 +5685,12 @@ def cost_benefit_stack_chart(
             benefit_series = benefit_series.sort_values(ascending=False)
 
     cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
-    benefit_total_dollars = float(benefit_series.sum() * 1_000_000.0) if not benefit_series.empty else 0.0
+    benefit_total_dollars = float(benefit_series.sum()) if not benefit_series.empty else 0.0
     axis_samples = []
     if not cost_series.empty:
         axis_samples.extend((cost_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
     if not benefit_series.empty:
-        axis_samples.extend((benefit_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
+        axis_samples.extend((benefit_series.astype(float).to_numpy(dtype=float)).tolist())
     axis_samples.extend([cost_total_dollars, benefit_total_dollars])
     axis_samples = [val for val in axis_samples if np.isfinite(val)]
     if not axis_samples or max(abs(val) for val in axis_samples) <= 1e-6:
@@ -5741,8 +5741,7 @@ def cost_benefit_stack_chart(
     benefit_colors = list(reversed(_sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)))
     benefit_legend_items = [(str(label), str(color)) for label, color in zip(benefit_labels, benefit_colors)]
     for label, color in zip(benefit_labels, benefit_colors):
-        value_m = float(benefit_series.get(label, 0.0))
-        value_dollars = value_m * 1_000_000.0
+        value_dollars = float(benefit_series.get(label, 0.0))
         fig.add_trace(
             go.Bar(
                 x=[x_benefit],
@@ -9478,6 +9477,11 @@ def render_cash_flow_tab(
 
                 benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
                 cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+                if benefit_value_basis != cost_value_basis:
+                    st.warning(
+                        f"Costs are shown in `{cost_value_basis}` but benefits are shown in `{benefit_value_basis}`. "
+                        "Align the value bases for an apples-to-apples comparison."
+                    )
                 pv_horizon_years = (
                     int(st.session_state.get("npv_horizon_selection", 60))
                     if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
