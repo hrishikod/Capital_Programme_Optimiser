@@ -590,6 +590,11 @@ def inject_kpi_card_theme() -> None:
         background: rgba(202,65,66,.10);
         border-color: rgba(202,65,66,.30);
       }}
+      .kpi-delta.muted {{
+        color: #64748B;
+        background: rgba(148,163,184,.18);
+        border-color: rgba(148,163,184,.45);
+      }}
       .kpi-delta.neutral {{
         color: var(--pbi-blue);
         background: rgba(25,69,107,.10);
@@ -7399,6 +7404,15 @@ def render_programme_kpis(
             return "-"
         return f"{numeric:.2f}"
 
+    def _fmt_abs(value: float | None) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if not np.isfinite(numeric):
+            return "-"
+        return format_currency(abs(numeric))
+
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
     pair_label = scenario_pair_label()
@@ -7502,6 +7516,27 @@ def render_programme_kpis(
             delta_state=pv_chip_state,
         )
 
+    if delta_spend is None or not np.isfinite(delta_spend):
+        cost_delta_card = _kpi_card_html(
+            f"Delta Total {cost_prefix}{cost_label}",
+            _fmt(delta_spend),
+            subtitle=pair_label,
+        )
+    else:
+        if math.isclose(delta_spend, 0.0, abs_tol=1e-6):
+            cost_chip_text = f"{_fmt_abs(delta_spend)} vs {comparison_label}"
+            cost_chip_state = "muted"
+        else:
+            more_spend = delta_spend > 0
+            cost_arrow = "&#9650;" if more_spend else "&#9660;"
+            cost_chip_state = "down" if more_spend else "up"
+            cost_chip_text = f"{cost_arrow} {_fmt_abs(delta_spend)} vs {comparison_label}"
+        cost_delta_card = _kpi_card_html(
+            f"Delta Total {cost_prefix}{cost_label}",
+            None,
+            body_html=f'<div class="kpi-delta lead {cost_chip_state}">{cost_chip_text}</div>',
+        )
+
     efficiency_body: str
     if bcr_opt is None or bcr_cmp is None or not np.isfinite(bcr_opt) or not np.isfinite(bcr_cmp):
         efficiency_body = '<div class="kpi-sub">Efficiency comparison unavailable</div>'
@@ -7546,11 +7581,7 @@ def render_programme_kpis(
         f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
         _kpi_card_html(f"Total {cost_prefix}{cost_label} - {primary_label}", _fmt(opt_spend)),
         _kpi_card_html(f"Total {cost_prefix}{cost_label} - {comparison_label}", _fmt(cmp_spend)),
-        _kpi_card_html(
-            f"Delta Total {cost_prefix}{cost_label}",
-            _fmt(delta_spend),
-            subtitle=pair_label,
-        ),
+        cost_delta_card,
         _kpi_card_html(
             f"Total {benefit_prefix}{benefit_label} - {primary_label}",
             _fmt(opt_benefit),
