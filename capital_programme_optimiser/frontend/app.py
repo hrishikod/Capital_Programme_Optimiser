@@ -7494,26 +7494,24 @@ def render_programme_kpis(
     benefit_prefix = f"{pv_horizon_years}-year " if (benefit_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
     cost_prefix = f"{pv_horizon_years}-year " if (cost_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
 
-    if delta_benefit is None:
-        pv_chip_text, pv_chip_state = None, "neutral"
-    else:
-        sign = "&#9650;" if delta_benefit >= 0 else "&#9660;"
-        pv_chip_state = "up" if delta_benefit >= 0 else "down"
-        pv_chip_text = f"{sign} {_fmt(delta_benefit)} vs {comparison_label}"
-
-    if pv_chip_text:
-        delta_pv_card = _kpi_card_html(
-            f"Delta Total {benefit_prefix}{benefit_label}",
-            None,
-            body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
-        )
-    else:
+    if delta_benefit is None or not np.isfinite(delta_benefit):
         delta_pv_card = _kpi_card_html(
             f"Delta Total {benefit_prefix}{benefit_label}",
             _fmt(delta_benefit),
             subtitle=pair_label,
-            delta_text=pv_chip_text,
-            delta_state=pv_chip_state,
+        )
+    else:
+        if math.isclose(delta_benefit, 0.0, abs_tol=1e-6):
+            pv_chip_state = "muted"
+            pv_chip_text = f"{_fmt_abs(delta_benefit)} vs {comparison_label}"
+        else:
+            sign = "&#9650;" if delta_benefit > 0 else "&#9660;"
+            pv_chip_state = "up" if delta_benefit > 0 else "down"
+            pv_chip_text = f"{sign} {_fmt_abs(delta_benefit)} vs {comparison_label}"
+        delta_pv_card = _kpi_card_html(
+            f"Delta Total {benefit_prefix}{benefit_label}",
+            None,
+            body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
         )
 
     if delta_spend is None or not np.isfinite(delta_spend):
@@ -7543,8 +7541,12 @@ def render_programme_kpis(
     else:
         diff_pct = ((bcr_opt / bcr_cmp) - 1.0) * 100.0 if bcr_cmp else 0.0
         direction = "more" if diff_pct >= 0 else "less"
-        bubble_state = "up" if diff_pct >= 0 else "down"
-        arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            bubble_state = "muted"
+            arrow = ""
+        else:
+            bubble_state = "up" if diff_pct >= 0 else "down"
+            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
         efficiency_body = (
             '<div class="kpi-inline">'
             f'<span class="kpi-text">{html.escape(primary_label)} is</span>'
