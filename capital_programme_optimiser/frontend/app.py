@@ -7540,11 +7540,13 @@ def render_programme_kpis(
         efficiency_body = '<div class="kpi-sub">Efficiency comparison unavailable</div>'
     else:
         diff_pct = ((bcr_opt / bcr_cmp) - 1.0) * 100.0 if bcr_cmp else 0.0
-        direction = "more" if diff_pct >= 0 else "less"
         if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            diff_pct = 0.0
+            direction = "more"
             bubble_state = "muted"
             arrow = ""
         else:
+            direction = "more" if diff_pct >= 0 else "less"
             bubble_state = "up" if diff_pct >= 0 else "down"
             arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
         efficiency_body = (
