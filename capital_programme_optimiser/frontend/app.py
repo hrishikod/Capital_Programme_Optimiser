@@ -6036,6 +6036,8 @@ def cost_benefit_stack_chart(
         margin=dict(l=70, r=20, t=56, b=54, autoexpand=False),
         height=480,
     )
+    if any(val < -1e-9 for val in axis_samples):
+        fig.add_hline(y=0, line=dict(color="#111111", width=2))
 
     ticks_vals, ticks_text, _ = compute_cash_axis_ticks(
         axis_samples,
