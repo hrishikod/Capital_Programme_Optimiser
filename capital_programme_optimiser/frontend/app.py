@@ -544,6 +544,25 @@ def inject_kpi_card_theme() -> None:
         line-height: 1.1;
         letter-spacing: -0.01em;
       }}
+      .kpi-text {{
+        color: var(--kpi-text-1);
+        font-weight: 500;
+        font-size: 1.3rem;
+        line-height: 1.2;
+      }}
+      .kpi-inline {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: baseline;
+      }}
+      .kpi-inline .kpi-text {{
+        display: inline;
+        font-size: 1.05rem;
+      }}
+      .kpi-inline .kpi-delta {{
+        margin-top: 0;
+      }}
       .kpi-sub {{
         color: var(--kpi-text-2);
         font-size: .85rem;
@@ -7303,6 +7322,60 @@ def _kpi_card_html(
     return "\n".join(parts)
 
 
+def render_solver_gap_kpis(
+    opt_selection: Optional["ScenarioSelection"],
+    cmp_selection: Optional["ScenarioSelection"],
+) -> None:
+    import streamlit as st
+
+    def _fmt_gap(value: float | None) -> str:
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if not np.isfinite(val):
+            return "N/A"
+        return f"{val * 100:.2f} %"
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    opt_meta = opt_selection.metadata if opt_selection else {}
+    cmp_meta = cmp_selection.metadata if cmp_selection else {}
+    opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
+    cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
+
+    grid_token = uuid4().hex[:8]
+    anim_name = f"kpiSweep_{grid_token}"
+    style_block = textwrap.dedent(
+        f"""
+        <style>
+        @keyframes {anim_name} {{
+            0% {{ transform: translateY(-3px) scaleX(0); }}
+            100% {{ transform: translateY(-3px) scaleX(1); }}
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card::after {{
+            animation: {anim_name} 0.275s ease-out forwards;
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(1)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(2)::after {{ animation-delay: 0ms; }}
+        </style>
+        """
+    )
+    cards = [
+        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
+        _kpi_card_html(
+            f"{primary_label} solver relative gap",
+            _fmt_gap(opt_gap),
+        ),
+        _kpi_card_html(
+            f"{comparison_label} solver relative gap",
+            _fmt_gap(cmp_gap),
+        ),
+        "</div>",
+    ]
+    st.markdown(style_block + "".join(cards), unsafe_allow_html=True)
+
+
 def render_programme_kpis(
     opt_series: pd.DataFrame | None,
     cmp_series: pd.DataFrame | None,
@@ -7317,22 +7390,18 @@ def render_programme_kpis(
     def _fmt(value: float | None) -> str:
         return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
 
-    def _fmt_gap(value: float | None) -> str:
+    def _fmt_ratio(value: float | None) -> str:
         try:
-            val = float(value)
+            numeric = float(value)
         except (TypeError, ValueError):
-            return "N/A"
-        if not np.isfinite(val):
-            return "N/A"
-        return f"{val * 100:.2f} %"
+            return "-"
+        if not np.isfinite(numeric):
+            return "-"
+        return f"{numeric:.2f}"
 
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
     pair_label = scenario_pair_label()
-    opt_meta = opt_selection.metadata if opt_selection else {}
-    cmp_meta = cmp_selection.metadata if cmp_selection else {}
-    opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
-    cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
 
     benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
     cost_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
@@ -7386,6 +7455,26 @@ def render_programme_kpis(
     cmp_spend = _total_from_series(cmp_series, "Spend", cost_basis)
     delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
 
+    def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+        if numerator is None or denominator is None:
+            return None
+        try:
+            denom_val = float(denominator)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(denom_val) or math.isclose(denom_val, 0.0, abs_tol=1e-9):
+            return None
+        try:
+            num_val = float(numerator)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(num_val):
+            return None
+        return num_val / denom_val
+
+    bcr_opt = _ratio(opt_benefit, opt_spend)
+    bcr_cmp = _ratio(cmp_benefit, cmp_spend)
+
     benefit_label = _basis_label("benefit", benefit_basis)
     cost_label = _basis_label("cost", cost_basis)
     benefit_prefix = f"{pv_horizon_years}-year " if (benefit_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
@@ -7411,6 +7500,23 @@ def render_programme_kpis(
             subtitle=pair_label,
             delta_text=pv_chip_text,
             delta_state=pv_chip_state,
+        )
+
+    efficiency_body: str
+    if bcr_opt is None or bcr_cmp is None or not np.isfinite(bcr_opt) or not np.isfinite(bcr_cmp):
+        efficiency_body = '<div class="kpi-sub">Efficiency comparison unavailable</div>'
+    else:
+        diff_pct = ((bcr_opt / bcr_cmp) - 1.0) * 100.0 if bcr_cmp else 0.0
+        direction = "more" if diff_pct >= 0 else "less"
+        bubble_state = "up" if diff_pct >= 0 else "down"
+        arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        efficiency_body = (
+            '<div class="kpi-inline">'
+            f'<span class="kpi-text">{html.escape(primary_label)} is</span>'
+            f'<span class="kpi-delta {bubble_state}">{arrow} {abs(diff_pct):.1f}%</span>'
+            f'<span class="kpi-text"><strong>{direction}</strong> efficient than</span>'
+            f'<span class="kpi-text">{html.escape(comparison_label)}</span>'
+            "</div>"
         )
 
     grid_token = uuid4().hex[:8]
@@ -7454,15 +7560,18 @@ def render_programme_kpis(
             _fmt(cmp_benefit),
         ),
         delta_pv_card,
-        '</div>',
-        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}_gap">',
         _kpi_card_html(
-            f"{primary_label} solver relative gap",
-            _fmt_gap(opt_gap),
+            f"BCR - Portfolio Weighted Average - {primary_label}",
+            _fmt_ratio(bcr_opt),
         ),
         _kpi_card_html(
-            f"{comparison_label} solver relative gap",
-            _fmt_gap(cmp_gap),
+            f"BCR - Portfolio Weighted Average - {comparison_label}",
+            _fmt_ratio(bcr_cmp),
+        ),
+        _kpi_card_html(
+            "Efficiency",
+            None,
+            body_html=efficiency_body,
         ),
         '</div>',
     ]
@@ -10721,6 +10830,7 @@ def main() -> None:
             st.error(f"Unable to load scenario cache from {selected_path}: {exc}")
             st.stop()
 
+    solver_gap_placeholder = None
     with st.expander("Scenario selection", expanded=False):
         scenario_cols = st.columns(2)
         with scenario_cols[0]:
@@ -10747,6 +10857,8 @@ def main() -> None:
                 key="cmp_profile_select",
                 label_visibility="collapsed",
             )
+        st.divider()
+        solver_gap_placeholder = st.empty()
 
     with st.expander("Advanced filters", expanded=False):
         adv_opt_col, adv_cmp_col = st.columns(2)
@@ -10879,6 +10991,9 @@ def main() -> None:
         cmp_label = raw_cmp_label
 
     set_scenario_display_labels(opt_label, cmp_label)
+    if solver_gap_placeholder is not None:
+        with solver_gap_placeholder:
+            render_solver_gap_kpis(opt_selection, comp_selection)
 
     nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
     if ENABLE_PREVIEW_NAVIGATION:
