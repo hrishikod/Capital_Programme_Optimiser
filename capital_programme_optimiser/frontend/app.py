@@ -1244,6 +1244,7 @@ def render_export_download(
         _inject_export_popover_focus_guard()
         breakdown_label = st.session_state.get("cash_flow_profile_spend_breakdown", "Total")
         cumulative_tables = {k: v for k, v in tables.items() if k == "Cumulative spend vs benefit"}
+        bcr_tables = {k: v for k, v in tables.items() if k == "BCR - Portfolio Weighted Average"}
         stack_tables = {
             k: v
             for k, v in tables.items()
@@ -1262,8 +1263,8 @@ def render_export_download(
                 "<div class='pbi-export-popover-sub'>Choose what to download:</div>",
                 unsafe_allow_html=True,
             )
-            button_cols = st.columns(3)
-            with button_cols[0]:
+            row1 = st.columns(2)
+            with row1[0]:
                 cumulative_bytes = build_export_workbook(cumulative_tables) if cumulative_tables else b""
                 st.download_button(
                     "Cumulative chart",
@@ -1274,7 +1275,7 @@ def render_export_download(
                     disabled=not cumulative_tables,
                     help="Cumulative spend vs benefit.",
                 )
-            with button_cols[1]:
+            with row1[1]:
                 stack_bytes = build_export_workbook(stack_tables) if stack_tables else b""
                 st.download_button(
                     "Stacked costs/benefits",
@@ -1285,7 +1286,19 @@ def render_export_download(
                     disabled=not stack_tables,
                     help="Costs vs benefits stack using current settings.",
                 )
-            with button_cols[2]:
+            row2 = st.columns(2)
+            with row2[0]:
+                bcr_bytes = build_export_workbook(bcr_tables) if bcr_tables else b""
+                st.download_button(
+                    "BCR chart",
+                    data=bcr_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(bcr_tables.keys())) & 0xffff}_bcr",
+                    disabled=not bcr_tables,
+                    help="Portfolio weighted average BCR (PV).",
+                )
+            with row2[1]:
                 cashflow_bytes = build_export_workbook(cashflow_tables) if cashflow_tables else b""
                 st.download_button(
                     "Cash flow charts",
@@ -2661,6 +2674,49 @@ def prepare_efficiency_export(
                 export[
                     f"{comparison_label} cumulative {_basis_descriptor(benefit_basis)} benefit ($)"
                 ] = aligned
+    if export.shape[1] == 0:
+        return None
+    return export.reset_index()
+
+
+def prepare_bcr_time_series_export(
+    data: DashboardData,
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    years = sorted_years(opt_df, cmp_df)
+    if not years:
+        return None
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+    start_year = _bcr_start_year(opt_df, cmp_df)
+
+    export, index = _create_export_table(years)
+    opt_series = _bcr_series_from_frame(
+        opt_df,
+        start_year=start_year,
+        pv_horizon_years=pv_horizon_years,
+    )
+    if opt_series is not None and not opt_series.empty:
+        aligned = opt_series.reindex(index)
+        if aligned.notna().any():
+            export[f"{primary_label} BCR (PV)"] = aligned
+    cmp_series = _bcr_series_from_frame(
+        cmp_df,
+        start_year=start_year,
+        pv_horizon_years=pv_horizon_years,
+    )
+    if cmp_series is not None and not cmp_series.empty:
+        aligned = cmp_series.reindex(index)
+        if aligned.notna().any():
+            export[f"{comparison_label} BCR (PV)"] = aligned
+
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -6517,6 +6573,181 @@ def efficiency_chart(
             rangemode="tozero",
 
         )
+
+    return fig
+
+
+def _bcr_start_year(opt_df: Optional[pd.DataFrame], cmp_df: Optional[pd.DataFrame]) -> int:
+    for frame in (opt_df, cmp_df):
+        if frame is None or frame.empty:
+            continue
+        years_raw = pd.to_numeric(frame.get("Year"), errors="coerce").dropna()
+        if not years_raw.empty:
+            return int(years_raw.min())
+    return 2025
+
+
+def _bcr_series_from_frame(
+    frame: Optional[pd.DataFrame],
+    *,
+    start_year: int,
+    pv_horizon_years: Optional[int],
+) -> Optional[pd.Series]:
+    if frame is None or frame.empty:
+        return None
+    years = pd.to_numeric(frame.get("Year"), errors="coerce")
+    valid_mask = years.notna()
+    if not valid_mask.any():
+        return None
+    years = years[valid_mask].astype(int)
+    spend = pd.to_numeric(frame.get("Spend"), errors="coerce").fillna(0.0)
+    spend = spend[valid_mask].astype(float)
+    benefit_col = "BenefitFlowTotal" if "BenefitFlowTotal" in frame.columns else "BenefitFlow"
+    benefits = pd.to_numeric(frame.get(benefit_col), errors="coerce").fillna(0.0)
+    benefits = benefits[valid_mask].astype(float)
+    if pv_horizon_years:
+        limit_year = int(start_year) + int(pv_horizon_years) - 1
+        in_window = years <= limit_year
+        spend = spend.where(in_window, 0.0)
+        benefits = benefits.where(in_window, 0.0)
+    multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), VALUE_BASIS_PV)
+    spend_pv = spend.to_numpy(dtype=float) * multipliers
+    benefit_pv = benefits.to_numpy(dtype=float) * multipliers
+    cum_spend = np.cumsum(spend_pv)
+    cum_benefit = np.cumsum(benefit_pv)
+    bcr = np.divide(
+        cum_benefit,
+        cum_spend,
+        out=np.full_like(cum_benefit, np.nan, dtype=float),
+        where=cum_spend != 0,
+    )
+    return pd.Series(bcr, index=years.to_numpy(dtype=int))
+
+
+def bcr_time_series_chart(
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[go.Figure]:
+    if (opt_df is None or opt_df.empty) and (cmp_df is None or cmp_df.empty):
+        return None
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
+    start_year = _bcr_start_year(opt_df, cmp_df)
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+
+    series_opt = _bcr_series_from_frame(opt_df, start_year=start_year, pv_horizon_years=pv_horizon_years)
+    series_cmp = _bcr_series_from_frame(cmp_df, start_year=start_year, pv_horizon_years=pv_horizon_years)
+    if series_opt is None and series_cmp is None:
+        return None
+
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+
+    opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
+    cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
+
+    def _efficiency_sentence(diff_pct: Optional[float]) -> str:
+        if diff_pct is None or not np.isfinite(diff_pct):
+            return "Efficiency comparison unavailable"
+        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            diff_pct = 0.0
+            direction = "more"
+            arrow = ""
+        else:
+            direction = "more" if diff_pct >= 0 else "less"
+            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        return (
+            f"{primary_label} is {arrow} {abs(diff_pct):.1f}% {direction} "
+            f"efficient than {comparison_label}"
+        )
+
+    def _fmt_bcr(value: Optional[float]) -> str:
+        if value is None or not np.isfinite(value):
+            return "n/a"
+        return f"{value:.2f}"
+
+    efficiency_messages: List[str] = []
+    opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
+    cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
+    if opt_aligned is not None and cmp_aligned is not None:
+        for opt_val, cmp_val in zip(opt_values, cmp_values):
+            if cmp_val and np.isfinite(opt_val) and np.isfinite(cmp_val):
+                diff_pct = ((opt_val / cmp_val) - 1.0) * 100.0
+            else:
+                diff_pct = None
+            efficiency_messages.append(_efficiency_sentence(diff_pct))
+    else:
+        if opt_aligned is not None:
+            efficiency_messages = [_efficiency_sentence(None) for _ in range(len(opt_aligned))]
+        elif cmp_aligned is not None:
+            efficiency_messages = [_efficiency_sentence(None) for _ in range(len(cmp_aligned))]
+
+    fig = go.Figure()
+    if opt_aligned is not None:
+        opt_value_labels = [_fmt_bcr(val) for val in opt_values]
+        customdata = [
+            [efficiency_messages[idx], opt_value_labels[idx] if idx < len(opt_value_labels) else "n/a"]
+            for idx in range(len(efficiency_messages))
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=opt_values,
+                name=primary_label,
+                mode="lines",
+                line=dict(color=PRIMARY_COLOR, width=2.8),
+                customdata=customdata,
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{customdata[1]}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata[0]}</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    if cmp_aligned is not None:
+        cmp_value_labels = [_fmt_bcr(val) for val in cmp_values]
+        customdata = [
+            [efficiency_messages[idx], cmp_value_labels[idx] if idx < len(cmp_value_labels) else "n/a"]
+            for idx in range(len(efficiency_messages))
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=cmp_values,
+                name=comparison_label,
+                mode="lines",
+                line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
+                customdata=customdata,
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{customdata[1]}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata[0]}</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="BCR - Portfolio Weighted Average",
+        xaxis_title=None,
+        yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(),
+    )
 
     return fig
 
@@ -10735,28 +10966,28 @@ def render_cash_flow_tab(
     with eff_cols[0]:
         if show_stack_chart:
             st.markdown(f'<div style="height:{control_row_spacer_px}px;"></div>', unsafe_allow_html=True)
-        eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
-        if eff_fig is not None:
-            eff_fig.update_layout(
-                height=480,
-                margin=dict(l=70, r=20, t=56, b=100, autoexpand=False),
+        bcr_fig = bcr_time_series_chart(opt_series, cmp_series, opt_selection, comp_selection)
+        if bcr_fig is not None:
+            bcr_fig.update_layout(
+                height=420,
+                margin=dict(l=60, r=20, t=56, b=80, autoexpand=False),
             )
             st.plotly_chart(
-                eff_fig,
+                bcr_fig,
                 use_container_width=True,
-                key="overview_efficiency_chart",
+                key="overview_bcr_time_series_chart",
             )
-            efficiency_export = prepare_efficiency_export(
+            bcr_export = prepare_bcr_time_series_export(
                 data,
                 opt_series,
                 cmp_series,
                 opt_selection,
                 comp_selection,
             )
-            if efficiency_export is not None:
-                export_tables["Cumulative spend vs benefit"] = efficiency_export
+            if bcr_export is not None:
+                export_tables["BCR - Portfolio Weighted Average"] = bcr_export
         else:
-            st.info("Select scenarios to view cumulative spend vs benefit.")
+            st.info("Select scenarios to view the portfolio BCR time series.")
 
     with eff_cols[1]:
         if show_stack_chart:
@@ -10974,6 +11205,30 @@ def render_cash_flow_tab(
             st.warning(f"Cash flow data unavailable for the {cmp_label} selection.")
         else:
             st.info(f"Select {cmp_label} to view the {profile_label}.")
+
+    st.markdown('<div class="pbi-section-title">Cumulative spend vs benefit</div>', unsafe_allow_html=True)
+    eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
+    if eff_fig is not None:
+        eff_fig.update_layout(
+            height=460,
+            margin=dict(l=70, r=20, t=56, b=100, autoexpand=False),
+        )
+        st.plotly_chart(
+            eff_fig,
+            use_container_width=True,
+            key="overview_efficiency_chart",
+        )
+        efficiency_export = prepare_efficiency_export(
+            data,
+            opt_series,
+            cmp_series,
+            opt_selection,
+            comp_selection,
+        )
+        if efficiency_export is not None:
+            export_tables["Cumulative spend vs benefit"] = efficiency_export
+    else:
+        st.info("Select scenarios to view cumulative spend vs benefit.")
 
     return export_tables
 
