@@ -744,6 +744,27 @@ def inject_powerbi_theme() -> None:
                 font-weight: 600;
                 margin: 1.0rem 0 0.5rem;
             }}
+            .pbi-help-wrap {{
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                margin: 0.1rem 0 0.25rem;
+            }}
+            .pbi-help-icon {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 22px;
+                height: 22px;
+                border-radius: 999px;
+                border: 1px solid rgba(15, 23, 42, 0.2);
+                color: var(--pbi-blue);
+                background: #ffffff;
+                font-size: 0.78rem;
+                font-weight: 700;
+                cursor: help;
+                box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+            }}
             .pbi-card {{
                 background: #ffffff;
                 border-radius: 16px;
@@ -5321,6 +5342,219 @@ def _analysis_sparkline_chart(
             pad = 1.0
         yaxis_config["range"] = [-pad, float(y_max) + pad]
     fig.update_yaxes(**yaxis_config)
+    return fig
+
+
+def _timing_center_from_pivot(
+    pivot: Optional[pd.DataFrame],
+) -> Tuple[pd.Series, pd.Series]:
+    if pivot is None or pivot.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    years = pd.Index(pivot.index).astype(int)
+    totals = values.sum(axis=0)
+    weighted = values.mul(years, axis=0).sum(axis=0)
+    centers = weighted.divide(totals.replace(0.0, np.nan))
+    return centers.astype(float), totals.astype(float)
+
+
+def _overall_timing_center(pivot: Optional[pd.DataFrame]) -> Optional[float]:
+    if pivot is None or pivot.empty:
+        return None
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    totals_by_year = values.sum(axis=1)
+    total = float(totals_by_year.sum())
+    if total <= 0:
+        return None
+    years = pd.Index(pivot.index).astype(int)
+    weighted = (totals_by_year.to_numpy(dtype=float) * years.to_numpy(dtype=int)).sum()
+    return float(weighted / total)
+
+
+def _timing_paddle_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    centers_opt, totals_opt = _timing_center_from_pivot(pivot_opt)
+    centers_cmp, totals_cmp = _timing_center_from_pivot(pivot_cmp)
+
+    combined_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined_totals = combined_totals[combined_totals.abs() > 1e-9]
+    if combined_totals.empty:
+        return None
+
+    total_sum = float(combined_totals.sum())
+    categories = combined_totals.sort_values(ascending=False).index.astype(str).tolist()
+    share_labels: List[str] = []
+    for cat in categories:
+        share = (combined_totals.get(cat, 0.0) / total_sum * 100.0) if total_sum else 0.0
+        share_labels.append(f"{cat} ({share:.1f}%)")
+
+    line_x: List[Optional[float]] = []
+    line_y: List[str] = []
+    opt_x: List[float] = []
+    opt_y: List[str] = []
+    cmp_x: List[float] = []
+    cmp_y: List[str] = []
+    text_x: List[float] = []
+    text_y: List[str] = []
+    text_vals: List[str] = []
+
+    for cat, label in zip(categories, share_labels):
+        opt_val = centers_opt.get(cat, np.nan)
+        cmp_val = centers_cmp.get(cat, np.nan)
+        if np.isfinite(opt_val):
+            opt_x.append(float(opt_val))
+            opt_y.append(label)
+        if np.isfinite(cmp_val):
+            cmp_x.append(float(cmp_val))
+            cmp_y.append(label)
+        if np.isfinite(opt_val) and np.isfinite(cmp_val):
+            line_x.extend([float(opt_val), float(cmp_val), None])
+            line_y.extend([label, label, None])
+            delta = float(cmp_val) - float(opt_val)
+            text_x.append((float(opt_val) + float(cmp_val)) / 2.0)
+            text_y.append(label)
+            text_vals.append(f"{delta:+.1f}y")
+
+    overall_opt = _overall_timing_center(pivot_opt)
+    overall_cmp = _overall_timing_center(pivot_cmp)
+    if overall_opt is not None and overall_cmp is not None:
+        overall_shift = overall_cmp - overall_opt
+        overall_center = (overall_opt + overall_cmp) / 2.0
+    elif overall_opt is not None:
+        overall_shift = 0.0
+        overall_center = overall_opt
+    elif overall_cmp is not None:
+        overall_shift = 0.0
+        overall_center = overall_cmp
+    else:
+        overall_shift = 0.0
+        overall_center = None
+
+    fig = go.Figure()
+    if line_x:
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_y,
+                mode="lines",
+                line=dict(color="rgba(71, 85, 105, 0.6)", width=2.0),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    if opt_x:
+        fig.add_trace(
+            go.Scatter(
+                x=opt_x,
+                y=opt_y,
+                mode="markers",
+                marker=dict(color=PRIMARY_COLOR, size=9, line=dict(color="#ffffff", width=1)),
+                name=opt_label,
+                customdata=opt_x,
+                hovertemplate="<b>%{y}</b><br>Timing center: %{customdata:.1f}y<extra></extra>",
+            )
+        )
+    if cmp_x:
+        fig.add_trace(
+            go.Scatter(
+                x=cmp_x,
+                y=cmp_y,
+                mode="markers",
+                marker=dict(color=CAPACITY_HEAT_RED, size=9, line=dict(color="#ffffff", width=1)),
+                name=cmp_label,
+                customdata=cmp_x,
+                hovertemplate="<b>%{y}</b><br>Timing center: %{customdata:.1f}y<extra></extra>",
+            )
+        )
+    if text_x:
+        fig.add_trace(
+            go.Scatter(
+                x=text_x,
+                y=text_y,
+                mode="text",
+                text=text_vals,
+                textfont=dict(color="#0f172a", size=12),
+                textposition="top center",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    if overall_center is not None:
+        fig.add_vline(
+            x=overall_center,
+            line=dict(color="rgba(15, 23, 42, 0.45)", width=1.5, dash="dash"),
+        )
+
+    title_text = f"{breakdown_label} - overall programme timing shift: {overall_shift:+.2f} yrs"
+    height = max(360, 140 + len(categories) * 38)
+    fig.update_layout(
+        title=title_text,
+        xaxis_title="Year (weighted by spend)",
+        yaxis_title="Category (share of total spend)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(y=-0.28),
+        margin=dict(l=200, r=40, t=70, b=120),
+        height=height,
+    )
+    fig.update_xaxes(title_standoff=18)
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=share_labels[::-1],
+    )
+
+    return fig
+
+
+def _distribution_cost_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if pivot_opt is None or pivot_opt.empty:
+        return None
+    totals = pivot_opt.apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=0)
+    totals = totals[totals.abs() > 1e-9]
+    if totals.empty:
+        return None
+
+    categories = totals.sort_values(ascending=False).index.astype(str).tolist()
+    values = totals.reindex(categories).fillna(0.0) * 1_000_000.0
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=categories,
+            y=values.to_numpy(dtype=float),
+            name="Total cost",
+            marker_color=PRIMARY_COLOR,
+        )
+    )
+
+    sample_values = values.to_numpy(dtype=float)
+    tick_vals, tick_text, _ = compute_cash_axis_ticks(sample_values, force_unit="b")
+
+    fig.update_layout(
+        title=f"Distribution of Total Cost by {breakdown_label}",
+        barmode="group",
+        template=plotly_template(),
+        showlegend=False,
+        margin=dict(l=40, r=30, t=60, b=80),
+        xaxis=dict(tickangle=-25, title=None),
+        yaxis=dict(title="Total cost (NZD)", tickmode="array", tickvals=tick_vals, ticktext=tick_text),
+        hoverlabel=dict(namelength=-1),
+    )
+
     return fig
 
 
@@ -11246,6 +11480,28 @@ def render_analysis_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Analysis</div>', unsafe_allow_html=True)
+    page_key = "analysis_page_view"
+    page_value = st.session_state.get(page_key, 1)
+    if page_value not in (1, 2):
+        page_value = 1
+        st.session_state[page_key] = page_value
+    nav_cols = st.columns([1, 1, 1])
+    with nav_cols[0]:
+        if page_value == 2:
+            if st.button("<- Previous page", key="analysis_prev_page"):
+                st.session_state[page_key] = 1
+                st.rerun()
+    with nav_cols[1]:
+        st.markdown(
+            f"<div style='text-align:center;color:#64748B;font-size:0.85rem;font-weight:600;'>"
+            f"Page {page_value} of 2</div>",
+            unsafe_allow_html=True,
+        )
+    with nav_cols[2]:
+        if page_value == 1:
+            if st.button("Next page ->", key="analysis_next_page"):
+                st.session_state[page_key] = 2
+                st.rerun()
 
     opt_code = getattr(opt_selection, "code", None) if opt_selection is not None else None
     cmp_code = getattr(comp_selection, "code", None) if comp_selection is not None else None
@@ -11352,6 +11608,52 @@ def render_analysis_tab(
             else None
         )
 
+    opt_label_text = (opt_label or "").strip() or scenario_primary_label()
+    cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
+
+    if page_value == 2:
+        help_text = (
+            "Timing center = sum(Year x Spend) / sum(Spend) using annual spend.\n"
+            "Dots show each scenario's timing center for the category.\n"
+            "Line label is the shift in years (comparison minus primary)."
+        )
+        help_attr = html.escape(help_text).replace("\n", "&#10;")
+        st.markdown(
+            f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
+            unsafe_allow_html=True,
+        )
+        paddle_fig = _timing_paddle_chart(
+            spend_opt,
+            spend_cmp,
+            breakdown_label=breakdown_label,
+            opt_label=opt_label_text,
+            cmp_label=cmp_label_text,
+        )
+        if paddle_fig is not None:
+            st.plotly_chart(
+                paddle_fig,
+                use_container_width=True,
+                key="analysis_timing_paddle_chart",
+            )
+        else:
+            st.info("No timing data available for the selected breakdown.")
+        dist_fig = _distribution_cost_chart(
+            spend_opt,
+            spend_cmp,
+            breakdown_label=breakdown_label,
+            opt_label=opt_label_text,
+            cmp_label=cmp_label_text,
+        )
+        if dist_fig is not None:
+            st.plotly_chart(
+                dist_fig,
+                use_container_width=True,
+                key="analysis_cost_distribution_chart",
+            )
+        else:
+            st.info("No distribution data available for the selected breakdown.")
+        return export_tables
+
     if group_col == "StrategicDimension":
         activity_classes = _analysis_dimension_labels(
             data,
@@ -11380,8 +11682,6 @@ def render_analysis_tab(
     cost_y_max = _analysis_max_value_for_classes(activity_classes, spend_opt, spend_cmp, years)
     benefit_y_max = _analysis_max_value_for_classes(activity_classes, benefit_opt, benefit_cmp, years)
 
-    opt_label_text = (opt_label or "").strip() or scenario_primary_label()
-    cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
     legend_items = []
     if opt_code:
         legend_items.append(
