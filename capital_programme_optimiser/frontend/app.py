@@ -27,6 +27,7 @@ import pandas as pd
 
 import plotly.graph_objects as go
 import plotly.colors as plc
+import plotly.io as pio
 
 if not hasattr(pd.Index, 'clip'):
 
@@ -1790,6 +1791,7 @@ def is_dark_mode() -> bool:
 
 def plotly_template() -> str:
     """Resolve the Plotly template name based on the detected theme."""
+    _ensure_global_hoverformat()
     return "plotly_dark" if is_dark_mode() else "plotly_white"
 
 def _hoverlabel_style() -> dict:
@@ -1807,6 +1809,33 @@ def _hoverlabel_style() -> dict:
         "font": dict(color="#0F172A", size=12, family="Inter, 'Segoe UI', sans-serif"),
         "namelength": 0,
     }
+
+
+_GLOBAL_HOVERFORMAT = ".2~f"
+_HOVERFORMAT_READY = False
+
+
+def _ensure_global_hoverformat() -> None:
+    """Apply a global hoverformat cap to Plotly templates."""
+    global _HOVERFORMAT_READY
+    if _HOVERFORMAT_READY:
+        return
+    for template_name in ("plotly_white", "plotly_dark"):
+        try:
+            template = pio.templates[template_name]
+        except Exception:
+            continue
+        try:
+            template.layout.xaxis.hoverformat = _GLOBAL_HOVERFORMAT
+            template.layout.yaxis.hoverformat = _GLOBAL_HOVERFORMAT
+        except Exception:
+            pass
+        try:
+            template.layout.polar.radialaxis.hoverformat = _GLOBAL_HOVERFORMAT
+            template.layout.polar.angularaxis.hoverformat = _GLOBAL_HOVERFORMAT
+        except Exception:
+            pass
+    _HOVERFORMAT_READY = True
 
 
 DEFAULT_LEGEND_BOTTOM: Dict[str, Any] = {
@@ -3194,6 +3223,129 @@ def _attach_activity_class_column(
     return table
 
 
+def _project_dimension_weight_table(
+    data: DashboardData,
+    selection: ScenarioSelection,
+) -> pd.DataFrame:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return pd.DataFrame()
+    raw = _raw_result_for_code(data, selection.code)
+    if not raw:
+        return pd.DataFrame()
+    benefits = raw.get("benefits_by_project_dimension_by_year")
+    if not isinstance(benefits, pd.DataFrame) or benefits.empty:
+        return pd.DataFrame()
+
+    working = benefits.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    if "Project" not in working.columns or "Dimension" not in working.columns:
+        return pd.DataFrame()
+
+    year_cols = [
+        col
+        for col in working.columns
+        if isinstance(col, (int, np.integer)) or (isinstance(col, str) and str(col).isdigit())
+    ]
+    if not year_cols:
+        return pd.DataFrame()
+    col_map = {col: int(str(col)) for col in year_cols}
+    working = working.rename(columns=col_map)
+    year_cols = [col_map[col] for col in year_cols]
+
+    working["Project"] = working["Project"].astype(str)
+    working["Dimension"] = (
+        working["Dimension"].apply(_canonicalise_dimension_label).astype(str).str.strip()
+    )
+    working = working[working["Dimension"].ne("")]
+    working = working[working["Dimension"].str.strip().str.lower() != "total"]
+    if working.empty:
+        return pd.DataFrame()
+
+    working[year_cols] = working[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    dim_totals = working.groupby(["Project", "Dimension"], as_index=False)[year_cols].sum()
+    dim_totals["Total"] = dim_totals[year_cols].sum(axis=1)
+    dim_totals = dim_totals[dim_totals["Total"] > 0]
+    if dim_totals.empty:
+        return pd.DataFrame()
+
+    project_totals = dim_totals.groupby("Project")["Total"].sum().rename("ProjectTotal")
+    dim_totals = dim_totals.merge(project_totals, on="Project", how="left")
+    dim_totals = dim_totals[dim_totals["ProjectTotal"] > 0]
+    if dim_totals.empty:
+        return pd.DataFrame()
+
+    dim_totals["WeightPct"] = dim_totals["Total"] / dim_totals["ProjectTotal"] * 100.0
+    pivot = dim_totals.pivot_table(
+        index="Project", columns="Dimension", values="WeightPct", aggfunc="first"
+    ).fillna(0.0)
+    if pivot.empty:
+        return pd.DataFrame()
+
+    ordered_dims = [str(dim) for dim in getattr(data, "dims", []) if str(dim).strip().lower() != "total"]
+    ordered_cols: List[str] = []
+    for dim in ordered_dims:
+        if dim in pivot.columns:
+            ordered_cols.append(dim)
+    for dim in pivot.columns:
+        if dim not in ordered_cols:
+            ordered_cols.append(dim)
+    pivot = pivot[ordered_cols]
+
+    columns = {dim: f"Strategic Dimension {dim_short(dim)} (%)" for dim in pivot.columns}
+    pivot = pivot.rename(columns=columns)
+    pivot = pivot.reset_index()
+    pivot["ProjectKey"] = pivot["Project"].map(_normalise_project_key)
+    return pivot.drop(columns=["Project"])
+
+
+def _attach_project_attribute_columns(
+    table: Optional[pd.DataFrame],
+    mapping: pd.DataFrame,
+    weight_table: pd.DataFrame,
+) -> Optional[pd.DataFrame]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return table
+    table = table.copy()
+    table["ProjectKey"] = table["Project"].map(_normalise_project_key)
+
+    attrs = pd.DataFrame({"ProjectKey": table["ProjectKey"]})
+    if mapping is not None and not mapping.empty:
+        attrs = mapping[["ProjectKey", "ActivityClass", "GPSTier", "Region"]].copy()
+        attrs = attrs.drop_duplicates(subset=["ProjectKey"]).copy()
+        attrs = attrs.rename(
+            columns={
+                "ActivityClass": "Activity Class",
+                "GPSTier": "GPS Request Tier",
+                "Region": "Region",
+            }
+        )
+        attrs["Activity Class"] = attrs["Activity Class"].fillna("Unknown")
+        attrs["GPS Request Tier"] = attrs["GPS Request Tier"].map(_canonicalise_gps_tier)
+        attrs["Region"] = attrs["Region"].fillna("Unknown")
+        attrs["GPS Request Tier"] = attrs["GPS Request Tier"].fillna("Unknown")
+
+    merged = table.merge(attrs, on="ProjectKey", how="left")
+
+    dim_cols: List[str] = []
+    if weight_table is not None and not weight_table.empty:
+        merged = merged.merge(weight_table, on="ProjectKey", how="left")
+        dim_cols = [col for col in weight_table.columns if col != "ProjectKey"]
+        for col in dim_cols:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0.0)
+
+    for col in ("Activity Class", "GPS Request Tier", "Region"):
+        if col in merged.columns:
+            merged[col] = merged[col].fillna("Unknown")
+        else:
+            merged[col] = "Unknown"
+
+    ordered_cols = ["Project", "Activity Class", "GPS Request Tier", "Region"] + dim_cols
+    remaining = [col for col in merged.columns if col not in ordered_cols and col != "ProjectKey"]
+    merged = merged[ordered_cols + remaining]
+    return merged
+
+
 def _scenario_project_cost_table(
     data: DashboardData,
     code: str,
@@ -3301,7 +3453,7 @@ def prepare_gantt_export(
 ) -> Dict[str, pd.DataFrame]:
     years = _gantt_export_years(data)
     tables: Dict[str, pd.DataFrame] = {}
-    activity_map = _project_activity_class_map()
+    mapping = load_project_attribute_mapping()
     for selection, label in (
         (opt_selection, opt_label),
         (comp_selection, cmp_label),
@@ -3310,12 +3462,13 @@ def prepare_gantt_export(
         if not code:
             continue
         sheet_label = label or code
+        weight_table = _project_dimension_weight_table(data, selection)
         cost_table = _scenario_project_cost_table(data, code, years)
-        cost_table = _attach_activity_class_column(cost_table, activity_map)
+        cost_table = _attach_project_attribute_columns(cost_table, mapping, weight_table)
         if cost_table is not None and not cost_table.empty:
             tables[f"{sheet_label} - Costs"] = cost_table
         benefit_table = _scenario_project_benefit_table(data, code, years)
-        benefit_table = _attach_activity_class_column(benefit_table, activity_map)
+        benefit_table = _attach_project_attribute_columns(benefit_table, mapping, weight_table)
         if benefit_table is not None and not benefit_table.empty:
             tables[f"{sheet_label} - Benefits"] = benefit_table
     return tables
@@ -5513,6 +5666,346 @@ def _timing_paddle_chart(
     return fig
 
 
+def _analysis_group_totals(pivot: Optional[pd.DataFrame]) -> pd.Series:
+    if pivot is None or pivot.empty:
+        return pd.Series(dtype=float)
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    return values.sum(axis=0).astype(float)
+
+
+def _analysis_group_order_and_share(
+    totals_opt: pd.Series,
+    totals_cmp: pd.Series,
+) -> Tuple[List[str], pd.Series]:
+    combined = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined = combined[combined.abs() > 1e-9]
+    if combined.empty:
+        return [], pd.Series(dtype=float)
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = combined
+    base_totals = base_totals.reindex(combined.index).fillna(0.0)
+    order = base_totals.sort_values(ascending=False).index.astype(str).tolist()
+    if "Unknown" in order:
+        order = [val for val in order if val != "Unknown"] + ["Unknown"]
+    total_sum = float(base_totals.sum())
+    share = base_totals / total_sum if total_sum > 0 else base_totals * 0.0
+    share = share.reindex(order).fillna(0.0)
+    return order, share
+
+
+def _analysis_matrix_from_pivot(
+    pivot: Optional[pd.DataFrame],
+    groups: List[str],
+    years: List[int],
+) -> pd.DataFrame:
+    if not groups or not years:
+        return pd.DataFrame()
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    if pivot is None or pivot.empty:
+        return pd.DataFrame(0.0, index=groups, columns=year_index)
+    values = (
+        pivot.reindex(index=year_index, columns=groups, fill_value=0.0)
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+    )
+    values = values.T
+    values.index = values.index.astype(str)
+    return values
+
+
+def _analysis_density_from_values(values: pd.DataFrame) -> pd.DataFrame:
+    if values is None or values.empty:
+        return pd.DataFrame()
+    totals = values.sum(axis=1).replace(0.0, np.nan)
+    density = values.divide(totals, axis=0).fillna(0.0)
+    return density
+
+
+def _analysis_heatmap_chart(
+    matrix: pd.DataFrame,
+    *,
+    title: str,
+    y_labels: List[str],
+    colorscale: List[Any],
+    zmin: Optional[float] = None,
+    zmax: Optional[float] = None,
+    zmid: Optional[float] = None,
+    hovertemplate: str,
+    show_colorbar: bool,
+    colorbar_title: Optional[str],
+    height: int,
+    left_margin: int,
+    right_margin: int,
+    show_ylabels: bool,
+) -> go.Figure:
+    years = matrix.columns.tolist()
+    fig = go.Figure(
+        go.Heatmap(
+            x=years,
+            y=y_labels,
+            z=matrix.to_numpy(dtype=float),
+            colorscale=colorscale,
+            zmin=zmin,
+            zmax=zmax,
+            zmid=zmid,
+            showscale=show_colorbar,
+            xgap=0,
+            ygap=1,
+            hovertemplate=hovertemplate,
+            colorbar=dict(
+                title=colorbar_title or "",
+                len=0.72,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            )
+            if show_colorbar
+            else None,
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title=title,
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=left_margin, r=right_margin, t=70, b=50),
+    )
+    fig.update_xaxes(title="Year", showgrid=False, zeroline=False)
+    fig.update_yaxes(
+        title="Group (share of total spend)" if show_ylabels else None,
+        showgrid=False,
+        zeroline=False,
+        showticklabels=show_ylabels,
+        autorange="reversed",
+    )
+    return fig
+
+
+def _analysis_spend_density_charts(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    years: List[int],
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+    diff_mode: str,
+) -> Optional[Tuple[go.Figure, go.Figure, go.Figure]]:
+    totals_opt = _analysis_group_totals(pivot_opt)
+    totals_cmp = _analysis_group_totals(pivot_cmp)
+    groups, share = _analysis_group_order_and_share(totals_opt, totals_cmp)
+    if not groups or not years:
+        return None
+
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    last_year: Optional[int] = None
+    for pivot in (pivot_opt, pivot_cmp):
+        if pivot is None or pivot.empty:
+            continue
+        values = (
+            pivot.reindex(index=year_index, fill_value=0.0)
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0.0)
+        )
+        active = values.sum(axis=1)
+        active = active[active.abs() > 1e-9]
+        if not active.empty:
+            candidate = int(active.index.max())
+            last_year = candidate if last_year is None else max(last_year, candidate)
+    if last_year is None:
+        last_year = int(year_index.max())
+    trimmed_years = [int(year) for year in years if int(year) <= last_year]
+    if not trimmed_years:
+        trimmed_years = [int(year) for year in years]
+
+    values_opt = _analysis_matrix_from_pivot(pivot_opt, groups, trimmed_years)
+    values_cmp = _analysis_matrix_from_pivot(pivot_cmp, groups, trimmed_years)
+    density_opt = _analysis_density_from_values(values_opt)
+    density_cmp = _analysis_density_from_values(values_cmp)
+
+    diff_values = values_cmp.subtract(values_opt, fill_value=0.0)
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    base_totals = base_totals.reindex(groups).fillna(0.0).replace(0.0, np.nan)
+    diff_ratio = diff_values.divide(base_totals, axis=0).fillna(0.0)
+
+    label_share = (share.reindex(groups).fillna(0.0) * 100.0).to_numpy(dtype=float)
+    y_labels = [f"{group} ({pct:.1f}%)" for group, pct in zip(groups, label_share)]
+
+    density_max = float(
+        max(
+            density_opt.to_numpy(dtype=float).max() if not density_opt.empty else 0.0,
+            density_cmp.to_numpy(dtype=float).max() if not density_cmp.empty else 0.0,
+            0.05,
+        )
+    )
+
+    diff_matrix = diff_ratio if diff_mode == "relative" else diff_values
+    diff_max = float(np.nanmax(np.abs(diff_matrix.to_numpy(dtype=float)))) if not diff_matrix.empty else 0.0
+    if diff_max <= 0:
+        diff_max = 0.05 if diff_mode == "relative" else 1.0
+
+    height = max(300, int(len(groups) * 26 + 160))
+    density_scale = plc.sequential.Blues
+    diff_scale = plc.diverging.RdBu
+
+    opt_title = f"{opt_label}: density (row sums to 100%)"
+    cmp_title = f"{cmp_label}: density (row sums to 100%)"
+    diff_title = (
+        f"Differential density ({cmp_label} - {opt_label}), as % of group total"
+        if diff_mode == "relative"
+        else f"Differential spend ({cmp_label} - {opt_label}), absolute ($m)"
+    )
+
+    density_hover = "<b>%{y}</b><br>FY %{x}<br>Density: %{z:.2%}<extra></extra>"
+    diff_hover = (
+        "<b>%{y}</b><br>FY %{x}<br>Δ / group total: %{z:+.2%}<extra></extra>"
+        if diff_mode == "relative"
+        else "<b>%{y}</b><br>FY %{x}<br>Δ spend: %{z:+,.2f}m<extra></extra>"
+    )
+
+    fig_opt = _analysis_heatmap_chart(
+        density_opt.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=opt_title,
+        y_labels=y_labels,
+        colorscale=density_scale,
+        zmin=0.0,
+        zmax=density_max,
+        hovertemplate=density_hover,
+        show_colorbar=False,
+        colorbar_title=None,
+        height=height,
+        left_margin=180,
+        right_margin=20,
+        show_ylabels=True,
+    )
+    fig_cmp = _analysis_heatmap_chart(
+        density_cmp.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=cmp_title,
+        y_labels=y_labels,
+        colorscale=density_scale,
+        zmin=0.0,
+        zmax=density_max,
+        hovertemplate=density_hover,
+        show_colorbar=False,
+        colorbar_title=None,
+        height=height,
+        left_margin=40,
+        right_margin=20,
+        show_ylabels=False,
+    )
+    fig_diff = _analysis_heatmap_chart(
+        diff_matrix.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=diff_title,
+        y_labels=y_labels,
+        colorscale=diff_scale,
+        zmin=-diff_max,
+        zmax=diff_max,
+        zmid=0.0,
+        hovertemplate=diff_hover,
+        show_colorbar=True,
+        colorbar_title="Δ / group total" if diff_mode == "relative" else "Δ spend ($m)",
+        height=height,
+        left_margin=40,
+        right_margin=60,
+        show_ylabels=False,
+    )
+    return fig_opt, fig_cmp, fig_diff
+
+
+def _analysis_delta_bar_line_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    years: List[int],
+    group_label: str,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if not years:
+        return None
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    series_opt = _analysis_series_for_class(pivot_opt, group_label, years)
+    series_cmp = _analysis_series_for_class(pivot_cmp, group_label, years)
+    if series_opt.abs().sum() <= 1e-9 and series_cmp.abs().sum() <= 1e-9:
+        return None
+
+    delta_m = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_m = delta_m - pd.to_numeric(series_opt, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_nzd = delta_m.to_numpy(dtype=float) * 1_000_000.0
+    cumulative_nzd = np.cumsum(delta_nzd)
+
+    annual_ticks, annual_text, _ = compute_cash_axis_ticks(delta_nzd)
+    cumulative_ticks, cumulative_text, _ = compute_cash_axis_ticks(cumulative_nzd)
+
+    bar_color = "#10B981"
+    line_color = "#8B5CF6"
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=year_index,
+            y=delta_nzd,
+            name="Annual Δ spend",
+            marker_color=bar_color,
+            opacity=0.85,
+            customdata=[format_large_amount(val) for val in delta_nzd],
+            hovertemplate="<b>Annual Δ spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=year_index,
+            y=cumulative_nzd,
+            name="Cumulative Δ spend",
+            mode="lines",
+            line=dict(color=line_color, width=2),
+            yaxis="y2",
+            customdata=[format_large_amount(val) for val in cumulative_nzd],
+            hovertemplate="<b>Cumulative Δ spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+        )
+    )
+    fig.add_hline(y=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1, dash="dash"))
+    fig.update_layout(
+        title=f"Annual Δ$ + cumulative Δ$ — {group_label}",
+        template=plotly_template(),
+        height=320,
+        margin=dict(l=70, r=70, t=60, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hoverlabel=_hoverlabel_style(),
+    )
+    fig.update_xaxes(title="Year", showgrid=True, zeroline=False)
+    fig.update_yaxes(
+        title="Annual Δ spend ($)",
+        tickvals=annual_ticks,
+        ticktext=annual_text,
+        zeroline=False,
+        showgrid=True,
+    )
+    fig.update_yaxes(
+        title="Cumulative Δ spend ($)",
+        tickvals=cumulative_ticks,
+        ticktext=cumulative_text,
+        zeroline=False,
+        showgrid=False,
+        overlaying="y",
+        side="right",
+    )
+    return fig
+
+
 def _distribution_cost_chart(
     pivot_opt: Optional[pd.DataFrame],
     pivot_cmp: Optional[pd.DataFrame],
@@ -5555,6 +6048,143 @@ def _distribution_cost_chart(
         hoverlabel=dict(namelength=-1),
     )
 
+    return fig
+
+
+def _timing_shift_summary(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+) -> Optional[pd.DataFrame]:
+    centers_opt, totals_opt = _timing_center_from_pivot(pivot_opt)
+    centers_cmp, totals_cmp = _timing_center_from_pivot(pivot_cmp)
+    combined_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined_totals = combined_totals[combined_totals.abs() > 1e-9]
+    if combined_totals.empty:
+        return None
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = combined_totals
+    base_totals = base_totals.reindex(combined_totals.index).fillna(0.0)
+    total_sum = float(base_totals.sum())
+    if total_sum <= 0:
+        return None
+    df = pd.DataFrame(
+        {
+            "Category": combined_totals.index.astype(str),
+            "Total": base_totals.to_numpy(dtype=float),
+            "SharePct": base_totals.to_numpy(dtype=float) / total_sum * 100.0,
+            "CenterOpt": centers_opt.reindex(combined_totals.index).to_numpy(dtype=float),
+            "CenterCmp": centers_cmp.reindex(combined_totals.index).to_numpy(dtype=float),
+        }
+    )
+    df["Shift"] = df["CenterCmp"] - df["CenterOpt"]
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=["Shift"])
+    if df.empty:
+        return None
+    return df
+
+
+def _importance_bubble_chart(
+    summary: pd.DataFrame,
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if summary is None or summary.empty:
+        return None
+    df = summary.sort_values("Total", ascending=False).copy()
+    sizes = df["Total"].to_numpy(dtype=float)
+    max_size = float(np.nanmax(sizes)) if sizes.size else 0.0
+    if max_size <= 0:
+        return None
+    desired_max = 60.0
+    sizeref = 2.0 * max_size / (desired_max**2)
+    show_text = len(df) <= 12
+    mode = "markers+text" if show_text else "markers"
+    text_values = df["Category"].astype(str).tolist() if show_text else None
+    text_positions = "top center"
+    text_color = "#E2E8F0" if is_dark_mode() else "#0F172A"
+
+    fig = go.Figure(
+        go.Scatter(
+            x=df["Shift"].to_numpy(dtype=float),
+            y=df["SharePct"].to_numpy(dtype=float),
+            mode=mode,
+            text=text_values,
+            textposition=text_positions,
+            textfont=dict(color=text_color, size=12),
+            marker=dict(
+                size=sizes,
+                sizemode="area",
+                sizeref=sizeref,
+                sizemin=8,
+                color=PRIMARY_COLOR,
+                line=dict(color="#ffffff", width=1),
+                opacity=0.78,
+            ),
+            customdata=np.stack([df["Category"], df["SharePct"], df["Total"]], axis=1),
+            hovertemplate=(
+                "<b>%{customdata[0]}</b>"
+                "<br>Shift: %{x:+.1f}y"
+                "<br>Spend share: %{customdata[1]:.1f}%"
+                "<br>Total spend: %{customdata[2]:,.1f}m"
+                "<extra></extra>"
+            ),
+        )
+    )
+    fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
+    fig.update_layout(
+        title=f"{breakdown_label} - bubble view (shift vs spend share; bubble size = total spend)",
+        xaxis_title=f"Raw timing shift (years) [{cmp_label} - {opt_label}]",
+        yaxis_title="Spend share (%)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        margin=dict(l=60, r=30, t=60, b=60),
+    )
+    return fig
+
+
+def _importance_rank_chart(
+    summary: pd.DataFrame,
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if summary is None or summary.empty:
+        return None
+    df = summary.copy()
+    df["AbsShift"] = df["Shift"].abs()
+    df = df.sort_values("AbsShift", ascending=False)
+    labels = [f"{cat} ({share:.1f}%)" for cat, share in zip(df["Category"], df["SharePct"])]
+    shifts = df["Shift"].to_numpy(dtype=float)
+    fig = go.Figure(
+        go.Bar(
+            x=shifts,
+            y=labels,
+            orientation="h",
+            marker_color=PRIMARY_COLOR,
+            text=[f"{val:+.1f}y" for val in shifts],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>Shift: %{x:+.1f}y<extra></extra>",
+        )
+    )
+    fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
+    fig.update_layout(
+        title=f"{breakdown_label} - ranked by |shift| (labels show spend share)",
+        xaxis_title=f"Raw timing shift (years) [{cmp_label} - {opt_label}]",
+        yaxis_title="Category (share of total spend)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        margin=dict(l=220, r=30, t=60, b=60),
+    )
+    fig.update_yaxes(categoryorder="array", categoryarray=labels[::-1])
     return fig
 
 
@@ -11622,21 +12252,132 @@ def render_analysis_tab(
             f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
             unsafe_allow_html=True,
         )
-        paddle_fig = _timing_paddle_chart(
+        importance_summary = _timing_shift_summary(spend_opt, spend_cmp)
+        rank_fig = (
+            _importance_rank_chart(
+                importance_summary,
+                breakdown_label=breakdown_label,
+                opt_label=opt_label_text,
+                cmp_label=cmp_label_text,
+            )
+            if importance_summary is not None
+            else None
+        )
+        top_cols = st.columns([2.3, 1.2])
+        with top_cols[0]:
+            paddle_fig = _timing_paddle_chart(
+                spend_opt,
+                spend_cmp,
+                breakdown_label=breakdown_label,
+                opt_label=opt_label_text,
+                cmp_label=cmp_label_text,
+            )
+            if paddle_fig is not None:
+                st.plotly_chart(
+                    paddle_fig,
+                    use_container_width=True,
+                    key="analysis_timing_paddle_chart",
+                )
+            else:
+                st.info("No timing data available for the selected breakdown.")
+        with top_cols[1]:
+            if rank_fig is not None:
+                st.plotly_chart(
+                    rank_fig,
+                    use_container_width=True,
+                    key="analysis_importance_rank_chart",
+                )
+            else:
+                st.info("No rank view data available for the selected breakdown.")
+
+        st.markdown("**Spend density & scenario differential explorer**")
+        st.caption(
+            f"{breakdown_label} view. Heatmaps show within-group density (each row sums to 100%). "
+            "Differential is comparison minus primary."
+        )
+        diff_options = {
+            "Δ$ (absolute magnitude)": "absolute",
+            "Δ / group total (proportional intensity)": "relative",
+        }
+        diff_key = "analysis_density_diff_mode"
+        if st.session_state.get(diff_key) not in diff_options:
+            st.session_state[diff_key] = list(diff_options.keys())[0]
+        diff_choice = st.radio(
+            "Differential view",
+            list(diff_options.keys()),
+            horizontal=True,
+            key=diff_key,
+        )
+        diff_mode = diff_options.get(diff_choice, "relative")
+        density_figs = _analysis_spend_density_charts(
             spend_opt,
             spend_cmp,
+            years=years,
             breakdown_label=breakdown_label,
             opt_label=opt_label_text,
             cmp_label=cmp_label_text,
+            diff_mode=diff_mode,
         )
-        if paddle_fig is not None:
-            st.plotly_chart(
-                paddle_fig,
-                use_container_width=True,
-                key="analysis_timing_paddle_chart",
-            )
+        if density_figs is not None:
+            dens_cols = st.columns(3)
+            with dens_cols[0]:
+                st.plotly_chart(
+                    density_figs[0],
+                    use_container_width=True,
+                    key="analysis_density_opt",
+                )
+            with dens_cols[1]:
+                st.plotly_chart(
+                    density_figs[1],
+                    use_container_width=True,
+                    key="analysis_density_cmp",
+                )
+            with dens_cols[2]:
+                st.plotly_chart(
+                    density_figs[2],
+                    use_container_width=True,
+                    key="analysis_density_diff",
+                )
         else:
-            st.info("No timing data available for the selected breakdown.")
+            st.info("No spend density data available for the selected breakdown.")
+
+        group_totals_opt = _analysis_group_totals(spend_opt)
+        group_totals_cmp = _analysis_group_totals(spend_cmp)
+        group_options, _ = _analysis_group_order_and_share(group_totals_opt, group_totals_cmp)
+        if group_options:
+            st.markdown("**Group inspector**")
+            st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
+            group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
+            current_group = st.session_state.get(group_key)
+            if current_group not in group_options:
+                current_group = group_options[0]
+                st.session_state[group_key] = current_group
+            selected_group = st.selectbox(
+                f"{breakdown_label} focus",
+                group_options,
+                index=group_options.index(current_group),
+                key=group_key,
+            )
+            delta_fig = _analysis_delta_bar_line_chart(
+                spend_opt,
+                spend_cmp,
+                years=years,
+                group_label=selected_group,
+                breakdown_label=breakdown_label,
+                opt_label=opt_label_text,
+                cmp_label=cmp_label_text,
+            )
+            if delta_fig is not None:
+                st.plotly_chart(
+                    delta_fig,
+                    use_container_width=True,
+                    key="analysis_delta_group_chart",
+                )
+            else:
+                st.info("No delta data available for the selected group.")
+        else:
+            st.info("No group data available for the selected breakdown.")
+
         dist_fig = _distribution_cost_chart(
             spend_opt,
             spend_cmp,
