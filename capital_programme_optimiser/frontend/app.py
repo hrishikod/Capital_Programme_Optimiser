@@ -781,6 +781,83 @@ def inject_powerbi_theme() -> None:
             .pbi-export-gap {{
                 height: 32px;
             }}
+            .pbi-export-popover-title {{
+                color: var(--pbi-blue);
+                font-size: 0.95rem;
+                font-weight: 700;
+                margin: 0 0 0.15rem;
+            }}
+            .pbi-export-popover-sub {{
+                color: #475569;
+                font-size: 0.82rem;
+                margin: 0 0 0.6rem;
+            }}
+            .pbi-export-popover div[data-testid='stRadio'] > div {{
+                flex-wrap: nowrap;
+                gap: 0.4rem;
+            }}
+            .pbi-export-popover div[data-testid='stRadio'] label[data-baseweb='radio'] {{
+                white-space: nowrap;
+                padding: 0.28rem 0.7rem;
+                font-size: 0.82rem;
+            }}
+            .pbi-export-popover div.stDownloadButton > button {{
+                width: 100%;
+                font-size: 0.82rem;
+                padding: 0.45rem 0.7rem;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:disabled {{
+                background: rgba(148, 163, 184, 0.18) !important;
+                border-color: rgba(148, 163, 184, 0.45) !important;
+                color: #64748B !important;
+                opacity: 1 !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:disabled * {{
+                color: #64748B !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button {{
+                background: #ffffff !important;
+                border: 1px solid rgba(15, 23, 42, 0.16) !important;
+                color: #1f2937 !important;
+                border-radius: 12px;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:hover {{
+                border-color: rgba(25, 69, 107, 0.35) !important;
+                background: rgba(25, 69, 107, 0.08) !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button * {{
+                color: inherit !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active {{
+                color: #1f2937 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus *,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active * {{
+                color: inherit !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled {{
+                background: rgba(148, 163, 184, 0.18) !important;
+                border-color: rgba(148, 163, 184, 0.45) !important;
+                color: #64748B !important;
+                opacity: 1 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled * {{
+                color: #64748B !important;
+            }}
+            div[data-testid='stPopover'] > div {{
+                background: linear-gradient(180deg, rgba(25, 69, 107, 0.10), rgba(255, 255, 255, 0.98));
+                border: 1px solid rgba(25, 69, 107, 0.22);
+                border-radius: 14px;
+                box-shadow: 0 18px 30px rgba(15, 23, 42, 0.16);
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button {{
+                background: var(--pbi-blue) !important;
+                border-color: var(--pbi-blue) !important;
+                color: #ffffff !important;
+                border-radius: 999px;
+                font-weight: 600;
+            }}
             div[data-baseweb='segmented-control'] button[aria-pressed='true'] *,
             div[data-baseweb='segmented-control'] button:focus *,
             div[data-baseweb='segmented-control'] button:active * {{
@@ -991,19 +1068,112 @@ def render_powerbi_navigation(
             styles=styles,
         )
 
-def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
+def render_export_download(
+    tables: Dict[str, pd.DataFrame],
+    *,
+    active_tab: str = "",
+) -> None:
     if not tables:
         return
     filename = f"capital_programme_dashboard_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    export_bytes = build_export_workbook(tables)
     st.markdown("<div class='pbi-export-gap'></div>", unsafe_allow_html=True)
-    st.download_button(
-        "Export current tab",
-        data=export_bytes,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
-    )
+
+    if active_tab == "Programme Schedule":
+        order_key = "gantt_export_order"
+        if order_key not in st.session_state:
+            st.session_state[order_key] = "project"
+        popover = st.popover("Export current tab") if hasattr(st, "popover") else st.expander("Export current tab")
+        with popover:
+            st.markdown("<div class='pbi-export-popover'>", unsafe_allow_html=True)
+            st.markdown("<div class='pbi-export-popover-title'>Export ordering</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='pbi-export-popover-sub'>Order by project name or by the Gantt start year.</div>",
+                unsafe_allow_html=True,
+            )
+            order_choice = st.radio(
+                "Order by",
+                options=["project", "start_year"],
+                format_func=lambda val: "Project order (1, 2, 3)"
+                if val == "project"
+                else "Project start year (Gantt order)",
+                key=order_key,
+                horizontal=True,
+            )
+            ordered_tables = _apply_programme_schedule_export_order(tables, order_choice)
+            export_bytes = build_export_workbook(ordered_tables)
+            st.download_button(
+                "Download Excel",
+                data=export_bytes,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_{hash(tuple(ordered_tables.keys())) & 0xffff}",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+    elif active_tab == "Cash Flow":
+        breakdown_label = st.session_state.get("cash_flow_profile_spend_breakdown", "Total")
+        cumulative_tables = {k: v for k, v in tables.items() if k == "Cumulative spend vs benefit"}
+        stack_tables = {
+            k: v
+            for k, v in tables.items()
+            if str(k).startswith("Costs vs benefits stack") or str(k).startswith("Costs vs benefits delta")
+        }
+        cashflow_tables = {k: v for k, v in tables.items() if str(k).startswith("Cash flow - ")}
+        popover = st.popover("Export cash flow") if hasattr(st, "popover") else st.expander("Export cash flow")
+        with popover:
+            st.markdown("<div class='pbi-export-popover'>", unsafe_allow_html=True)
+            st.markdown("<div class='pbi-export-popover-title'>Cash flow exports</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='pbi-export-popover-sub'>Breakdown: {html.escape(str(breakdown_label))}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<div class='pbi-export-popover-sub'>Choose what to download:</div>",
+                unsafe_allow_html=True,
+            )
+            button_cols = st.columns(3)
+            with button_cols[0]:
+                cumulative_bytes = build_export_workbook(cumulative_tables) if cumulative_tables else b""
+                st.download_button(
+                    "Cumulative chart",
+                    data=cumulative_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(cumulative_tables.keys())) & 0xffff}_cumulative",
+                    disabled=not cumulative_tables,
+                    help="Cumulative spend vs benefit.",
+                )
+            with button_cols[1]:
+                stack_bytes = build_export_workbook(stack_tables) if stack_tables else b""
+                st.download_button(
+                    "Stacked costs/benefits",
+                    data=stack_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(stack_tables.keys())) & 0xffff}_stack",
+                    disabled=not stack_tables,
+                    help="Costs vs benefits stack using current settings.",
+                )
+            with button_cols[2]:
+                cashflow_bytes = build_export_workbook(cashflow_tables) if cashflow_tables else b""
+                st.download_button(
+                    "Cash flow charts",
+                    data=cashflow_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(cashflow_tables.keys())) & 0xffff}_cashflow",
+                    disabled=not cashflow_tables,
+                    help="Cash flow tables for both scenarios.",
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        export_bytes = build_export_workbook(tables)
+        st.download_button(
+            "Export current tab",
+            data=export_bytes,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
+        )
 
 
 def _json_sanitise(value: Any) -> Any:
@@ -2362,6 +2532,9 @@ def prepare_cash_export(
     df: Optional[pd.DataFrame],
     *,
     label_prefix: str,
+    spend_breakdown: str = "Total",
+    data: Optional[DashboardData] = None,
+    selection: Optional[ScenarioSelection] = None,
 ) -> Optional[pd.DataFrame]:
     if df is None or df.empty:
         return None
@@ -2369,25 +2542,55 @@ def prepare_cash_export(
     if not years:
         return None
     export, index = _create_export_table(years)
-    column_map = {
-        "Spend": "Annual spend ($)",
-        "ClosingNet": "Closing net ($)",
-        "Envelope": "Envelope ($)",
-        "BenefitFlow": "Benefit flow ($)",
-        "PVBenefit": "PV benefit ($)",
-        "CumSpend": "Cumulative spend ($)",
-        "CumBenefit": "Cumulative benefit ($)",
-        "CumPVBenefit": "Cumulative PV benefit ($)",
-    }
-    for source, label in column_map.items():
-        if source not in df.columns:
-            continue
-        series = series_from_df(df, source)
+    prefix = (label_prefix or "").strip()
+
+    def _label(text: str) -> str:
+        if prefix:
+            return f"{prefix} {text}"
+        return text
+
+    def _add_series(series: pd.Series, label: str) -> None:
         if series.empty:
-            continue
+            return
         aligned = series.reindex(index)
         if aligned.notna().any():
-            export[f"{label_prefix} {label}"] = scale_series_to_nzd(aligned)
+            export[label] = scale_series_to_nzd(aligned)
+
+    breakdown_key = re.sub(r"\s+", " ", str(spend_breakdown or "Total").strip().lower())
+    group_col: Optional[str] = None
+    if breakdown_key == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
+        group_col = "GPSTier"
+
+    breakdown_table: Optional[pd.DataFrame] = None
+    if group_col and data is not None and selection is not None and getattr(selection, "code", None):
+        breakdown_table = _annual_spend_breakdown_by_attribute(
+            data,
+            selection,
+            group_col=group_col,
+            years=years,
+        )
+
+    if breakdown_table is None or breakdown_table.empty:
+        spend_series = series_from_df(df, "Spend")
+        _add_series(spend_series, _label("Annual spend ($)"))
+    else:
+        for label in breakdown_table.columns:
+            series = pd.to_numeric(breakdown_table[label], errors="coerce").fillna(0.0)
+            series = pd.Series(series.to_numpy(dtype=float), index=breakdown_table.index)
+            _add_series(series, _label(f"Spend: {label} ($)"))
+
+    benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in df.columns else "BenefitFlow"
+    benefit_series = series_from_df(df, benefit_flow_col)
+    _add_series(benefit_series, _label("Benefit flow ($)"))
+
+    closing_series = series_from_df(df, "ClosingNet")
+    _add_series(closing_series, _label("Closing net ($)"))
+
+    envelope_series = series_from_df(df, "Envelope")
+    _add_series(envelope_series, _label("Envelope ($)"))
+
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -2745,6 +2948,36 @@ def _raw_result_for_code(data: DashboardData, code: Optional[str]) -> Optional[D
     return data.raw_results.get(stem)
 
 
+def _project_activity_class_map() -> Dict[str, str]:
+    mapping = load_project_attribute_mapping()
+    if mapping is None or mapping.empty:
+        return {}
+    working = mapping.dropna(subset=["ProjectKey"]).copy()
+    if "ActivityClass" not in working.columns:
+        return {}
+    working["ActivityClass"] = working["ActivityClass"].fillna("Unknown")
+    return dict(zip(working["ProjectKey"], working["ActivityClass"]))
+
+
+def _attach_activity_class_column(
+    table: Optional[pd.DataFrame],
+    activity_map: Dict[str, str],
+) -> Optional[pd.DataFrame]:
+    if table is None or table.empty:
+        return table
+    if "Project" not in table.columns or "Activity Class" in table.columns:
+        return table
+    if activity_map:
+        activity_values = table["Project"].map(
+            lambda name: activity_map.get(_normalise_project_key(name), "Unknown")
+        )
+    else:
+        activity_values = pd.Series(["Unknown"] * len(table), index=table.index)
+    table = table.copy()
+    table.insert(1, "Activity Class", activity_values)
+    return table
+
+
 def _scenario_project_cost_table(
     data: DashboardData,
     code: str,
@@ -2852,6 +3085,7 @@ def prepare_gantt_export(
 ) -> Dict[str, pd.DataFrame]:
     years = _gantt_export_years(data)
     tables: Dict[str, pd.DataFrame] = {}
+    activity_map = _project_activity_class_map()
     for selection, label in (
         (opt_selection, opt_label),
         (comp_selection, cmp_label),
@@ -2861,12 +3095,114 @@ def prepare_gantt_export(
             continue
         sheet_label = label or code
         cost_table = _scenario_project_cost_table(data, code, years)
+        cost_table = _attach_activity_class_column(cost_table, activity_map)
         if cost_table is not None and not cost_table.empty:
             tables[f"{sheet_label} - Costs"] = cost_table
         benefit_table = _scenario_project_benefit_table(data, code, years)
+        benefit_table = _attach_activity_class_column(benefit_table, activity_map)
         if benefit_table is not None and not benefit_table.empty:
             tables[f"{sheet_label} - Benefits"] = benefit_table
     return tables
+
+
+def _split_gantt_export_label(sheet_name: str) -> Tuple[str, str]:
+    if sheet_name.endswith(" - Costs"):
+        return sheet_name[: -len(" - Costs")], "Costs"
+    if sheet_name.endswith(" - Benefits"):
+        return sheet_name[: -len(" - Benefits")], "Benefits"
+    return sheet_name, ""
+
+
+def _project_sort_key(name: str) -> Tuple[Tuple[int, Any], ...]:
+    text = str(name).strip().lower()
+    parts = re.split(r"(\d+)", text)
+    key: List[Tuple[int, Any]] = []
+    for part in parts:
+        if part.isdigit():
+            key.append((1, int(part)))
+        else:
+            key.append((0, part))
+    return tuple(key)
+
+
+def _project_start_year_order(table: pd.DataFrame) -> List[str]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return []
+    year_cols = sorted([col for col in table.columns if isinstance(col, (int, np.integer))])
+    if not year_cols:
+        return sorted(table["Project"].astype(str).tolist(), key=_project_sort_key)
+    values = table[year_cols].to_numpy(dtype=float, copy=True)
+    order: List[Tuple[int, str, str]] = []
+    for idx, row in enumerate(values):
+        mask = np.abs(row) > 1e-9
+        if mask.any():
+            first_idx = int(np.argmax(mask))
+            start_year = int(year_cols[first_idx])
+        else:
+            start_year = 999999
+        project_name = str(table.iloc[idx]["Project"])
+        order.append((start_year, _project_sort_key(project_name), project_name))
+    order.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in order]
+
+
+def _project_alpha_order(table: pd.DataFrame) -> List[str]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return []
+    return sorted(table["Project"].astype(str).tolist(), key=_project_sort_key)
+
+
+def _order_export_table(table: pd.DataFrame, order: List[str]) -> pd.DataFrame:
+    if table is None or table.empty or "Project" not in table.columns or not order:
+        return table
+    table = table.copy()
+    existing = table["Project"].astype(str).tolist()
+    missing = [name for name in existing if name not in order]
+    if missing:
+        order = list(order) + sorted(missing, key=_project_sort_key)
+    table["_order"] = pd.Categorical(table["Project"], categories=order, ordered=True)
+    table = table.sort_values("_order").drop(columns="_order").reset_index(drop=True)
+    return table
+
+
+def _apply_programme_schedule_export_order(
+    tables: Dict[str, pd.DataFrame],
+    order_by: str,
+) -> Dict[str, pd.DataFrame]:
+    if not tables:
+        return tables
+    order_by = (order_by or "project").strip().lower()
+    scenario_orders: Dict[str, List[str]] = {}
+    if order_by == "start_year":
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, kind = _split_gantt_export_label(name)
+            if kind == "Costs" and scenario_label not in scenario_orders:
+                scenario_orders[scenario_label] = _project_start_year_order(table)
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, _ = _split_gantt_export_label(name)
+            if scenario_label not in scenario_orders:
+                scenario_orders[scenario_label] = _project_start_year_order(table)
+    else:
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, _ = _split_gantt_export_label(name)
+            if scenario_label not in scenario_orders:
+                scenario_orders[scenario_label] = _project_alpha_order(table)
+
+    ordered_tables: Dict[str, pd.DataFrame] = {}
+    for name, table in tables.items():
+        if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+            ordered_tables[name] = table
+            continue
+        scenario_label, _ = _split_gantt_export_label(name)
+        order = scenario_orders.get(scenario_label, [])
+        ordered_tables[name] = _order_export_table(table, order)
+    return ordered_tables
 
 def prepare_schedule_export(
     data: DashboardData,
@@ -5733,18 +6069,17 @@ def _group_totals_by_mapping(
     return grouped
 
 
-def cost_benefit_stack_chart(
+def _compute_cost_benefit_stack_series(
     data: DashboardData,
     selection: ScenarioSelection,
     *,
-    selection_label: str,
     pv_horizon_years: Optional[int],
     cost_breakdown: str,
     benefit_breakdown: str,
     cost_value_basis: str,
     benefit_value_basis: str,
     compare_selection: Optional[ScenarioSelection] = None,
-) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
+) -> Optional[Tuple[pd.Series, pd.Series, Optional[str], int]]:
     if not selection or not selection.code:
         return None
 
@@ -5880,6 +6215,36 @@ def cost_benefit_stack_chart(
             cost_series = cost_series.sort_values(ascending=False)
         if not benefit_series.empty:
             benefit_series = benefit_series.sort_values(ascending=False)
+
+    return cost_series, benefit_series, compare_code, pv_horizon_years_int
+
+
+def cost_benefit_stack_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    selection_label: str,
+    pv_horizon_years: Optional[int],
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    cost_value_basis: str,
+    benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
+) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
+    series_result = _compute_cost_benefit_stack_series(
+        data,
+        selection,
+        pv_horizon_years=pv_horizon_years,
+        cost_breakdown=cost_breakdown,
+        benefit_breakdown=benefit_breakdown,
+        cost_value_basis=cost_value_basis,
+        benefit_value_basis=benefit_value_basis,
+        compare_selection=compare_selection,
+    )
+    if series_result is None:
+        return None
+
+    cost_series, benefit_series, compare_code, pv_horizon_years_int = series_result
 
     cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
     benefit_total_dollars = float(benefit_series.sum()) if not benefit_series.empty else 0.0
@@ -6054,6 +6419,61 @@ def cost_benefit_stack_chart(
     )
     fig.update_xaxes(title=None, showgrid=False)
     return fig, cost_legend_items, benefit_legend_items
+
+
+def prepare_cost_benefit_stack_export(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    selection_label: str,
+    pv_horizon_years: Optional[int],
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    cost_value_basis: str,
+    benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
+) -> Optional[pd.DataFrame]:
+    series_result = _compute_cost_benefit_stack_series(
+        data,
+        selection,
+        pv_horizon_years=pv_horizon_years,
+        cost_breakdown=cost_breakdown,
+        benefit_breakdown=benefit_breakdown,
+        cost_value_basis=cost_value_basis,
+        benefit_value_basis=benefit_value_basis,
+        compare_selection=compare_selection,
+    )
+    if series_result is None:
+        return None
+
+    cost_series, benefit_series, compare_code, _ = series_result
+    if cost_series.empty and benefit_series.empty:
+        return None
+
+    rows: List[Dict[str, Any]] = []
+    cost_label = "Costs Δ" if compare_code else "Costs"
+    benefit_label = "Benefits Δ" if compare_code else "Benefits"
+    for label, value in cost_series.items():
+        rows.append(
+            {
+                "Selection": selection_label,
+                "Series": cost_label,
+                "Breakdown": cost_breakdown,
+                "Category": str(label),
+                "Value ($)": float(value) * 1_000_000.0,
+            }
+        )
+    for label, value in benefit_series.items():
+        rows.append(
+            {
+                "Selection": selection_label,
+                "Series": benefit_label,
+                "Breakdown": benefit_breakdown,
+                "Category": str(label),
+                "Value ($)": float(value),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def render_cost_benefit_stack_legend(
@@ -9893,6 +10313,25 @@ def render_cash_flow_tab(
                     benefit_value_basis=benefit_value_basis,
                     compare_selection=compare_selection,
                 )
+                stack_export = prepare_cost_benefit_stack_export(
+                    data,
+                    selection,
+                    selection_label=selection_label or str(getattr(selection, "code", "")),
+                    pv_horizon_years=pv_horizon_years,
+                    cost_breakdown=cost_breakdown,
+                    benefit_breakdown=benefit_breakdown,
+                    cost_value_basis=cost_value_basis,
+                    benefit_value_basis=benefit_value_basis,
+                    compare_selection=compare_selection,
+                )
+                if stack_export is not None and not stack_export.empty:
+                    export_label_text = selection_label or str(getattr(selection, "code", ""))
+                    export_label = (
+                        f"Costs vs benefits delta - {export_label_text}"
+                        if compare_selection is not None and getattr(compare_selection, "code", None)
+                        else f"Costs vs benefits stack - {export_label_text}"
+                    )
+                    export_tables[export_label] = stack_export
                 if stack_result is not None:
                     stack_fig, cost_legend_items, benefit_legend_items = stack_result
                     st.plotly_chart(
@@ -9948,7 +10387,13 @@ def render_cash_flow_tab(
                 use_container_width=True,
                 key="overview_cash_flow_opt_chart",
             )
-            export = prepare_cash_export(opt_series, label_prefix=opt_label)
+            export = prepare_cash_export(
+                opt_series,
+                label_prefix=opt_label,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=opt_selection,
+            )
             if export is not None:
                 export_name = f"Cash flow - {opt_label}"
                 export_tables[export_name] = export
@@ -9974,7 +10419,13 @@ def render_cash_flow_tab(
                 use_container_width=True,
                 key="overview_cash_flow_cmp_chart",
             )
-            export = prepare_cash_export(cmp_series, label_prefix=cmp_label)
+            export = prepare_cash_export(
+                cmp_series,
+                label_prefix=cmp_label,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=comp_selection,
+            )
             if export is not None:
                 export_name = f"Cash flow - {cmp_label}"
                 export_tables[export_name] = export
@@ -11169,7 +11620,7 @@ def main() -> None:
             )
 
         if download_tables and active_tab != "Demo":
-            render_export_download(download_tables)
+            render_export_download(download_tables, active_tab=active_tab)
 
 
 
