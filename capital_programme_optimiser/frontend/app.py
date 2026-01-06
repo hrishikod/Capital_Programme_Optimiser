@@ -380,6 +380,7 @@ _GANTT_HOTKEY_HTML = """
 _EXPORT_POPOVER_FOCUS_HTML = """
 <script>
 (() => {
+  const POPOVER_SELECTOR = ".pbi-export-popover,[data-testid='stPopover'],[data-testid='stPopoverContent'],[data-baseweb='popover']";
   const attach = (doc) => {
     if (!doc || doc.__pbiExportBlurInstalled) {
       return;
@@ -387,19 +388,35 @@ _EXPORT_POPOVER_FOCUS_HTML = """
     doc.__pbiExportBlurInstalled = true;
     let hasPopover = false;
     let armUntil = 0;
+    const scrubButtons = () => {
+      try {
+        const roots = doc.querySelectorAll(POPOVER_SELECTOR);
+        roots.forEach((root) => {
+          root.querySelectorAll("div.stDownloadButton > button").forEach((btn) => {
+            btn.tabIndex = -1;
+            if (doc.activeElement === btn) {
+              btn.blur();
+            }
+          });
+        });
+      } catch (err) {
+        // ignore query failures
+      }
+    };
     const arm = () => {
       armUntil = Date.now() + 700;
       const active = doc.activeElement;
-      if (active && active.closest && active.closest('.pbi-export-popover')) {
+      if (active && active.closest && active.closest(POPOVER_SELECTOR)) {
         active.blur();
       }
+      scrubButtons();
     };
     const handler = (event) => {
       if (Date.now() > armUntil) {
         return;
       }
       const target = event.target;
-      if (target && target.closest && target.closest('.pbi-export-popover') && target.tagName === 'BUTTON') {
+      if (target && target.closest && target.closest(POPOVER_SELECTOR) && target.tagName === 'BUTTON') {
         setTimeout(() => {
           try {
             target.blur();
@@ -412,7 +429,7 @@ _EXPORT_POPOVER_FOCUS_HTML = """
     doc.addEventListener('focusin', handler, true);
     if (doc.body && window.MutationObserver) {
       const observer = new MutationObserver(() => {
-        const popoverOpen = !!doc.querySelector('.pbi-export-popover');
+        const popoverOpen = !!doc.querySelector(POPOVER_SELECTOR);
         if (popoverOpen && !hasPopover) {
           arm();
         }
@@ -802,17 +819,13 @@ def inject_powerbi_theme() -> None:
             }}
             div.stButton > button:focus,
             div.stButton > button:active,
-            div.stDownloadButton > button:focus,
-            div.stDownloadButton > button:active,
             div.stFormSubmitButton > button:focus,
             div.stFormSubmitButton > button:active,
             button[kind='primary']:focus,
             button[kind='primary']:active,
             button[data-testid='baseButton-primary']:focus,
             button[data-testid='baseButton-primary']:active,
-            button[aria-pressed='true'],
-            button:active,
-            button:focus {{
+            button[aria-pressed='true'] {{
                 color: #ffffff !important;
             }}
             div[data-baseweb='segmented-control'] button {{
@@ -852,11 +865,11 @@ def inject_powerbi_theme() -> None:
             }}
             div.stButton > button:focus *,
             div.stButton > button:active *,
-            div.stDownloadButton > button:focus *,
-            div.stDownloadButton > button:active *,
-            button[aria-pressed='true'] *,
-            button:active *,
-            button:focus * {{
+            button[kind='primary']:focus *,
+            button[kind='primary']:active *,
+            button[data-testid='baseButton-primary']:focus *,
+            button[data-testid='baseButton-primary']:active *,
+            button[aria-pressed='true'] * {{
                 color: #ffffff !important;
             }}
             .pbi-export-gap {{
@@ -896,34 +909,78 @@ def inject_powerbi_theme() -> None:
             .pbi-export-popover div.stDownloadButton > button:disabled * {{
                 color: #64748B !important;
             }}
-            div[data-testid='stPopover'] div.stDownloadButton > button {{
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled) {{
                 background: #ffffff !important;
                 border: 1px solid rgba(15, 23, 42, 0.16) !important;
                 color: #1f2937 !important;
                 border-radius: 12px;
             }}
-            div[data-testid='stPopover'] div.stDownloadButton > button:hover {{
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):hover {{
                 border-color: rgba(25, 69, 107, 0.35) !important;
                 background: rgba(25, 69, 107, 0.08) !important;
             }}
-            div[data-testid='stPopover'] div.stDownloadButton > button * {{
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):active,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus-visible {{
+                color: #1f2937 !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled) *,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus *,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):active * {{
+                color: #1f2937 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button,
+            div[data-baseweb='popover'] div.stDownloadButton > button {{
+                background: #ffffff !important;
+                border: 1px solid rgba(15, 23, 42, 0.16) !important;
+                color: #1f2937 !important;
+                border-radius: 12px;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:hover,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:hover,
+            div[data-baseweb='popover'] div.stDownloadButton > button:hover {{
+                border-color: rgba(25, 69, 107, 0.35) !important;
+                background: rgba(25, 69, 107, 0.08) !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button *,
+            div[data-baseweb='popover'] div.stDownloadButton > button * {{
                 color: inherit !important;
             }}
             div[data-testid='stPopover'] div.stDownloadButton > button:focus,
-            div[data-testid='stPopover'] div.stDownloadButton > button:active {{
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:active,
+            div[data-baseweb='popover'] div.stDownloadButton > button:active,
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus-visible,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus-visible,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus-visible {{
                 color: #1f2937 !important;
             }}
             div[data-testid='stPopover'] div.stDownloadButton > button:focus *,
-            div[data-testid='stPopover'] div.stDownloadButton > button:active * {{
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus *,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:active *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:active *,
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus-visible *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus-visible *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus-visible * {{
                 color: inherit !important;
             }}
-            div[data-testid='stPopover'] div.stDownloadButton > button:disabled {{
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:disabled,
+            div[data-baseweb='popover'] div.stDownloadButton > button:disabled {{
                 background: rgba(148, 163, 184, 0.18) !important;
                 border-color: rgba(148, 163, 184, 0.45) !important;
                 color: #64748B !important;
                 opacity: 1 !important;
             }}
-            div[data-testid='stPopover'] div.stDownloadButton > button:disabled * {{
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:disabled *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:disabled * {{
                 color: #64748B !important;
             }}
             div[data-testid='stPopover'] > div {{
@@ -931,13 +988,6 @@ def inject_powerbi_theme() -> None:
                 border: 1px solid rgba(25, 69, 107, 0.22);
                 border-radius: 14px;
                 box-shadow: 0 18px 30px rgba(15, 23, 42, 0.16);
-            }}
-            div[data-testid='stPopover'] div.stDownloadButton > button {{
-                background: var(--pbi-blue) !important;
-                border-color: var(--pbi-blue) !important;
-                color: #ffffff !important;
-                border-radius: 999px;
-                font-weight: 600;
             }}
             div[data-baseweb='segmented-control'] button[aria-pressed='true'] *,
             div[data-baseweb='segmented-control'] button:focus *,
@@ -10839,14 +10889,22 @@ def render_cash_flow_tab(
     breakdown_default_index = (
         breakdown_options.index("GPS Request Tier") if "GPS Request Tier" in breakdown_options else 0
     )
-    if st.session_state.get("cash_flow_profile_spend_breakdown") not in breakdown_options:
-        st.session_state["cash_flow_profile_spend_breakdown"] = breakdown_options[breakdown_default_index]
-    spend_breakdown = st.selectbox(
-        "Breakdown annual spend by:",
-        breakdown_options,
-        index=breakdown_default_index,
-        key="cash_flow_profile_spend_breakdown",
-    )
+    breakdown_key = "cash_flow_profile_spend_breakdown"
+    if breakdown_key in st.session_state and st.session_state[breakdown_key] not in breakdown_options:
+        del st.session_state[breakdown_key]
+    if breakdown_key in st.session_state:
+        spend_breakdown = st.selectbox(
+            "Breakdown annual spend by:",
+            breakdown_options,
+            key=breakdown_key,
+        )
+    else:
+        spend_breakdown = st.selectbox(
+            "Breakdown annual spend by:",
+            breakdown_options,
+            index=breakdown_default_index,
+            key=breakdown_key,
+        )
     cash_axis_range = _effective_year_range(
         [opt_series, cmp_series],
         value_column="Spend",
