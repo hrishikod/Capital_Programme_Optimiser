@@ -5959,6 +5959,7 @@ def _analysis_delta_bar_line_chart(
             x=year_index,
             y=delta_nzd,
             name="Annual Δ spend",
+            yaxis="y1",
             marker_color=bar_color,
             opacity=0.85,
             customdata=[format_large_amount(val) for val in delta_nzd],
@@ -5985,24 +5986,24 @@ def _analysis_delta_bar_line_chart(
         margin=dict(l=70, r=70, t=60, b=50),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         hoverlabel=_hoverlabel_style(),
+        yaxis=dict(
+            title="Annual Δ spend ($)",
+            tickvals=annual_ticks,
+            ticktext=annual_text,
+            zeroline=False,
+            showgrid=True,
+        ),
+        yaxis2=dict(
+            title="Cumulative Δ spend ($)",
+            tickvals=cumulative_ticks,
+            ticktext=cumulative_text,
+            zeroline=False,
+            showgrid=False,
+            overlaying="y",
+            side="right",
+        ),
     )
     fig.update_xaxes(title="Year", showgrid=True, zeroline=False)
-    fig.update_yaxes(
-        title="Annual Δ spend ($)",
-        tickvals=annual_ticks,
-        ticktext=annual_text,
-        zeroline=False,
-        showgrid=True,
-    )
-    fig.update_yaxes(
-        title="Cumulative Δ spend ($)",
-        tickvals=cumulative_ticks,
-        ticktext=cumulative_text,
-        zeroline=False,
-        showgrid=False,
-        overlaying="y",
-        side="right",
-    )
     return fig
 
 
@@ -12241,7 +12242,7 @@ def render_analysis_tab(
     opt_label_text = (opt_label or "").strip() or scenario_primary_label()
     cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
 
-    if page_value == 2:
+    if page_value == 1:
         help_text = (
             "Timing center = sum(Year x Spend) / sum(Spend) using annual spend.\n"
             "Dots show each scenario's timing center for the category.\n"
@@ -12302,12 +12303,16 @@ def render_analysis_tab(
         diff_key = "analysis_density_diff_mode"
         if st.session_state.get(diff_key) not in diff_options:
             st.session_state[diff_key] = list(diff_options.keys())[0]
-        diff_choice = st.radio(
-            "Differential view",
-            list(diff_options.keys()),
-            horizontal=True,
-            key=diff_key,
-        )
+        dens_cols = st.columns(3)
+        with dens_cols[2]:
+            st.markdown("**Differential view**")
+            diff_choice = st.radio(
+                "",
+                list(diff_options.keys()),
+                horizontal=True,
+                key=diff_key,
+                label_visibility="collapsed",
+            )
         diff_mode = diff_options.get(diff_choice, "relative")
         density_figs = _analysis_spend_density_charts(
             spend_opt,
@@ -12319,7 +12324,6 @@ def render_analysis_tab(
             diff_mode=diff_mode,
         )
         if density_figs is not None:
-            dens_cols = st.columns(3)
             with dens_cols[0]:
                 st.plotly_chart(
                     density_figs[0],
