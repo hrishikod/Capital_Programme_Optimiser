@@ -1961,6 +1961,73 @@ def load_project_attribute_mapping(
     return merged
 
 
+@st.cache_resource(show_spinner=False)
+def load_project_bcr_mapping(
+    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
+) -> pd.DataFrame:
+    """Return per-project BCR from the source Cost/Benefit workbook."""
+    if not workbook_path.exists():
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR"])
+    try:
+        costs = pd.read_excel(workbook_path, sheet_name="Costs", engine="openpyxl")
+        benefits = pd.read_excel(
+            workbook_path, sheet_name="Benefits Linear 40yrs", engine="openpyxl"
+        )
+    except Exception:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR"])
+
+    def _prepare_projects(df: pd.DataFrame) -> pd.Series:
+        if df is None or df.empty or "Project" not in df.columns:
+            return pd.Series(dtype=str)
+        return df["Project"].map(_clean_mapping_value).dropna().astype(str).str.strip()
+
+    cost_projects = _prepare_projects(costs)
+    if cost_projects.empty or "Cost" not in costs.columns:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR"])
+    costs = costs.copy()
+    costs["Project"] = cost_projects
+    costs = costs.dropna(subset=["Project"])
+    costs["Cost"] = pd.to_numeric(costs.get("Cost"), errors="coerce").fillna(0.0)
+    cost_totals = costs.groupby("Project")["Cost"].sum()
+
+    benefit_projects = _prepare_projects(benefits)
+    if benefit_projects.empty or "Total Benefits" not in benefits.columns:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR"])
+    benefits = benefits.copy()
+    benefits["Project"] = benefit_projects
+    benefits = benefits.dropna(subset=["Project"])
+    benefits["Total Benefits"] = pd.to_numeric(
+        benefits.get("Total Benefits"), errors="coerce"
+    ).fillna(0.0)
+    if "Dimension" in benefits.columns:
+        dim_values = benefits["Dimension"].astype(str).str.strip().str.lower()
+        total_mask = dim_values == "total"
+        if total_mask.any():
+            benefits = benefits[total_mask]
+    benefit_totals = benefits.groupby("Project")["Total Benefits"].sum()
+
+    aligned = pd.DataFrame(
+        {
+            "Project": cost_totals.index.astype(str),
+            "Cost": cost_totals.values,
+        }
+    )
+    aligned = aligned.merge(
+        benefit_totals.rename("TotalBenefits"),
+        left_on="Project",
+        right_index=True,
+        how="left",
+    )
+    aligned["TotalBenefits"] = aligned["TotalBenefits"].fillna(0.0)
+    aligned["BCR"] = np.divide(
+        aligned["TotalBenefits"].to_numpy(dtype=float),
+        aligned["Cost"].to_numpy(dtype=float),
+        out=np.full(len(aligned), np.nan, dtype=float),
+        where=aligned["Cost"].to_numpy(dtype=float) > 0,
+    )
+    aligned["ProjectKey"] = aligned["Project"].map(_normalise_project_key)
+    return aligned[["ProjectKey", "Project", "BCR"]]
+
 def rgba_from_hex(hex_color: str, alpha: float) -> str:
     '''Return an rgba string for a hex colour code or existing rgba string.'''
 
@@ -2597,11 +2664,27 @@ def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
 
 def build_export_workbook(tables: Dict[str, pd.DataFrame]) -> bytes:
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer) as writer:
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         seen: Set[str] = set()
         for name, df in tables.items():
             sheet_name = sanitize_sheet_name(name, seen)
             (df if df is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name, index=False)
+            if df is None or df.empty:
+                continue
+            sheet = writer.sheets.get(sheet_name)
+            if sheet is None:
+                continue
+            weight_cols = [
+                idx + 1
+                for idx, col in enumerate(df.columns)
+                if isinstance(col, str) and col.startswith("Strategic Dimension ")
+            ]
+            if not weight_cols:
+                continue
+            max_row = sheet.max_row
+            for col_idx in weight_cols:
+                for row_idx in range(2, max_row + 1):
+                    sheet.cell(row=row_idx, column=col_idx).number_format = "0.00"
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -3275,9 +3358,9 @@ def _project_dimension_weight_table(
     if dim_totals.empty:
         return pd.DataFrame()
 
-    dim_totals["WeightPct"] = dim_totals["Total"] / dim_totals["ProjectTotal"] * 100.0
+    dim_totals["Weight"] = dim_totals["Total"] / dim_totals["ProjectTotal"]
     pivot = dim_totals.pivot_table(
-        index="Project", columns="Dimension", values="WeightPct", aggfunc="first"
+        index="Project", columns="Dimension", values="Weight", aggfunc="first"
     ).fillna(0.0)
     if pivot.empty:
         return pd.DataFrame()
@@ -3292,7 +3375,7 @@ def _project_dimension_weight_table(
             ordered_cols.append(dim)
     pivot = pivot[ordered_cols]
 
-    columns = {dim: f"Strategic Dimension {dim_short(dim)} (%)" for dim in pivot.columns}
+    columns = {dim: f"Strategic Dimension {dim_short(dim)}" for dim in pivot.columns}
     pivot = pivot.rename(columns=columns)
     pivot = pivot.reset_index()
     pivot["ProjectKey"] = pivot["Project"].map(_normalise_project_key)
@@ -3327,6 +3410,12 @@ def _attach_project_attribute_columns(
 
     merged = table.merge(attrs, on="ProjectKey", how="left")
 
+    bcr_table = load_project_bcr_mapping()
+    if bcr_table is not None and not bcr_table.empty:
+        merged = merged.merge(bcr_table[["ProjectKey", "BCR"]], on="ProjectKey", how="left")
+    if "BCR" not in merged.columns:
+        merged["BCR"] = np.nan
+
     dim_cols: List[str] = []
     if weight_table is not None and not weight_table.empty:
         merged = merged.merge(weight_table, on="ProjectKey", how="left")
@@ -3340,7 +3429,7 @@ def _attach_project_attribute_columns(
         else:
             merged[col] = "Unknown"
 
-    ordered_cols = ["Project", "Activity Class", "GPS Request Tier", "Region"] + dim_cols
+    ordered_cols = ["Project", "Activity Class", "GPS Request Tier", "Region", "BCR"] + dim_cols
     remaining = [col for col in merged.columns if col not in ordered_cols and col != "ProjectKey"]
     merged = merged[ordered_cols + remaining]
     return merged
@@ -5731,6 +5820,7 @@ def _analysis_heatmap_chart(
     title: str,
     y_labels: List[str],
     colorscale: List[Any],
+    customdata: Optional[List[List[str]]] = None,
     zmin: Optional[float] = None,
     zmax: Optional[float] = None,
     zmid: Optional[float] = None,
@@ -5748,6 +5838,7 @@ def _analysis_heatmap_chart(
             x=years,
             y=y_labels,
             z=matrix.to_numpy(dtype=float),
+            customdata=customdata,
             colorscale=colorscale,
             zmin=zmin,
             zmax=zmax,
@@ -5869,11 +5960,19 @@ def _analysis_spend_density_charts(
     )
 
     density_hover = "<b>%{y}</b><br>FY %{x}<br>Density: %{z:.2%}<extra></extra>"
-    diff_hover = (
-        "<b>%{y}</b><br>FY %{x}<br>Δ / group total: %{z:+.2%}<extra></extra>"
-        if diff_mode == "relative"
-        else "<b>%{y}</b><br>FY %{x}<br>Δ spend: %{z:+,.2f}m<extra></extra>"
-    )
+    diff_values_arr = diff_matrix.to_numpy(dtype=float)
+    if diff_mode == "relative":
+        diff_custom = [
+            ["" if not np.isfinite(val) else f"{val:+.2%}" for val in row]
+            for row in diff_values_arr
+        ]
+        diff_hover = "<b>%{y}</b><br>FY %{x}<br>Δ / group total: %{customdata}<extra></extra>"
+    else:
+        diff_custom = [
+            ["" if not np.isfinite(val) else f"{val:+,.2f}m" for val in row]
+            for row in diff_values_arr
+        ]
+        diff_hover = "<b>%{y}</b><br>FY %{x}<br>Δ spend: %{customdata}<extra></extra>"
 
     fig_opt = _analysis_heatmap_chart(
         density_opt.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
@@ -5910,6 +6009,7 @@ def _analysis_spend_density_charts(
         title=diff_title,
         y_labels=y_labels,
         colorscale=diff_scale,
+        customdata=diff_custom,
         zmin=-diff_max,
         zmax=diff_max,
         zmid=0.0,
@@ -5953,11 +6053,13 @@ def _analysis_delta_bar_line_chart(
         max_abs_annual = 1.0
     if max_abs_cum <= 0:
         max_abs_cum = 1.0
+    pad_annual = max_abs_annual * 0.05
+    pad_cum = max_abs_cum * 0.05
     annual_ticks, annual_text, _ = compute_cash_axis_ticks([-max_abs_annual, max_abs_annual])
     cumulative_ticks, cumulative_text, _ = compute_cash_axis_ticks([-max_abs_cum, max_abs_cum])
 
-    bar_color = "#10B981"
-    line_color = "#8B5CF6"
+    bar_color = POWERBI_GREEN
+    line_color = POWERBI_BLUE
 
     fig = go.Figure()
     fig.add_trace(
@@ -5996,7 +6098,7 @@ def _analysis_delta_bar_line_chart(
             title="Annual Δ spend ($)",
             tickvals=annual_ticks,
             ticktext=annual_text,
-            range=[-max_abs_annual, max_abs_annual],
+            range=[-(max_abs_annual + pad_annual), max_abs_annual + pad_annual],
             zeroline=False,
             showgrid=True,
         ),
@@ -6004,7 +6106,7 @@ def _analysis_delta_bar_line_chart(
             title="Cumulative Δ spend ($)",
             tickvals=cumulative_ticks,
             ticktext=cumulative_text,
-            range=[-max_abs_cum, max_abs_cum],
+            range=[-(max_abs_cum + pad_cum), max_abs_cum + pad_cum],
             zeroline=False,
             showgrid=False,
             overlaying="y",
@@ -6164,12 +6266,23 @@ def _importance_rank_chart(
     breakdown_label: str,
     opt_label: str,
     cmp_label: str,
+    category_order: Optional[List[str]] = None,
 ) -> Optional[go.Figure]:
     if summary is None or summary.empty:
         return None
     df = summary.copy()
-    df["AbsShift"] = df["Shift"].abs()
-    df = df.sort_values("AbsShift", ascending=False)
+    if category_order:
+        order = [str(cat) for cat in category_order]
+        existing = df["Category"].astype(str).tolist()
+        remaining = [cat for cat in existing if cat not in order]
+        order = order + remaining
+        df["Category"] = df["Category"].astype(str)
+        df["Category"] = pd.Categorical(df["Category"], categories=order, ordered=True)
+        df = df.sort_values("Category")
+        df["Category"] = df["Category"].astype(str)
+    else:
+        df["AbsShift"] = df["Shift"].abs()
+        df = df.sort_values("AbsShift", ascending=False)
     labels = [f"{cat} ({share:.1f}%)" for cat, share in zip(df["Category"], df["SharePct"])]
     shifts = df["Shift"].to_numpy(dtype=float)
     fig = go.Figure(
@@ -6181,7 +6294,8 @@ def _importance_rank_chart(
             text=[f"{val:+.1f}y" for val in shifts],
             textposition="outside",
             cliponaxis=False,
-            hovertemplate="<b>%{y}</b><br>Shift: %{x:+.1f}y<extra></extra>",
+            customdata=np.round(shifts, 2),
+            hovertemplate="<b>%{y}</b><br>Shift: %{customdata:+.2f}y<extra></extra>",
         )
     )
     fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
@@ -12261,6 +12375,13 @@ def render_analysis_tab(
             f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
             unsafe_allow_html=True,
         )
+        order_totals_opt = _analysis_group_totals(spend_opt)
+        order_totals_cmp = _analysis_group_totals(spend_cmp)
+        combined_order = order_totals_opt.add(order_totals_cmp, fill_value=0.0)
+        combined_order = combined_order[combined_order.abs() > 1e-9]
+        category_order = combined_order.sort_values(ascending=False).index.astype(str).tolist()
+        if "Unknown" in category_order:
+            category_order = [val for val in category_order if val != "Unknown"] + ["Unknown"]
         importance_summary = _timing_shift_summary(spend_opt, spend_cmp)
         rank_fig = (
             _importance_rank_chart(
@@ -12268,6 +12389,7 @@ def render_analysis_tab(
                 breakdown_label=breakdown_label,
                 opt_label=opt_label_text,
                 cmp_label=cmp_label_text,
+                category_order=category_order or None,
             )
             if importance_summary is not None
             else None
@@ -12303,8 +12425,7 @@ def render_analysis_tab(
             else:
                 st.info("No rank view data available for the selected breakdown.")
 
-        st.markdown("**Spend density & scenario differential explorer**")
-        st.caption(
+        caption_text = (
             f"{breakdown_label} view. Heatmaps show within-group density (each row sums to 100%). "
             "Differential is comparison minus primary."
         )
@@ -12315,16 +12436,34 @@ def render_analysis_tab(
         diff_key = "analysis_density_diff_mode"
         if st.session_state.get(diff_key) not in diff_options:
             st.session_state[diff_key] = list(diff_options.keys())[0]
-        dens_cols = st.columns(3)
-        with dens_cols[2]:
-            st.markdown("**Differential view**")
-            diff_choice = st.radio(
-                "",
-                list(diff_options.keys()),
-                horizontal=True,
-                key=diff_key,
-                label_visibility="collapsed",
+        header_cols = st.columns([2.4, 0.2, 1.4])
+        with header_cols[0]:
+            st.markdown(
+                "<div style='padding:0.35rem 0 0.35rem 0;'>"
+                "<div style='font-weight:700;color:#0F172A;'>"
+                "Spend density & scenario differential explorer"
+                "</div>"
+                f"<div style='color:#64748B;font-size:0.85rem;margin-top:0.2rem;'>"
+                f"{html.escape(caption_text)}"
+                "</div>"
+                "</div>",
+                unsafe_allow_html=True,
             )
+        with header_cols[1]:
+            st.markdown("<div style='height:2.6rem;'></div>", unsafe_allow_html=True)
+        with header_cols[2]:
+            align_cols = st.columns([0.55, 1.45])
+            with align_cols[0]:
+                st.markdown("<div style='height:2.6rem;'></div>", unsafe_allow_html=True)
+            with align_cols[1]:
+                st.markdown("**Differential view**")
+                diff_choice = st.radio(
+                    "",
+                    list(diff_options.keys()),
+                    horizontal=True,
+                    key=diff_key,
+                    label_visibility="collapsed",
+                )
         diff_mode = diff_options.get(diff_choice, "relative")
         density_figs = _analysis_spend_density_charts(
             spend_opt,
@@ -12336,19 +12475,23 @@ def render_analysis_tab(
             diff_mode=diff_mode,
         )
         if density_figs is not None:
+            dens_cols = st.columns(3)
             with dens_cols[0]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
                 st.plotly_chart(
                     density_figs[0],
                     use_container_width=True,
                     key="analysis_density_opt",
                 )
             with dens_cols[1]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
                 st.plotly_chart(
                     density_figs[1],
                     use_container_width=True,
                     key="analysis_density_cmp",
                 )
             with dens_cols[2]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
                 st.plotly_chart(
                     density_figs[2],
                     use_container_width=True,
