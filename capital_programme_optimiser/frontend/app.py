@@ -93,6 +93,7 @@ from capital_programme_optimiser.dashboard.regions import (
 
 from capital_programme_optimiser.dashboard.data import (
     DashboardData,
+    _canonicalise_dimension_label,
     dim_short,
     extract_project_runs,
     find_scenario_code,
@@ -376,6 +377,63 @@ _GANTT_HOTKEY_HTML = """
 """
 
 
+_EXPORT_POPOVER_FOCUS_HTML = """
+<script>
+(() => {
+  const attach = (doc) => {
+    if (!doc || doc.__pbiExportBlurInstalled) {
+      return;
+    }
+    doc.__pbiExportBlurInstalled = true;
+    let hasPopover = false;
+    let armUntil = 0;
+    const arm = () => {
+      armUntil = Date.now() + 700;
+      const active = doc.activeElement;
+      if (active && active.closest && active.closest('.pbi-export-popover')) {
+        active.blur();
+      }
+    };
+    const handler = (event) => {
+      if (Date.now() > armUntil) {
+        return;
+      }
+      const target = event.target;
+      if (target && target.closest && target.closest('.pbi-export-popover') && target.tagName === 'BUTTON') {
+        setTimeout(() => {
+          try {
+            target.blur();
+          } catch (err) {
+            // ignore focus teardown issues
+          }
+        }, 0);
+      }
+    };
+    doc.addEventListener('focusin', handler, true);
+    if (doc.body && window.MutationObserver) {
+      const observer = new MutationObserver(() => {
+        const popoverOpen = !!doc.querySelector('.pbi-export-popover');
+        if (popoverOpen && !hasPopover) {
+          arm();
+        }
+        hasPopover = popoverOpen;
+      });
+      observer.observe(doc.body, { childList: true, subtree: true });
+    }
+  };
+  attach(document);
+  try {
+    if (window.parent && window.parent.document) {
+      attach(window.parent.document);
+    }
+  } catch (err) {
+    // ignore cross-origin cases
+  }
+})();
+</script>
+"""
+
+
 def _inject_gantt_hotkey_listener() -> None:
     """
     Mount a tiny HTML shim that listens for the 'Z' key and toggles the
@@ -411,16 +469,39 @@ def _inject_gantt_hotkey_listener() -> None:
             st.rerun()
 
 
+def _inject_export_popover_focus_guard() -> None:
+    """Prevent popover download buttons from auto-focusing on open."""
+    try:
+        components.html(
+            _EXPORT_POPOVER_FOCUS_HTML,
+            height=0,
+            width=0,
+            key="_export_popover_focus_guard",
+        )
+    except TypeError:
+        components.html(_EXPORT_POPOVER_FOCUS_HTML, height=0, width=0)
+
+
 
 def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Cash Flow", "Programme Schedule", "Benefits", "Regions", "Delivery", "Scenario Manager", "Demo"]
+NAV_TABS = [
+    "Cash Flow",
+    "Programme Schedule",
+    "Analysis",
+    "Benefits",
+    "Regions",
+    "Delivery",
+    "Scenario Manager",
+    "Demo",
+]
 
 NAV_ICON_MAP = {
     "Programme Schedule": "calendar-event",
     "Cash Flow": "cash-coin",
+    "Analysis": "bar-chart-line",
     "Benefits": "graph-up-arrow",
     "Regions": "geo-alt",
     "Delivery": "box-seam",
@@ -1110,6 +1191,7 @@ def render_export_download(
             )
             st.markdown("</div>", unsafe_allow_html=True)
     elif active_tab == "Cash Flow":
+        _inject_export_popover_focus_guard()
         breakdown_label = st.session_state.get("cash_flow_profile_spend_breakdown", "Total")
         cumulative_tables = {k: v for k, v in tables.items() if k == "Cumulative spend vs benefit"}
         stack_tables = {
@@ -1737,6 +1819,7 @@ def load_project_attribute_mapping(
             "Region": "Region",
             "ActivityClass": "Activity Class",
             "GPSTier": "GPS Request Tier",
+            "StrategicDimension": "Strategic Dimension",
         },
     )
     benefits = _read_sheet(
@@ -1744,20 +1827,24 @@ def load_project_attribute_mapping(
         {
             "Region": "Region",
             "ActivityClass": "Activity Class",
+            "StrategicDimension": "Strategic Dimension",
         },
     )
 
     if costs.empty and benefits.empty:
-        return pd.DataFrame(columns=["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier"])
+        return pd.DataFrame(
+            columns=["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"]
+        )
 
     merged = costs.set_index("ProjectKey").combine_first(benefits.set_index("ProjectKey")).reset_index()
-    for col in ("Project", "Region", "ActivityClass", "GPSTier"):
+    for col in ("Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"):
         if col not in merged.columns:
             merged[col] = None
-    merged = merged[["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier"]].copy()
+    merged = merged[["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"]].copy()
     merged["Region"] = merged["Region"].fillna("Unknown")
     merged["ActivityClass"] = merged["ActivityClass"].fillna("Unknown")
     merged["GPSTier"] = merged["GPSTier"].fillna("Unknown")
+    merged["StrategicDimension"] = merged["StrategicDimension"].fillna("Unknown")
     return merged
 
 
@@ -2560,6 +2647,8 @@ def prepare_cash_export(
     group_col: Optional[str] = None
     if breakdown_key == "activity class":
         group_col = "ActivityClass"
+    elif breakdown_key == "region":
+        group_col = "Region"
     elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
         group_col = "GPSTier"
 
@@ -4504,7 +4593,7 @@ def _annual_spend_breakdown_by_attribute(
     spend_matrix = getattr(data, "spend_matrix", None)
     if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
         return None
-    if group_col not in {"ActivityClass", "GPSTier"}:
+    if group_col not in {"ActivityClass", "GPSTier", "Region", "StrategicDimension"}:
         return None
 
     subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
@@ -4554,6 +4643,184 @@ def _annual_spend_breakdown_by_attribute(
     return pivot
 
 
+def _annual_benefit_breakdown_by_attribute(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    group_col: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    if group_col not in {"ActivityClass", "GPSTier", "Region", "StrategicDimension"}:
+        return None
+
+    benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+    if benefit_table is None or benefit_table.empty:
+        return None
+
+    year_cols = [int(year) for year in years if year is not None and int(year) in benefit_table.columns]
+    if not year_cols:
+        return None
+
+    values = benefit_table[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    values.insert(0, "Project", benefit_table["Project"].astype(str))
+    long = values.melt(id_vars="Project", value_vars=year_cols, var_name="Year", value_name="Benefit")
+    long["Benefit"] = pd.to_numeric(long["Benefit"], errors="coerce").fillna(0.0)
+    long = long[long["Benefit"].abs() > 1e-9]
+    if long.empty:
+        return None
+    long["Year"] = pd.to_numeric(long["Year"], errors="coerce").astype(int)
+    long["ProjectKey"] = long["Project"].map(_normalise_project_key)
+
+    mapping = load_project_attribute_mapping()
+    if mapping.empty or group_col not in mapping.columns:
+        return None
+
+    merged = long.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
+
+    pivot = (
+        merged.pivot_table(index="Year", columns=group_col, values="Benefit", aggfunc="sum", fill_value=0.0)
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+    if pivot.empty:
+        return None
+
+    totals = pivot.sum(axis=0).sort_values(ascending=False)
+    ordered = totals.index.tolist()
+    if "Unknown" in ordered:
+        ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
+    pivot = pivot[ordered]
+
+    return pivot
+
+
+def _annual_cost_breakdown_by_dimension_weights(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    """Allocate spend by strategic dimension using project benefit weights."""
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    raw = _raw_result_for_code(data, selection.code)
+    if not raw:
+        return None
+    benefits = raw.get("benefits_by_project_dimension_by_year")
+    if not isinstance(benefits, pd.DataFrame) or benefits.empty:
+        return None
+
+    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    if cost_table is None or cost_table.empty:
+        return None
+
+    working = benefits.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    if "Project" not in working.columns or "Dimension" not in working.columns:
+        return None
+
+    col_map = {col: int(str(col)) for col in working.columns if str(col).isdigit()}
+    if col_map:
+        working = working.rename(columns=col_map)
+
+    year_cols = [col for col in working.columns if isinstance(col, int)]
+    if not year_cols:
+        return None
+    year_cols = [col for col in year_cols if col in years]
+    if not year_cols:
+        return None
+
+    working[year_cols] = working[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    working["Project"] = working["Project"].astype(str)
+    working["Dimension"] = (
+        working["Dimension"]
+        .apply(_canonicalise_dimension_label)
+        .astype(str)
+        .str.strip()
+    )
+    working = working[working["Dimension"].ne("")]
+    working = working[working["Dimension"].str.strip().str.lower() != "total"]
+    if working.empty:
+        return None
+
+    dim_totals = (
+        working.groupby(["Project", "Dimension"], as_index=False)[year_cols]
+        .sum()
+    )
+    dim_totals["BenefitTotal"] = dim_totals[year_cols].sum(axis=1)
+    dim_totals = dim_totals[dim_totals["BenefitTotal"].abs() > 1e-9]
+    if dim_totals.empty:
+        return None
+
+    project_totals = dim_totals.groupby("Project")["BenefitTotal"].sum().rename("ProjectTotal")
+    dim_totals = dim_totals.merge(project_totals, on="Project", how="left")
+    dim_totals = dim_totals[dim_totals["ProjectTotal"] > 0]
+    if dim_totals.empty:
+        return None
+    dim_totals["Weight"] = dim_totals["BenefitTotal"] / dim_totals["ProjectTotal"]
+    weights = dim_totals[["Project", "Dimension", "Weight"]]
+
+    cost_year_cols = [col for col in cost_table.columns if isinstance(col, int)]
+    if not cost_year_cols:
+        return None
+    cost_year_cols = [col for col in cost_year_cols if col in years]
+    if not cost_year_cols:
+        return None
+
+    cost_long = cost_table.melt(
+        id_vars="Project",
+        value_vars=cost_year_cols,
+        var_name="Year",
+        value_name="Spend",
+    )
+    cost_long["Year"] = pd.to_numeric(cost_long["Year"], errors="coerce").astype(int)
+    cost_long["Spend"] = pd.to_numeric(cost_long["Spend"], errors="coerce").fillna(0.0)
+
+    merged = cost_long.merge(weights, on="Project", how="left")
+    merged["Weight"] = pd.to_numeric(merged["Weight"], errors="coerce").fillna(0.0)
+    merged["WeightedSpend"] = merged["Spend"] * merged["Weight"]
+
+    pivot = (
+        merged.pivot_table(
+            index="Year",
+            columns="Dimension",
+            values="WeightedSpend",
+            aggfunc="sum",
+            fill_value=0.0,
+        )
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    ordered: List[str] = []
+    for dim in getattr(data, "dims", []):
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label in pivot.columns and dim_label not in ordered:
+            ordered.append(dim_label)
+    for dim in pivot.columns:
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label not in ordered:
+            ordered.append(dim_label)
+    if ordered:
+        pivot = pivot[ordered]
+
+    return pivot
+
+
 def cash_chart(
 
     df: pd.DataFrame,
@@ -4599,6 +4866,8 @@ def cash_chart(
     group_col: Optional[str] = None
     if breakdown_key == "activity class":
         group_col = "ActivityClass"
+    elif breakdown_key == "region":
+        group_col = "Region"
     elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
         group_col = "GPSTier"
 
@@ -4733,6 +5002,219 @@ def cash_chart(
 
     )
 
+    return fig
+
+
+def _analysis_activity_classes(
+    spend_opt: Optional[pd.DataFrame],
+    spend_cmp: Optional[pd.DataFrame],
+    benefit_opt: Optional[pd.DataFrame],
+    benefit_cmp: Optional[pd.DataFrame],
+    *,
+    limit: int = 5,
+) -> List[str]:
+    totals = pd.Series(dtype=float)
+    for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+        if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+            totals = totals.add(pivot.sum(axis=0), fill_value=0.0)
+    if totals.empty:
+        columns: List[str] = []
+        for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+            if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+                columns.extend([str(col) for col in pivot.columns])
+        totals = pd.Series(1.0, index=pd.Index(columns)).groupby(level=0).sum()
+    if totals.empty:
+        return []
+    totals = totals[totals.index.astype(str).str.strip().str.lower() != "total"]
+    ordered = totals.sort_values(ascending=False).index.astype(str).tolist()
+    if limit > 0:
+        ordered = ordered[:limit]
+    return ordered
+
+
+def _analysis_dimension_labels(
+    data: DashboardData,
+    spend_opt: Optional[pd.DataFrame],
+    spend_cmp: Optional[pd.DataFrame],
+    benefit_opt: Optional[pd.DataFrame],
+    benefit_cmp: Optional[pd.DataFrame],
+    *,
+    limit: int = 0,
+) -> List[str]:
+    labels: List[str] = []
+    for dim in getattr(data, "dims", []) or []:
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label not in labels:
+            labels.append(dim_label)
+
+    for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+        if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+            for col in pivot.columns:
+                col_label = str(col).strip()
+                if not col_label:
+                    continue
+                if col_label.lower() in {"total", "unknown"}:
+                    continue
+                if col_label not in labels:
+                    labels.append(col_label)
+
+    if limit > 0 and len(labels) > limit:
+        env_label = next(
+            (label for label in labels if label.strip().lower() == "environmental sustainability"),
+            None,
+        )
+        trimmed = labels[:limit]
+        if env_label and env_label not in trimmed:
+            trimmed = labels[: max(limit - 1, 0)]
+            trimmed.append(env_label)
+        labels = trimmed
+
+    return labels
+
+
+def _analysis_series_for_class(
+    pivot: Optional[pd.DataFrame],
+    label: str,
+    years: List[int],
+) -> pd.Series:
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    if pivot is None or pivot.empty or label not in pivot.columns:
+        return pd.Series(0.0, index=year_index, dtype=float)
+    series = pd.to_numeric(pivot[label], errors="coerce").fillna(0.0)
+    series = pd.Series(series.to_numpy(dtype=float), index=pivot.index.astype(int))
+    return series.reindex(year_index, fill_value=0.0)
+
+
+def _analysis_last_nonzero_year(series: pd.Series) -> Optional[int]:
+    if series is None or series.empty:
+        return None
+    values = pd.to_numeric(series, errors="coerce").fillna(0.0)
+    mask = values.abs().to_numpy() > 1e-9
+    if not mask.any():
+        return None
+    years = pd.Index(series.index).astype(int)
+    return int(years[mask].max())
+
+
+def _analysis_max_year_for_classes(
+    classes: List[str],
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    years: List[int],
+) -> Optional[int]:
+    if not classes:
+        return None
+    last_years: List[int] = []
+    for label in classes:
+        series_opt = _analysis_series_for_class(pivot_opt, label, years)
+        series_cmp = _analysis_series_for_class(pivot_cmp, label, years)
+        last_opt = _analysis_last_nonzero_year(series_opt)
+        last_cmp = _analysis_last_nonzero_year(series_cmp)
+        candidates = [year for year in (last_opt, last_cmp) if year is not None]
+        if candidates:
+            last_years.append(max(candidates))
+    if not last_years:
+        return max(years) if years else None
+    return max(last_years)
+
+
+def _analysis_max_value_for_classes(
+    classes: List[str],
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    years: List[int],
+) -> float:
+    if not classes:
+        return 0.0
+    max_value = 0.0
+    for label in classes:
+        series_opt = _analysis_series_for_class(pivot_opt, label, years)
+        series_cmp = _analysis_series_for_class(pivot_cmp, label, years)
+        max_value = max(
+            max_value,
+            float(pd.to_numeric(series_opt, errors="coerce").fillna(0.0).max()),
+            float(pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).max()),
+        )
+    if max_value <= 0:
+        return 0.0
+    return max_value * 1_000_000.0 * 1.05
+
+
+def _analysis_sparkline_chart(
+    label: str,
+    years: List[int],
+    series_opt: pd.Series,
+    series_cmp: pd.Series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+    color_opt: str,
+    color_cmp: str,
+    x_max: Optional[int],
+    y_max: Optional[float],
+    show_xaxis: bool,
+) -> go.Figure:
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    opt_values = pd.to_numeric(series_opt, errors="coerce").fillna(0.0).to_numpy(dtype=float) * 1_000_000.0
+    cmp_values = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).to_numpy(dtype=float) * 1_000_000.0
+
+    fig = go.Figure()
+    if opt_label:
+        fig.add_trace(
+            go.Scatter(
+                x=year_index,
+                y=opt_values,
+                name=opt_label,
+                mode="lines",
+                line=dict(color=color_opt, width=2),
+                customdata=[format_large_amount(val) for val in opt_values],
+                hovertemplate=f"<b>{html.escape(opt_label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            )
+        )
+    if cmp_label:
+        fig.add_trace(
+            go.Scatter(
+                x=year_index,
+                y=cmp_values,
+                name=cmp_label,
+                mode="lines",
+                line=dict(color=color_cmp, width=2),
+                customdata=[format_large_amount(val) for val in cmp_values],
+                hovertemplate=f"<b>{html.escape(cmp_label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            )
+        )
+
+    min_year = int(year_index.min()) if len(year_index) else 0
+    max_year = int(x_max) if x_max is not None else (int(year_index.max()) if len(year_index) else min_year)
+    fig.update_layout(
+        title=dict(text=label, x=0.01, y=0.92, xanchor="left", yanchor="top", font=dict(size=12)),
+        height=120,
+        margin=dict(l=30, r=20, t=26, b=18 if show_xaxis else 6),
+        showlegend=False,
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+    )
+    fig.update_xaxes(
+        title=None,
+        showgrid=True,
+        showticklabels=show_xaxis,
+        range=[min_year - 0.4, max_year + 0.4],
+        zeroline=False,
+    )
+    yaxis_config: Dict[str, Any] = {
+        "title": None,
+        "showgrid": True,
+        "showticklabels": False,
+        "zeroline": False,
+    }
+    if y_max is not None and y_max > 0:
+        pad = float(y_max) * 0.02
+        if pad <= 0:
+            pad = 1.0
+        yaxis_config["range"] = [-pad, float(y_max) + pad]
+    fig.update_yaxes(**yaxis_config)
     return fig
 
 
@@ -5998,6 +6480,7 @@ COST_BENEFIT_STACK_COST_OPTIONS = (
 CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS = (
     "Total",
     "Activity Class",
+    "Region",
     "GPS Request Tier",
 )
 
@@ -10437,6 +10920,231 @@ def render_cash_flow_tab(
     return export_tables
 
 
+def render_analysis_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+
+    st.markdown('<div class="pbi-section-title">Analysis</div>', unsafe_allow_html=True)
+
+    opt_code = getattr(opt_selection, "code", None) if opt_selection is not None else None
+    cmp_code = getattr(comp_selection, "code", None) if comp_selection is not None else None
+    if not (opt_code or cmp_code):
+        st.info("Select scenarios to view the analysis.")
+        return export_tables
+
+    years = [int(y) for y in getattr(data, "years", []) if y is not None]
+    if not years:
+        st.info("No annual data available for the analysis view.")
+        return export_tables
+
+    breakdown_options = [
+        "Activity Class",
+        "GPS Request Tier",
+        "Region",
+        "Strategic Dimension",
+    ]
+    breakdown_key = "analysis_breakdown"
+    if st.session_state.get(breakdown_key) not in breakdown_options:
+        st.session_state[breakdown_key] = "Activity Class"
+    breakdown_choice = st.radio(
+        "Breakdown by",
+        breakdown_options,
+        horizontal=True,
+        key=breakdown_key,
+    )
+    breakdown_choice_norm = str(breakdown_choice).strip().lower()
+    breakdown_label = str(breakdown_choice or "Activity Class").strip()
+    group_col: Optional[str] = None
+    if breakdown_choice_norm == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_choice_norm == "gps request tier":
+        group_col = "GPSTier"
+    elif breakdown_choice_norm == "region":
+        group_col = "Region"
+    elif breakdown_choice_norm == "strategic dimension":
+        group_col = "StrategicDimension"
+
+    limit = 5
+    if breakdown_choice_norm == "region":
+        limit = 0
+
+    if group_col == "StrategicDimension":
+        spend_opt = (
+            _annual_cost_breakdown_by_dimension_weights(
+                data,
+                opt_selection,
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        spend_cmp = (
+            _annual_cost_breakdown_by_dimension_weights(
+                data,
+                comp_selection,
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+        benefit_opt = dimension_timeseries(data, opt_selection) if opt_code else None
+        benefit_cmp = dimension_timeseries(data, comp_selection) if cmp_code else None
+    else:
+        spend_opt = (
+            _annual_spend_breakdown_by_attribute(
+                data,
+                opt_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        spend_cmp = (
+            _annual_spend_breakdown_by_attribute(
+                data,
+                comp_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+        benefit_opt = (
+            _annual_benefit_breakdown_by_attribute(
+                data,
+                opt_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        benefit_cmp = (
+            _annual_benefit_breakdown_by_attribute(
+                data,
+                comp_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+
+    if group_col == "StrategicDimension":
+        activity_classes = _analysis_dimension_labels(
+            data,
+            spend_opt,
+            spend_cmp,
+            benefit_opt,
+            benefit_cmp,
+            limit=limit,
+        )
+    else:
+        activity_classes = _analysis_activity_classes(
+            spend_opt,
+            spend_cmp,
+            benefit_opt,
+            benefit_cmp,
+            limit=limit,
+        )
+    if not activity_classes:
+        st.info("No breakdown data available for the analysis view.")
+        return export_tables
+
+    cost_max_year = _analysis_max_year_for_classes(activity_classes, spend_opt, spend_cmp, years)
+    benefit_max_year = _analysis_max_year_for_classes(activity_classes, benefit_opt, benefit_cmp, years)
+    cost_x_max = cost_max_year if cost_max_year is not None else max(years)
+    benefit_x_max = benefit_max_year if benefit_max_year is not None else max(years)
+    cost_y_max = _analysis_max_value_for_classes(activity_classes, spend_opt, spend_cmp, years)
+    benefit_y_max = _analysis_max_value_for_classes(activity_classes, benefit_opt, benefit_cmp, years)
+
+    opt_label_text = (opt_label or "").strip() or scenario_primary_label()
+    cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
+    legend_items = []
+    if opt_code:
+        legend_items.append(
+            f"<span style='display:flex;gap:0.35rem;align-items:center;color:{PRIMARY_COLOR};'>"
+            "<span style='width:8px;height:8px;border-radius:999px;background:"
+            f"{PRIMARY_COLOR};display:inline-block;'></span>{html.escape(opt_label_text)}</span>"
+        )
+    if cmp_code:
+        legend_items.append(
+            f"<span style='display:flex;gap:0.35rem;align-items:center;color:{CAPACITY_HEAT_RED};'>"
+            "<span style='width:8px;height:8px;border-radius:999px;background:"
+            f"{CAPACITY_HEAT_RED};display:inline-block;'></span>{html.escape(cmp_label_text)}</span>"
+        )
+    legend_html = (
+        "<div style='display:flex;gap:1rem;align-items:center;margin:0.3rem 0 0.8rem;'>"
+        "<span style='font-weight:600;color:#0F172A;'>Scenario comparison (real $):</span>"
+        + "".join(legend_items)
+        + "</div>"
+    )
+    st.markdown(legend_html, unsafe_allow_html=True)
+
+    header_cols = st.columns(2)
+    with header_cols[0]:
+        st.markdown(f"**Spend by {breakdown_label}**")
+    with header_cols[1]:
+        st.markdown(f"**Benefits by {breakdown_label}**")
+
+    for idx, activity in enumerate(activity_classes):
+        show_xaxis = idx == len(activity_classes) - 1
+        row_cols = st.columns(2)
+        with row_cols[0]:
+            series_opt = _analysis_series_for_class(spend_opt, activity, years)
+            series_cmp = _analysis_series_for_class(spend_cmp, activity, years)
+            cost_fig = _analysis_sparkline_chart(
+                activity,
+                years,
+                series_opt,
+                series_cmp,
+                opt_label=opt_label_text if opt_code else "",
+                cmp_label=cmp_label_text if cmp_code else "",
+                color_opt=PRIMARY_COLOR,
+                color_cmp=CAPACITY_HEAT_RED,
+                x_max=cost_x_max,
+                y_max=cost_y_max,
+                show_xaxis=show_xaxis,
+            )
+            st.plotly_chart(
+                cost_fig,
+                use_container_width=True,
+                key=f"analysis_spend_{idx}",
+            )
+        with row_cols[1]:
+            series_opt = _analysis_series_for_class(benefit_opt, activity, years)
+            series_cmp = _analysis_series_for_class(benefit_cmp, activity, years)
+            benefit_fig = _analysis_sparkline_chart(
+                activity,
+                years,
+                series_opt,
+                series_cmp,
+                opt_label=opt_label_text if opt_code else "",
+                cmp_label=cmp_label_text if cmp_code else "",
+                color_opt=PRIMARY_COLOR,
+                color_cmp=CAPACITY_HEAT_RED,
+                x_max=benefit_x_max,
+                y_max=benefit_y_max,
+                show_xaxis=show_xaxis,
+            )
+            st.plotly_chart(
+                benefit_fig,
+                use_container_width=True,
+                key=f"analysis_benefit_{idx}",
+            )
+
+    return export_tables
+
+
 def render_benefits_tab(
     data: DashboardData,
     opt_selection,
@@ -11550,6 +12258,18 @@ def main() -> None:
         elif active_tab == "Cash Flow":
             download_tables.update(
                 render_cash_flow_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
+            )
+        elif active_tab == "Analysis":
+            download_tables.update(
+                render_analysis_tab(
                     data,
                     opt_selection,
                     comp_selection,
