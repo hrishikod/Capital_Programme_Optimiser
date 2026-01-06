@@ -5947,8 +5947,14 @@ def _analysis_delta_bar_line_chart(
     delta_nzd = delta_m.to_numpy(dtype=float) * 1_000_000.0
     cumulative_nzd = np.cumsum(delta_nzd)
 
-    annual_ticks, annual_text, _ = compute_cash_axis_ticks(delta_nzd)
-    cumulative_ticks, cumulative_text, _ = compute_cash_axis_ticks(cumulative_nzd)
+    max_abs_annual = float(np.nanmax(np.abs(delta_nzd))) if delta_nzd.size else 0.0
+    max_abs_cum = float(np.nanmax(np.abs(cumulative_nzd))) if cumulative_nzd.size else 0.0
+    if max_abs_annual <= 0:
+        max_abs_annual = 1.0
+    if max_abs_cum <= 0:
+        max_abs_cum = 1.0
+    annual_ticks, annual_text, _ = compute_cash_axis_ticks([-max_abs_annual, max_abs_annual])
+    cumulative_ticks, cumulative_text, _ = compute_cash_axis_ticks([-max_abs_cum, max_abs_cum])
 
     bar_color = "#10B981"
     line_color = "#8B5CF6"
@@ -5990,6 +5996,7 @@ def _analysis_delta_bar_line_chart(
             title="Annual Δ spend ($)",
             tickvals=annual_ticks,
             ticktext=annual_text,
+            range=[-max_abs_annual, max_abs_annual],
             zeroline=False,
             showgrid=True,
         ),
@@ -5997,6 +6004,7 @@ def _analysis_delta_bar_line_chart(
             title="Cumulative Δ spend ($)",
             tickvals=cumulative_ticks,
             ticktext=cumulative_text,
+            range=[-max_abs_cum, max_abs_cum],
             zeroline=False,
             showgrid=False,
             overlaying="y",
@@ -12273,7 +12281,9 @@ def render_analysis_tab(
                 opt_label=opt_label_text,
                 cmp_label=cmp_label_text,
             )
+            paddle_height = None
             if paddle_fig is not None:
+                paddle_height = paddle_fig.layout.height
                 st.plotly_chart(
                     paddle_fig,
                     use_container_width=True,
@@ -12283,6 +12293,8 @@ def render_analysis_tab(
                 st.info("No timing data available for the selected breakdown.")
         with top_cols[1]:
             if rank_fig is not None:
+                if paddle_height:
+                    rank_fig.update_layout(height=paddle_height)
                 st.plotly_chart(
                     rank_fig,
                     use_container_width=True,
