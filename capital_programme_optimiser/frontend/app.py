@@ -1315,13 +1315,13 @@ def render_export_download(
             with row2[0]:
                 bcr_bytes = build_export_workbook(bcr_tables) if bcr_tables else b""
                 st.download_button(
-                    "BCR chart",
+                    "BCR charts",
                     data=bcr_bytes,
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"download_{hash(tuple(bcr_tables.keys())) & 0xffff}_bcr",
                     disabled=not bcr_tables,
-                    help="Portfolio weighted average BCR (PV).",
+                    help="Both BCR charts in one workbook.",
                 )
             with row2[1]:
                 cashflow_bytes = build_export_workbook(cashflow_tables) if cashflow_tables else b""
@@ -2783,13 +2783,26 @@ def build_export_workbook(tables: Dict[str, pd.DataFrame]) -> bytes:
                 for idx, col in enumerate(df.columns)
                 if isinstance(col, str) and "bcr" in col.lower()
             ]
+            year_cols = []
+            for idx, col in enumerate(df.columns):
+                if isinstance(col, (int, np.integer)):
+                    year_value = int(col)
+                elif isinstance(col, str) and col.isdigit():
+                    year_value = int(col)
+                else:
+                    continue
+                if year_value >= 2026:
+                    year_cols.append(idx + 1)
             format_cols = sorted(set(weight_cols + bcr_cols))
-            if not format_cols:
-                continue
             max_row = sheet.max_row
             for col_idx in format_cols:
                 for row_idx in range(2, max_row + 1):
                     sheet.cell(row=row_idx, column=col_idx).number_format = "0.00"
+            if year_cols and "Project" in df.columns:
+                accounting_format = '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)'
+                for col_idx in year_cols:
+                    for row_idx in range(2, max_row + 1):
+                        sheet.cell(row=row_idx, column=col_idx).number_format = accounting_format
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -6233,6 +6246,142 @@ def _analysis_spend_density_charts(
     return fig_opt, fig_cmp, fig_diff
 
 
+def _analysis_total_spend_by_year(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: pd.Index,
+) -> Optional[pd.Series]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+    year_cols = [int(year) for year in years if int(year) in subset.columns]
+    if not year_cols:
+        return None
+    totals = subset[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=0)
+    totals.index = pd.Index(year_cols, dtype=int)
+    return totals
+
+
+def _analysis_correlation_matrix_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: List[int],
+) -> Optional[go.Figure]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    totals_by_year = _analysis_total_spend_by_year(data, selection, year_index)
+    if totals_by_year is None or totals_by_year.abs().sum() <= 1e-9:
+        return None
+    active_years = totals_by_year[totals_by_year.abs() > 1e-9]
+    if active_years.empty:
+        return None
+    last_year = int(active_years.index.max())
+    year_index = year_index[year_index <= last_year]
+    totals_by_year = totals_by_year.reindex(year_index).fillna(0.0)
+    overall_total = float(totals_by_year.sum())
+    if overall_total <= 0:
+        return None
+
+    series_entries: List[pd.Series] = []
+    label_entries: List[str] = []
+    share_entries: List[float] = []
+    group_specs = [
+        ("Activity", "ActivityClass", False),
+        ("Tier", "GPSTier", False),
+        ("Region", "Region", False),
+        ("Dimension", "StrategicDimension", True),
+    ]
+    for prefix, group_col, is_dimension in group_specs:
+        if is_dimension:
+            pivot = _annual_cost_breakdown_by_dimension_weights(
+                data,
+                selection,
+                years=year_index.tolist(),
+            )
+        else:
+            pivot = _annual_spend_breakdown_by_attribute(
+                data,
+                selection,
+                group_col=group_col,
+                years=year_index.tolist(),
+            )
+        if pivot is None or pivot.empty:
+            continue
+        pivot = pivot.reindex(year_index, fill_value=0.0)
+        pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+        if pivot.empty:
+            continue
+        share_matrix = pivot.div(totals_by_year.replace(0.0, np.nan), axis=0).fillna(0.0)
+        category_totals = pivot.sum(axis=0)
+        for category in pivot.columns:
+            series = share_matrix[category].astype(float)
+            if series.abs().sum() <= 1e-9:
+                continue
+            share_pct = (category_totals[category] / overall_total) * 100.0
+            label = f"{prefix}: {category} ({share_pct:.1f}%)"
+            series_entries.append(series.rename(label))
+            label_entries.append(label)
+            share_entries.append(share_pct)
+
+    if not series_entries:
+        return None
+    data_matrix = pd.concat(series_entries, axis=1).fillna(0.0)
+    share_lookup = dict(zip(label_entries, share_entries))
+    group_priority = {"Activity": 0, "Tier": 1, "Region": 2, "Dimension": 3}
+    def _label_sort_key(label: str) -> Tuple[int, float, str]:
+        prefix = label.split(":", 1)[0].strip()
+        return (
+            group_priority.get(prefix, 99),
+            -float(share_lookup.get(label, 0.0)),
+            label,
+        )
+    order = sorted(data_matrix.columns, key=_label_sort_key)
+    data_matrix = data_matrix[order]
+    corr = data_matrix.corr(method="pearson").fillna(0.0)
+    np.fill_diagonal(corr.values, 1.0)
+
+    labels = corr.columns.tolist()
+    height = max(420, 24 * len(labels) + 120)
+    fig = go.Figure(
+        go.Heatmap(
+            x=labels,
+            y=labels,
+            z=corr.to_numpy(dtype=float),
+            zmin=-1.0,
+            zmax=1.0,
+            zmid=0.0,
+            colorscale=plc.diverging.RdBu,
+            colorbar=dict(
+                title="Pearson r",
+                len=0.75,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            hovertemplate="X=%{x}<br>Y=%{y}<br>r=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title="Correlation matrix - spend share (Pearson r)",
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=220, r=60, t=70, b=140),
+    )
+    fig.update_xaxes(title=None, showgrid=False, zeroline=False, tickangle=-45)
+    fig.update_yaxes(title=None, showgrid=False, zeroline=False, autorange="reversed")
+    return fig
+
+
 def _analysis_delta_bar_line_chart(
     pivot_opt: Optional[pd.DataFrame],
     pivot_cmp: Optional[pd.DataFrame],
@@ -6355,6 +6504,16 @@ def _distribution_cost_chart(
     categories = totals.sort_values(ascending=False).index.astype(str).tolist()
     values = totals.reindex(categories).fillna(0.0) * 1_000_000.0
 
+    def _compact_amount_label(value: float) -> str:
+        abs_value = abs(value)
+        if abs_value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:.2f}b"
+        if abs_value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}m"
+        if abs_value >= 1_000:
+            return f"{value / 1_000:.2f}k"
+        return f"{value:.2f}"
+
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
@@ -6362,6 +6521,8 @@ def _distribution_cost_chart(
             y=values.to_numpy(dtype=float),
             name="Total cost",
             marker_color=PRIMARY_COLOR,
+            customdata=[_compact_amount_label(val) for val in values.to_numpy(dtype=float)],
+            hovertemplate="<b>%{x}</b><br>Total cost: %{customdata}<extra></extra>",
         )
     )
 
@@ -6520,14 +6681,14 @@ def _importance_rank_chart(
     )
     fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
     fig.update_layout(
-        title=f"{breakdown_label} - ranked by |shift| (labels show spend share)",
+        title=f"{breakdown_label} - timing shift",
         xaxis_title=f"Raw timing shift (years) [{cmp_label} - {opt_label}]",
         yaxis_title="Category (share of total spend)",
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
-        margin=dict(l=220, r=30, t=60, b=60),
+        margin=dict(l=235, r=30, t=60, b=60),
     )
-    fig.update_yaxes(categoryorder="array", categoryarray=labels[::-1])
+    fig.update_yaxes(categoryorder="array", categoryarray=labels[::-1], ticklabelstandoff=8)
     return fig
 
 
@@ -12346,19 +12507,22 @@ def render_cash_flow_tab(
             key=bcr_view_key,
         )
 
+        spend_bcr_export = prepare_spend_weighted_bcr_export(data, opt_selection, comp_selection)
+        pv_bcr_export = prepare_bcr_time_series_export(
+            data,
+            opt_series,
+            cmp_series,
+            opt_selection,
+            comp_selection,
+        )
+
         if selected_bcr_view == bcr_view_options[0]:
             bcr_fig = _spend_weighted_bcr_time_series_chart(data, opt_selection, comp_selection)
-            bcr_export = prepare_spend_weighted_bcr_export(data, opt_selection, comp_selection)
+            bcr_export = spend_bcr_export
             bcr_export_label = "BCR - Spend-weighted (New)"
         else:
             bcr_fig = bcr_time_series_chart(opt_series, cmp_series, opt_selection, comp_selection)
-            bcr_export = prepare_bcr_time_series_export(
-                data,
-                opt_series,
-                cmp_series,
-                opt_selection,
-                comp_selection,
-            )
+            bcr_export = pv_bcr_export
             bcr_export_label = "BCR - Portfolio Weighted Average"
 
         if bcr_fig is not None:
@@ -12373,6 +12537,10 @@ def render_cash_flow_tab(
             )
             if bcr_export is not None:
                 export_tables[bcr_export_label] = bcr_export
+            if spend_bcr_export is not None:
+                export_tables["BCR - Spend-weighted (New)"] = spend_bcr_export
+            if pv_bcr_export is not None:
+                export_tables["BCR - Portfolio Weighted Average"] = pv_bcr_export
         else:
             st.info("Select scenarios to view the BCR time series.")
 
@@ -12831,12 +12999,12 @@ def render_analysis_tab(
         )
         diff_options = {
             "Δ$ (absolute magnitude)": "absolute",
-            "Δ / group total (proportional intensity)": "relative",
+            "Δ / group total (relative difference)": "relative",
         }
         diff_key = "analysis_density_diff_mode"
         if st.session_state.get(diff_key) not in diff_options:
             st.session_state[diff_key] = list(diff_options.keys())[0]
-        header_cols = st.columns([2.4, 0.2, 1.4])
+        header_cols = st.columns([2.6, 1.6])
         with header_cols[0]:
             st.markdown(
                 "<div style='padding:0.35rem 0 0.35rem 0;'>"
@@ -12850,20 +13018,14 @@ def render_analysis_tab(
                 unsafe_allow_html=True,
             )
         with header_cols[1]:
-            st.markdown("<div style='height:2.6rem;'></div>", unsafe_allow_html=True)
-        with header_cols[2]:
-            align_cols = st.columns([0.55, 1.45])
-            with align_cols[0]:
-                st.markdown("<div style='height:2.6rem;'></div>", unsafe_allow_html=True)
-            with align_cols[1]:
-                st.markdown("**Differential view**")
-                diff_choice = st.radio(
-                    "Differential view",
-                    list(diff_options.keys()),
-                    horizontal=True,
-                    key=diff_key,
-                    label_visibility="collapsed",
-                )
+            st.markdown("**Differential view**")
+            diff_choice = st.radio(
+                "Differential view",
+                list(diff_options.keys()),
+                horizontal=True,
+                key=diff_key,
+                label_visibility="collapsed",
+            )
         diff_mode = diff_options.get(diff_choice, "relative")
         density_figs = _analysis_spend_density_charts(
             spend_opt,
@@ -12956,6 +13118,16 @@ def render_analysis_tab(
                 )
             else:
                 st.info("No distribution data available for the selected breakdown.")
+        base_selection = opt_selection if opt_code else comp_selection
+        corr_fig = _analysis_correlation_matrix_chart(data, base_selection, years)
+        if corr_fig is not None:
+            st.plotly_chart(
+                corr_fig,
+                use_container_width=True,
+                key="analysis_correlation_matrix_chart",
+            )
+        else:
+            st.info("No correlation data available for the selected scenarios.")
         return export_tables
 
     if group_col == "StrategicDimension":
