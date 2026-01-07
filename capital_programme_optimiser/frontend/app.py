@@ -12571,7 +12571,7 @@ def render_analysis_tab(
             with align_cols[1]:
                 st.markdown("**Differential view**")
                 diff_choice = st.radio(
-                    "",
+                    "Differential view",
                     list(diff_options.keys()),
                     horizontal=True,
                     key=diff_key,
