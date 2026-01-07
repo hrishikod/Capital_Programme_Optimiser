@@ -7866,6 +7866,32 @@ def bcr_time_series_chart(
     opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
     cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
 
+    def _efficiency_sentence(diff_pct: Optional[float]) -> str:
+        if diff_pct is None or not np.isfinite(diff_pct):
+            return "Efficiency comparison unavailable"
+        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            diff_pct = 0.0
+            direction = "more"
+            arrow = ""
+        else:
+            direction = "more" if diff_pct >= 0 else "less"
+            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        return (
+            f"{primary_label} is {arrow} {abs(diff_pct):.1f}% {direction} "
+            f"efficient than {comparison_label}"
+        )
+
+    efficiency_messages: List[str] = []
+    if opt_aligned is not None and cmp_aligned is not None:
+        for opt_val, cmp_val in zip(opt_values, cmp_values):
+            if cmp_val and np.isfinite(opt_val) and np.isfinite(cmp_val):
+                diff_pct = ((opt_val / cmp_val) - 1.0) * 100.0
+            else:
+                diff_pct = None
+            efficiency_messages.append(_efficiency_sentence(diff_pct))
+    else:
+        efficiency_messages = [_efficiency_sentence(None) for _ in range(len(years_index))]
+
     fig = go.Figure()
     if opt_aligned is not None:
         fig.add_trace(
@@ -7875,10 +7901,12 @@ def bcr_time_series_chart(
                 name=primary_label,
                 mode="lines",
                 line=dict(color=PRIMARY_COLOR, width=2.8),
+                customdata=efficiency_messages,
                 hovertemplate=(
                     "<span style='color:#64748B;'>FY %{x}</span>"
                     "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
                     "%{y:.2f}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata}</span>"
                     "<extra></extra>"
                 ),
             )
@@ -7891,10 +7919,12 @@ def bcr_time_series_chart(
                 name=comparison_label,
                 mode="lines",
                 line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
+                customdata=efficiency_messages,
                 hovertemplate=(
                     "<span style='color:#64748B;'>FY %{x}</span>"
                     "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
                     "%{y:.2f}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata}</span>"
                     "<extra></extra>"
                 ),
             )
@@ -7995,49 +8025,11 @@ def _spend_weighted_bcr_time_series_chart(
     opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
     cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
 
-    def _efficiency_sentence(diff_pct: Optional[float]) -> str:
-        if diff_pct is None or not np.isfinite(diff_pct):
-            return "Efficiency comparison unavailable"
-        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
-            diff_pct = 0.0
-            direction = "more"
-            arrow = ""
-        else:
-            direction = "more" if diff_pct >= 0 else "less"
-            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
-        return (
-            f"{primary_label} is {arrow} {abs(diff_pct):.1f}% {direction} "
-            f"efficient than {comparison_label}"
-        )
-
-    def _fmt_bcr(value: Optional[float]) -> str:
-        if value is None or not np.isfinite(value):
-            return "n/a"
-        return f"{value:.2f}"
-
-    efficiency_messages: List[str] = []
     opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
     cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
-    if opt_aligned is not None and cmp_aligned is not None:
-        for opt_val, cmp_val in zip(opt_values, cmp_values):
-            if cmp_val and np.isfinite(opt_val) and np.isfinite(cmp_val):
-                diff_pct = ((opt_val / cmp_val) - 1.0) * 100.0
-            else:
-                diff_pct = None
-            efficiency_messages.append(_efficiency_sentence(diff_pct))
-    else:
-        if opt_aligned is not None:
-            efficiency_messages = [_efficiency_sentence(None) for _ in range(len(opt_aligned))]
-        elif cmp_aligned is not None:
-            efficiency_messages = [_efficiency_sentence(None) for _ in range(len(cmp_aligned))]
 
     fig = go.Figure()
     if opt_aligned is not None:
-        opt_value_labels = [_fmt_bcr(val) for val in opt_values]
-        customdata = [
-            [efficiency_messages[idx], opt_value_labels[idx] if idx < len(opt_value_labels) else "n/a"]
-            for idx in range(len(efficiency_messages))
-        ]
         fig.add_trace(
             go.Scatter(
                 x=years_index,
@@ -8045,22 +8037,15 @@ def _spend_weighted_bcr_time_series_chart(
                 name=primary_label,
                 mode="lines",
                 line=dict(color=PRIMARY_COLOR, width=2.8),
-                customdata=customdata,
                 hovertemplate=(
                     "<span style='color:#64748B;'>FY %{x}</span>"
                     "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
-                    "%{customdata[1]}x</span>"
-                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata[0]}</span>"
+                    "%{y:.2f}x</span>"
                     "<extra></extra>"
                 ),
             )
         )
     if cmp_aligned is not None:
-        cmp_value_labels = [_fmt_bcr(val) for val in cmp_values]
-        customdata = [
-            [efficiency_messages[idx], cmp_value_labels[idx] if idx < len(cmp_value_labels) else "n/a"]
-            for idx in range(len(efficiency_messages))
-        ]
         fig.add_trace(
             go.Scatter(
                 x=years_index,
@@ -8068,12 +8053,10 @@ def _spend_weighted_bcr_time_series_chart(
                 name=comparison_label,
                 mode="lines",
                 line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
-                customdata=customdata,
                 hovertemplate=(
                     "<span style='color:#64748B;'>FY %{x}</span>"
                     "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
-                    "%{customdata[1]}x</span>"
-                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata[0]}</span>"
+                    "%{y:.2f}x</span>"
                     "<extra></extra>"
                 ),
             )
