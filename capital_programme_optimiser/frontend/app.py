@@ -1262,7 +1262,7 @@ def render_export_download(
                 data=export_bytes,
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"download_{hash(tuple(ordered_tables.keys())) & 0xffff}",
+                key=f"download_{hash(tuple(ordered_tables.keys())) & 0xffff}_{order_choice}",
             )
             st.markdown("</div>", unsafe_allow_html=True)
     elif active_tab == "Cash Flow":
