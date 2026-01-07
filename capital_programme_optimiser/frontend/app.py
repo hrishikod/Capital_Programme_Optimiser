@@ -1269,7 +1269,7 @@ def render_export_download(
         _inject_export_popover_focus_guard()
         breakdown_label = st.session_state.get("cash_flow_profile_spend_breakdown", "Total")
         cumulative_tables = {k: v for k, v in tables.items() if k == "Cumulative spend vs benefit"}
-        bcr_tables = {k: v for k, v in tables.items() if k == "BCR - Portfolio Weighted Average"}
+        bcr_tables = {k: v for k, v in tables.items() if str(k).startswith("BCR - ")}
         stack_tables = {
             k: v
             for k, v in tables.items()
@@ -6322,7 +6322,18 @@ def _analysis_delta_bar_line_chart(
             side="right",
         ),
     )
-    fig.update_xaxes(title="Year", showgrid=True, zeroline=False)
+    min_year = int(year_index.min())
+    nonzero_mask = np.abs(delta_nzd) > 1e-9
+    if nonzero_mask.any():
+        max_year = int(year_index[nonzero_mask].max())
+    else:
+        max_year = int(year_index.max())
+    fig.update_xaxes(
+        title="Year",
+        showgrid=True,
+        zeroline=False,
+        range=[min_year - 0.4, max_year + 0.4],
+    )
     return fig
 
 
@@ -7852,6 +7863,138 @@ def bcr_time_series_chart(
     opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
     cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
 
+    opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
+    cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
+
+    fig = go.Figure()
+    if opt_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=opt_values,
+                name=primary_label,
+                mode="lines",
+                line=dict(color=PRIMARY_COLOR, width=2.8),
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    if cmp_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=cmp_values,
+                name=comparison_label,
+                mode="lines",
+                line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="BCR - Portfolio Weighted Average",
+        xaxis_title=None,
+        yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(),
+    )
+
+    return fig
+
+
+def _spend_weighted_bcr_series(
+    data: DashboardData,
+    selection: ScenarioSelection,
+) -> Optional[pd.Series]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+    years = [int(y) for y in getattr(data, "years", []) if y is not None]
+    year_cols = [int(year) for year in years if int(year) in subset.columns]
+    if not year_cols:
+        return None
+
+    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+    base_year = int(getattr(data, "start_fy", 2025) or 2025)
+    new_bcr = _project_new_bcr_from_tables(
+        cost_table,
+        benefit_table,
+        base_year=base_year,
+    )
+    if new_bcr is None or new_bcr.empty:
+        return None
+
+    subset = subset[["Project"] + year_cols].copy()
+    subset["Project"] = subset["Project"].astype(str)
+    subset["ProjectKey"] = subset["Project"].map(_normalise_project_key)
+    merged = subset.merge(new_bcr, on="ProjectKey", how="left")
+    bcr_values = pd.to_numeric(merged.get("BCR (New)"), errors="coerce")
+    if bcr_values.isna().all():
+        return None
+
+    spend_matrix_vals = (
+        merged[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
+    bcr_array = bcr_values.to_numpy(dtype=float)
+
+    series_values: List[float] = []
+    for col_idx in range(spend_matrix_vals.shape[1]):
+        spend_vals = spend_matrix_vals[:, col_idx]
+        mask = np.isfinite(bcr_array) & (spend_vals > 1e-9)
+        if not mask.any():
+            series_values.append(np.nan)
+            continue
+        total_spend = float(spend_vals[mask].sum())
+        if total_spend <= 0:
+            series_values.append(np.nan)
+            continue
+        weighted = float((spend_vals[mask] * bcr_array[mask]).sum() / total_spend)
+        series_values.append(weighted)
+
+    return pd.Series(series_values, index=np.asarray(year_cols, dtype=int), dtype=float)
+
+
+def _spend_weighted_bcr_time_series_chart(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[go.Figure]:
+    if data is None:
+        return None
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
+    series_opt = _spend_weighted_bcr_series(data, opt_selection)
+    series_cmp = _spend_weighted_bcr_series(data, cmp_selection)
+    if series_opt is None and series_cmp is None:
+        return None
+
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+
+    opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
+    cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
+
     def _efficiency_sentence(diff_pct: Optional[float]) -> str:
         if diff_pct is None or not np.isfinite(diff_pct):
             return "Efficiency comparison unavailable"
@@ -7937,16 +8080,60 @@ def bcr_time_series_chart(
         )
 
     fig.update_layout(
-        title="BCR - Portfolio Weighted Average",
+        title="BCR - Spend-weighted project average (New)",
         xaxis_title=None,
         yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
         legend=legend_bottom(),
     )
+    def _last_valid_year(series: Optional[pd.Series]) -> Optional[int]:
+        if series is None or series.empty:
+            return None
+        values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+        valid_mask = np.isfinite(values)
+        if not valid_mask.any():
+            return None
+        nonzero_mask = valid_mask & (np.abs(values) > 1e-9)
+        years = pd.Index(series.index).astype(int)
+        if nonzero_mask.any():
+            return int(years[nonzero_mask].max())
+        return int(years[valid_mask].max())
 
+    min_year = int(years_index.min()) if len(years_index) else None
+    max_candidates = [
+        year for year in (_last_valid_year(opt_aligned), _last_valid_year(cmp_aligned)) if year is not None
+    ]
+    max_year = max(max_candidates) if max_candidates else (int(years_index.max()) if len(years_index) else None)
+    if min_year is not None and max_year is not None and max_year >= min_year:
+        fig.update_xaxes(range=[min_year - 0.4, max_year + 0.4])
     return fig
 
+
+def prepare_spend_weighted_bcr_export(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    series_opt = _spend_weighted_bcr_series(data, opt_selection)
+    series_cmp = _spend_weighted_bcr_series(data, cmp_selection)
+    if series_opt is None and series_cmp is None:
+        return None
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+    export = pd.DataFrame({"Financial year": years_index.astype(int)})
+    if series_opt is not None:
+        export[f"{primary_label} spend-weighted BCR (New)"] = series_opt.reindex(years_index).to_numpy(dtype=float)
+    if series_cmp is not None:
+        export[f"{comparison_label} spend-weighted BCR (New)"] = series_cmp.reindex(years_index).to_numpy(dtype=float)
+    if export.shape[1] <= 1:
+        return None
+    return export
 
 COST_BENEFIT_STACK_COST_OPTIONS = (
     "Activity Class",
@@ -12162,7 +12349,35 @@ def render_cash_flow_tab(
     with eff_cols[0]:
         if show_stack_chart:
             st.markdown(f'<div style="height:{control_row_spacer_px}px;"></div>', unsafe_allow_html=True)
-        bcr_fig = bcr_time_series_chart(opt_series, cmp_series, opt_selection, comp_selection)
+        bcr_view_key = "cashflow_bcr_view"
+        bcr_view_options = [
+            "Spend-weighted project BCR (New)",
+            "Portfolio PV BCR (cumulative)",
+        ]
+        if st.session_state.get(bcr_view_key) not in bcr_view_options:
+            st.session_state[bcr_view_key] = bcr_view_options[0]
+        selected_bcr_view = st.radio(
+            "BCR view",
+            bcr_view_options,
+            horizontal=True,
+            key=bcr_view_key,
+        )
+
+        if selected_bcr_view == bcr_view_options[0]:
+            bcr_fig = _spend_weighted_bcr_time_series_chart(data, opt_selection, comp_selection)
+            bcr_export = prepare_spend_weighted_bcr_export(data, opt_selection, comp_selection)
+            bcr_export_label = "BCR - Spend-weighted (New)"
+        else:
+            bcr_fig = bcr_time_series_chart(opt_series, cmp_series, opt_selection, comp_selection)
+            bcr_export = prepare_bcr_time_series_export(
+                data,
+                opt_series,
+                cmp_series,
+                opt_selection,
+                comp_selection,
+            )
+            bcr_export_label = "BCR - Portfolio Weighted Average"
+
         if bcr_fig is not None:
             bcr_fig.update_layout(
                 height=420,
@@ -12173,17 +12388,10 @@ def render_cash_flow_tab(
                 use_container_width=True,
                 key="overview_bcr_time_series_chart",
             )
-            bcr_export = prepare_bcr_time_series_export(
-                data,
-                opt_series,
-                cmp_series,
-                opt_selection,
-                comp_selection,
-            )
             if bcr_export is not None:
-                export_tables["BCR - Portfolio Weighted Average"] = bcr_export
+                export_tables[bcr_export_label] = bcr_export
         else:
-            st.info("Select scenarios to view the portfolio BCR time series.")
+            st.info("Select scenarios to view the BCR time series.")
 
     with eff_cols[1]:
         if show_stack_chart:
@@ -12712,39 +12920,6 @@ def render_analysis_tab(
         group_totals_opt = _analysis_group_totals(spend_opt)
         group_totals_cmp = _analysis_group_totals(spend_cmp)
         group_options, _ = _analysis_group_order_and_share(group_totals_opt, group_totals_cmp)
-        if group_options:
-            st.markdown("**Group inspector**")
-            st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
-            group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
-            current_group = st.session_state.get(group_key)
-            if current_group not in group_options:
-                current_group = group_options[0]
-                st.session_state[group_key] = current_group
-            selected_group = st.selectbox(
-                f"{breakdown_label} focus",
-                group_options,
-                index=group_options.index(current_group),
-                key=group_key,
-            )
-            delta_fig = _analysis_delta_bar_line_chart(
-                spend_opt,
-                spend_cmp,
-                years=years,
-                group_label=selected_group,
-                breakdown_label=breakdown_label,
-                opt_label=opt_label_text,
-                cmp_label=cmp_label_text,
-            )
-            if delta_fig is not None:
-                st.plotly_chart(
-                    delta_fig,
-                    use_container_width=True,
-                    key="analysis_delta_group_chart",
-                )
-            else:
-                st.info("No delta data available for the selected group.")
-        else:
-            st.info("No group data available for the selected breakdown.")
 
         dist_fig = _distribution_cost_chart(
             spend_opt,
@@ -12753,14 +12928,51 @@ def render_analysis_tab(
             opt_label=opt_label_text,
             cmp_label=cmp_label_text,
         )
-        if dist_fig is not None:
-            st.plotly_chart(
-                dist_fig,
-                use_container_width=True,
-                key="analysis_cost_distribution_chart",
-            )
-        else:
-            st.info("No distribution data available for the selected breakdown.")
+
+        inspector_cols = st.columns([1.25, 1.0], gap="large")
+        with inspector_cols[0]:
+            if group_options:
+                st.markdown("**Group inspector**")
+                st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
+                group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
+                current_group = st.session_state.get(group_key)
+                if current_group not in group_options:
+                    current_group = group_options[0]
+                    st.session_state[group_key] = current_group
+                selected_group = st.selectbox(
+                    f"{breakdown_label} focus",
+                    group_options,
+                    index=group_options.index(current_group),
+                    key=group_key,
+                )
+                delta_fig = _analysis_delta_bar_line_chart(
+                    spend_opt,
+                    spend_cmp,
+                    years=years,
+                    group_label=selected_group,
+                    breakdown_label=breakdown_label,
+                    opt_label=opt_label_text,
+                    cmp_label=cmp_label_text,
+                )
+                if delta_fig is not None:
+                    st.plotly_chart(
+                        delta_fig,
+                        use_container_width=True,
+                        key="analysis_delta_group_chart",
+                    )
+                else:
+                    st.info("No delta data available for the selected group.")
+            else:
+                st.info("No group data available for the selected breakdown.")
+        with inspector_cols[1]:
+            if dist_fig is not None:
+                st.plotly_chart(
+                    dist_fig,
+                    use_container_width=True,
+                    key="analysis_cost_distribution_chart",
+                )
+            else:
+                st.info("No distribution data available for the selected breakdown.")
         return export_tables
 
     if group_col == "StrategicDimension":
