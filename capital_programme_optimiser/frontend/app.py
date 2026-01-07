@@ -12351,7 +12351,7 @@ def render_cash_flow_tab(
             st.markdown(f'<div style="height:{control_row_spacer_px}px;"></div>', unsafe_allow_html=True)
         bcr_view_key = "cashflow_bcr_view"
         bcr_view_options = [
-            "Spend-weighted project BCR (New)",
+            "Spend-weighted project BCR",
             "Portfolio PV BCR (cumulative)",
         ]
         if st.session_state.get(bcr_view_key) not in bcr_view_options:
