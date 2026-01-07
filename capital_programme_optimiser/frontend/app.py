@@ -11,6 +11,8 @@ import copy
 import pickle
 import textwrap
 import html
+import shutil
+import tempfile
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from datetime import datetime
@@ -1892,18 +1894,36 @@ def _canonicalise_gps_tier(value: Any) -> str:
     return text.strip()
 
 
-@st.cache_resource(show_spinner=False)
-def load_project_attribute_mapping(
-    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
-) -> pd.DataFrame:
-    """Load project-to-attribute mappings used for breakdown charts."""
+def _read_excel_safe(path: Path, *, sheet_name: str) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        pass
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=path.suffix) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            shutil.copy2(path, tmp_path)
+            return pd.read_excel(tmp_path, sheet_name=sheet_name, engine="openpyxl")
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        return pd.DataFrame()
+
+
+def _build_project_attribute_mapping(workbook_path: Path) -> pd.DataFrame:
+    """Build project-to-attribute mappings used for breakdown charts."""
 
     def _read_sheet(sheet_name: str, column_map: Dict[str, str]) -> pd.DataFrame:
         if not workbook_path.exists():
             return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
-        try:
-            df = pd.read_excel(workbook_path, sheet_name=sheet_name, engine="openpyxl")
-        except Exception:
+        df = _read_excel_safe(workbook_path, sheet_name=sheet_name)
+        if df.empty:
             return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
 
         df = df.copy()
@@ -1963,15 +1983,22 @@ def load_project_attribute_mapping(
 
 
 @st.cache_resource(show_spinner=False)
+def load_project_attribute_mapping(
+    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
+) -> pd.DataFrame:
+    """Load project-to-attribute mappings used for breakdown charts."""
+    return _build_project_attribute_mapping(workbook_path)
+
+
+@st.cache_resource(show_spinner=False)
 def load_project_bcr_mapping(
     workbook_path: Path = BCR_MAPPING_PATH,
 ) -> pd.DataFrame:
     """Return per-project original BCR values from the mapping workbook."""
     if not workbook_path.exists():
         return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (Original)"])
-    try:
-        df = pd.read_excel(workbook_path, sheet_name=0, engine="openpyxl")
-    except Exception:
+    df = _read_excel_safe(workbook_path, sheet_name=0)
+    if df.empty:
         return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (Original)"])
 
     df = df.copy()
@@ -2002,12 +2029,9 @@ def load_project_new_bcr_mapping(
     """Return per-project BCR from PV'd cost/benefit cashflows (40-year benefits)."""
     if not workbook_path.exists():
         return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
-    try:
-        costs = pd.read_excel(workbook_path, sheet_name="Costs", engine="openpyxl")
-        benefits = pd.read_excel(
-            workbook_path, sheet_name="Benefits Linear 40yrs", engine="openpyxl"
-        )
-    except Exception:
+    costs = _read_excel_safe(workbook_path, sheet_name="Costs")
+    benefits = _read_excel_safe(workbook_path, sheet_name="Benefits Linear 40yrs")
+    if costs.empty or benefits.empty:
         return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
 
     if costs is None or costs.empty or "Project" not in costs.columns:
@@ -3463,12 +3487,71 @@ def _project_dimension_weight_table(
     return pivot.drop(columns=["Project"])
 
 
+def _project_new_bcr_from_tables(
+    cost_table: Optional[pd.DataFrame],
+    benefit_table: Optional[pd.DataFrame],
+    *,
+    base_year: int,
+) -> pd.DataFrame:
+    if (
+        cost_table is None
+        or benefit_table is None
+        or cost_table.empty
+        or benefit_table.empty
+        or "Project" not in cost_table.columns
+        or "Project" not in benefit_table.columns
+    ):
+        return pd.DataFrame(columns=["ProjectKey", "BCR (New)"])
+
+    cost_years = sorted(
+        [col for col in cost_table.columns if isinstance(col, (int, np.integer))]
+    )
+    benefit_years = sorted(
+        [col for col in benefit_table.columns if isinstance(col, (int, np.integer))]
+    )
+    if not cost_years or not benefit_years:
+        return pd.DataFrame(columns=["ProjectKey", "BCR (New)"])
+
+    cost_df = cost_table[["Project"] + cost_years].copy()
+    cost_df["Project"] = cost_df["Project"].astype(str)
+    cost_df["ProjectKey"] = cost_df["Project"].map(_normalise_project_key)
+    cost_values = cost_df[cost_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    cost_offsets = np.asarray(cost_years, dtype=int) - int(base_year)
+    cost_divisors = mbcm_discount_divisors(cost_offsets)
+    cost_pv = cost_values.dot(1.0 / cost_divisors) if cost_divisors.size else np.zeros(len(cost_df))
+    cost_map = pd.DataFrame({"ProjectKey": cost_df["ProjectKey"], "CostPV": cost_pv})
+    cost_map = cost_map.groupby("ProjectKey", as_index=False)["CostPV"].sum()
+
+    benefit_df = benefit_table[["Project"] + benefit_years].copy()
+    benefit_df["Project"] = benefit_df["Project"].astype(str)
+    benefit_df["ProjectKey"] = benefit_df["Project"].map(_normalise_project_key)
+    benefit_values = (
+        benefit_df[benefit_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
+    benefit_offsets = np.asarray(benefit_years, dtype=int) - int(base_year)
+    benefit_divisors = mbcm_discount_divisors(benefit_offsets)
+    benefit_pv = benefit_values.dot(1.0 / benefit_divisors) if benefit_divisors.size else np.zeros(len(benefit_df))
+    benefit_map = pd.DataFrame({"ProjectKey": benefit_df["ProjectKey"], "BenefitPV": benefit_pv})
+    benefit_map = benefit_map.groupby("ProjectKey", as_index=False)["BenefitPV"].sum()
+
+    merged = cost_map.merge(benefit_map, on="ProjectKey", how="left")
+    merged["BenefitPV"] = merged["BenefitPV"].fillna(0.0)
+    merged["BCR (New)"] = np.divide(
+        merged["BenefitPV"].to_numpy(dtype=float),
+        merged["CostPV"].to_numpy(dtype=float),
+        out=np.full(len(merged), np.nan, dtype=float),
+        where=merged["CostPV"].to_numpy(dtype=float) > 0,
+    )
+    return merged[["ProjectKey", "BCR (New)"]]
+
+
 def _attach_project_attribute_columns(
     table: Optional[pd.DataFrame],
     mapping: pd.DataFrame,
     weight_table: pd.DataFrame,
     *,
     base_year: Optional[int] = None,
+    new_bcr_table: Optional[pd.DataFrame] = None,
 ) -> Optional[pd.DataFrame]:
     if table is None or table.empty or "Project" not in table.columns:
         return table
@@ -3500,7 +3583,8 @@ def _attach_project_attribute_columns(
             on="ProjectKey",
             how="left",
         )
-    new_bcr_table = load_project_new_bcr_mapping(base_year=base_year)
+    if new_bcr_table is None or new_bcr_table.empty:
+        new_bcr_table = load_project_new_bcr_mapping(base_year=base_year)
     if new_bcr_table is not None and not new_bcr_table.empty:
         merged = merged.merge(
             new_bcr_table[["ProjectKey", "BCR (New)"]],
@@ -3656,20 +3740,28 @@ def prepare_gantt_export(
         sheet_label = label or code
         weight_table = _project_dimension_weight_table(data, selection)
         cost_table = _scenario_project_cost_table(data, code, years)
+        benefit_table = _scenario_project_benefit_table(data, code, years)
+        base_year = int(getattr(data, "start_fy", 2025) or 2025)
+        new_bcr_table = _project_new_bcr_from_tables(
+            cost_table,
+            benefit_table,
+            base_year=base_year,
+        )
         cost_table = _attach_project_attribute_columns(
             cost_table,
             mapping,
             weight_table,
-            base_year=int(getattr(data, "start_fy", 2025) or 2025),
+            base_year=base_year,
+            new_bcr_table=new_bcr_table,
         )
         if cost_table is not None and not cost_table.empty:
             tables[f"{sheet_label} - Costs"] = cost_table
-        benefit_table = _scenario_project_benefit_table(data, code, years)
         benefit_table = _attach_project_attribute_columns(
             benefit_table,
             mapping,
             weight_table,
-            base_year=int(getattr(data, "start_fy", 2025) or 2025),
+            base_year=base_year,
+            new_bcr_table=new_bcr_table,
         )
         if benefit_table is not None and not benefit_table.empty:
             tables[f"{sheet_label} - Benefits"] = benefit_table
@@ -5098,6 +5190,8 @@ def _annual_spend_breakdown_by_attribute(
 
     mapping = load_project_attribute_mapping()
     if mapping.empty or group_col not in mapping.columns:
+        mapping = _build_project_attribute_mapping(COST_BENEFIT_STREAMS_PATH)
+    if mapping.empty or group_col not in mapping.columns:
         return None
 
     merged = long.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
@@ -5156,6 +5250,8 @@ def _annual_benefit_breakdown_by_attribute(
     long["ProjectKey"] = long["Project"].map(_normalise_project_key)
 
     mapping = load_project_attribute_mapping()
+    if mapping.empty or group_col not in mapping.columns:
+        mapping = _build_project_attribute_mapping(COST_BENEFIT_STREAMS_PATH)
     if mapping.empty or group_col not in mapping.columns:
         return None
 
