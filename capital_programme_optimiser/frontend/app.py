@@ -1249,9 +1249,9 @@ def render_export_download(
             order_choice = st.radio(
                 "Order by",
                 options=["project", "start_year"],
-                format_func=lambda val: "Project order (1, 2, 3)"
+                format_func=lambda val: "Project start year (Gantt order)"
                 if val == "project"
-                else "Project start year (Gantt order)",
+                else "Project order (1, 2, 3)",
                 key=order_key,
                 horizontal=True,
             )
@@ -3807,10 +3807,16 @@ def _project_start_year_order(table: pd.DataFrame) -> List[str]:
     year_cols = sorted([col for col in table.columns if isinstance(col, (int, np.integer))])
     if not year_cols:
         return sorted(table["Project"].astype(str).tolist(), key=_project_sort_key)
-    values = table[year_cols].to_numpy(dtype=float, copy=True)
+    values = (
+        table[year_cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .to_numpy(dtype=float, copy=True)
+    )
+    threshold = 1e-6
     order: List[Tuple[int, str, str]] = []
     for idx, row in enumerate(values):
-        mask = np.abs(row) > 1e-9
+        mask = np.abs(row) > threshold
         if mask.any():
             first_idx = int(np.argmax(mask))
             start_year = int(year_cols[first_idx])
