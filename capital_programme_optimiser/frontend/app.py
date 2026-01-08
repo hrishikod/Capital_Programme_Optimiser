@@ -1249,9 +1249,9 @@ def render_export_download(
             order_choice = st.radio(
                 "Order by",
                 options=["project", "start_year"],
-                format_func=lambda val: "Project start year (Gantt order)"
+                format_func=lambda val: "Project order (1, 2, 3)"
                 if val == "project"
-                else "Project order (1, 2, 3)",
+                else "Project start year (Gantt order)",
                 key=order_key,
                 horizontal=True,
             )
@@ -3751,6 +3751,8 @@ def prepare_gantt_export(
         if not code:
             continue
         sheet_label = label or code
+        runs = extract_project_runs(data, code)
+        order_lookup = {str(run.project): idx for idx, run in enumerate(runs)} if runs else {}
         weight_table = _project_dimension_weight_table(data, selection)
         cost_table = _scenario_project_cost_table(data, code, years)
         benefit_table = _scenario_project_benefit_table(data, code, years)
@@ -3767,6 +3769,11 @@ def prepare_gantt_export(
             base_year=base_year,
             new_bcr_table=new_bcr_table,
         )
+        if cost_table is not None and not cost_table.empty and order_lookup:
+            cost_table = cost_table.copy()
+            cost_table["_gantt_order_idx"] = (
+                cost_table["Project"].astype(str).map(order_lookup).fillna(1_000_000).astype(int)
+            )
         if cost_table is not None and not cost_table.empty:
             tables[f"{sheet_label} - Costs"] = cost_table
         benefit_table = _attach_project_attribute_columns(
@@ -3776,6 +3783,11 @@ def prepare_gantt_export(
             base_year=base_year,
             new_bcr_table=new_bcr_table,
         )
+        if benefit_table is not None and not benefit_table.empty and order_lookup:
+            benefit_table = benefit_table.copy()
+            benefit_table["_gantt_order_idx"] = (
+                benefit_table["Project"].astype(str).map(order_lookup).fillna(1_000_000).astype(int)
+            )
         if benefit_table is not None and not benefit_table.empty:
             tables[f"{sheet_label} - Benefits"] = benefit_table
     return tables
@@ -3860,6 +3872,12 @@ def _apply_programme_schedule_export_order(
             if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
                 continue
             scenario_label, kind = _split_gantt_export_label(name)
+            if scenario_label in scenario_orders:
+                continue
+            if "_gantt_order_idx" in table.columns:
+                ordered = table.sort_values("_gantt_order_idx", kind="stable")
+                scenario_orders[scenario_label] = ordered["Project"].astype(str).tolist()
+                continue
             if kind == "Costs" and scenario_label not in scenario_orders:
                 scenario_orders[scenario_label] = _project_start_year_order(table)
         for name, table in tables.items():
@@ -3867,7 +3885,11 @@ def _apply_programme_schedule_export_order(
                 continue
             scenario_label, _ = _split_gantt_export_label(name)
             if scenario_label not in scenario_orders:
-                scenario_orders[scenario_label] = _project_start_year_order(table)
+                if "_gantt_order_idx" in table.columns:
+                    ordered = table.sort_values("_gantt_order_idx", kind="stable")
+                    scenario_orders[scenario_label] = ordered["Project"].astype(str).tolist()
+                else:
+                    scenario_orders[scenario_label] = _project_start_year_order(table)
     else:
         for name, table in tables.items():
             if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
@@ -3883,7 +3905,8 @@ def _apply_programme_schedule_export_order(
             continue
         scenario_label, _ = _split_gantt_export_label(name)
         order = scenario_orders.get(scenario_label, [])
-        ordered_tables[name] = _order_export_table(table, order)
+        ordered = _order_export_table(table, order)
+        ordered_tables[name] = ordered.drop(columns=["_gantt_order_idx"], errors="ignore")
     return ordered_tables
 
 def prepare_schedule_export(
