@@ -5909,7 +5909,7 @@ def _timing_paddle_chart(
         if np.isfinite(opt_val) and np.isfinite(cmp_val):
             line_x.extend([float(opt_val), float(cmp_val), None])
             line_y.extend([label, label, None])
-            delta = float(cmp_val) - float(opt_val)
+            delta = float(opt_val) - float(cmp_val)
             text_x.append((float(opt_val) + float(cmp_val)) / 2.0)
             text_y.append(label)
             text_vals.append(f"{delta:+.1f}y")
@@ -5917,7 +5917,7 @@ def _timing_paddle_chart(
     overall_opt = _overall_timing_center(pivot_opt)
     overall_cmp = _overall_timing_center(pivot_cmp)
     if overall_opt is not None and overall_cmp is not None:
-        overall_shift = overall_cmp - overall_opt
+        overall_shift = overall_opt - overall_cmp
         overall_center = (overall_opt + overall_cmp) / 2.0
     elif overall_opt is not None:
         overall_shift = 0.0
@@ -6172,7 +6172,7 @@ def _analysis_spend_density_charts(
     density_opt = _analysis_density_from_values(values_opt)
     density_cmp = _analysis_density_from_values(values_cmp)
 
-    diff_values = values_cmp.subtract(values_opt, fill_value=0.0)
+    diff_values = values_opt.subtract(values_cmp, fill_value=0.0)
     if totals_opt.abs().sum() > 1e-9:
         base_totals = totals_opt
     elif totals_cmp.abs().sum() > 1e-9:
@@ -6205,9 +6205,9 @@ def _analysis_spend_density_charts(
     opt_title = f"{opt_label}: density (row sums to 100%)"
     cmp_title = f"{cmp_label}: density (row sums to 100%)"
     diff_title = (
-        f"Differential density ({cmp_label} - {opt_label}), as % of group total"
+        f"Differential density ({opt_label} - {cmp_label}), as % of group total"
         if diff_mode == "relative"
-        else f"Differential spend ({cmp_label} - {opt_label}), absolute ($m)"
+        else f"Differential spend ({opt_label} - {cmp_label}), absolute ($m)"
     )
 
     density_hover = "<b>%{y}</b><br>FY %{x}<br>Density: %{z:.2%}<extra></extra>"
@@ -6642,7 +6642,7 @@ def _analysis_correlation_matrix_delta_chart(
     order = [label for label in corr_x.columns if label in common]
     corr_x = corr_x.reindex(index=order, columns=order)
     corr_y = corr_y.reindex(index=order, columns=order)
-    diff = corr_y - corr_x
+    diff = corr_x - corr_y
     diff_max = float(np.nanmax(np.abs(diff.to_numpy(dtype=float)))) if not diff.empty else 0.0
     if diff_max <= 1e-9:
         diff_max = 1.0
@@ -6655,7 +6655,7 @@ def _analysis_correlation_matrix_delta_chart(
         zscore=zscore,
         group_filter=group_filter,
     )
-    title = f"{base_title} delta ({label_y} - {label_x})"
+    title = f"{base_title} delta ({label_x} - {label_y})"
     fig = go.Figure(
         go.Heatmap(
             x=labels,
@@ -6708,8 +6708,8 @@ def _analysis_delta_bar_line_chart(
     if series_opt.abs().sum() <= 1e-9 and series_cmp.abs().sum() <= 1e-9:
         return None
 
-    delta_m = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
-    delta_m = delta_m - pd.to_numeric(series_opt, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_m = pd.to_numeric(series_opt, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_m = delta_m - pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
     delta_nzd = delta_m.to_numpy(dtype=float) * 1_000_000.0
     cumulative_nzd = np.cumsum(delta_nzd)
 
@@ -6891,7 +6891,7 @@ def _timing_shift_summary(
             "CenterCmp": centers_cmp.reindex(combined_totals.index).to_numpy(dtype=float),
         }
     )
-    df["Shift"] = df["CenterCmp"] - df["CenterOpt"]
+    df["Shift"] = df["CenterOpt"] - df["CenterCmp"]
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=["Shift"])
     if df.empty:
@@ -6951,7 +6951,7 @@ def _importance_bubble_chart(
     fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
     fig.update_layout(
         title=f"{breakdown_label} - bubble view (shift vs spend share; bubble size = total spend)",
-        xaxis_title=f"Raw timing shift (years) [{cmp_label} - {opt_label}]",
+        xaxis_title=f"Raw timing shift (years) [{opt_label} - {cmp_label}]",
         yaxis_title="Spend share (%)",
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
@@ -7001,7 +7001,7 @@ def _importance_rank_chart(
     fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
     fig.update_layout(
         title=f"{breakdown_label} - timing shift",
-        xaxis_title=f"Raw timing shift (years) [{cmp_label} - {opt_label}]",
+        xaxis_title=f"Raw timing shift (years) [{opt_label} - {cmp_label}]",
         yaxis_title="Category (share of total spend)",
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
@@ -13312,7 +13312,7 @@ def render_analysis_tab(
         help_text = (
             "Timing center = sum(Year x Spend) / sum(Spend) using annual spend.\n"
             "Dots show each scenario's timing center for the category.\n"
-            "Line label is the shift in years (comparison minus primary)."
+            f"Line label is the shift in years ({opt_label_text} minus {cmp_label_text})."
         )
         help_attr = html.escape(help_text).replace("\n", "&#10;")
         st.markdown(
@@ -13371,7 +13371,7 @@ def render_analysis_tab(
 
         caption_text = (
             f"{breakdown_label} view. Heatmaps show within-group density (each row sums to 100%). "
-            "Differential is comparison minus primary."
+            f"Differential is {opt_label_text} minus {cmp_label_text}."
         )
         diff_options = {
             "Δ$ (absolute magnitude)": "absolute",
@@ -13439,9 +13439,9 @@ def render_analysis_tab(
             st.info("No spend density data available for the selected breakdown.")
 
         corr_options = {
+            "Compositional (CLR / Aitchison)": "clr",
             "Absolute annual spend": "absolute",
             "Year-over-year change": "yoy",
-            "Compositional (CLR / Aitchison)": "clr",
             "Single-group spend share": "group_share",
         }
         corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
@@ -13460,9 +13460,9 @@ def render_analysis_tab(
                 "label": f"{cmp_label_text} (Y)",
             }
         if opt_code and cmp_code:
-            corr_scenario_options[f"Delta ({cmp_label_text} - {opt_label_text})"] = {
+            corr_scenario_options[f"Delta ({opt_label_text} - {cmp_label_text})"] = {
                 "kind": "delta",
-                "label": f"Delta ({cmp_label_text} - {opt_label_text})",
+                "label": f"Delta ({opt_label_text} - {cmp_label_text})",
             }
         corr_scenario_labels = list(corr_scenario_options.keys())
         if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
@@ -13546,8 +13546,8 @@ def render_analysis_tab(
         )
         if corr_scenario_kind == "delta":
             help_text = (
-                f"{help_text}\nDelta equals correlation({cmp_label_text} (Y)) minus "
-                f"correlation({opt_label_text} (X))."
+                f"{help_text}\nDelta equals correlation({opt_label_text} (X)) minus "
+                f"correlation({cmp_label_text} (Y))."
             )
         help_attr = html.escape(help_text).replace("\n", "&#10;")
         with corr_controls[1]:
