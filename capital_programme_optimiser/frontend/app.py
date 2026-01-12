@@ -6811,6 +6811,7 @@ def _distribution_cost_chart(
 
     categories = totals.sort_values(ascending=False).index.astype(str).tolist()
     values = totals.reindex(categories).fillna(0.0) * 1_000_000.0
+    total_sum = float(values.sum())
 
     def _compact_amount_label(value: float) -> str:
         abs_value = abs(value)
@@ -6823,14 +6824,24 @@ def _distribution_cost_chart(
         return f"{value:.2f}"
 
     fig = go.Figure()
+    share_labels = []
+    for val in values.to_numpy(dtype=float):
+        share = (val / total_sum * 100.0) if abs(total_sum) > 1e-9 else 0.0
+        share_labels.append(f"{share:.1f}%")
     fig.add_trace(
         go.Bar(
             x=categories,
             y=values.to_numpy(dtype=float),
             name="Total cost",
             marker_color=PRIMARY_COLOR,
-            customdata=[_compact_amount_label(val) for val in values.to_numpy(dtype=float)],
-            hovertemplate="<b>%{x}</b><br>Total cost: %{customdata}<extra></extra>",
+            customdata=[
+                [_compact_amount_label(val), share_label]
+                for val, share_label in zip(values.to_numpy(dtype=float), share_labels)
+            ],
+            hovertemplate=(
+                "<b>%{x}</b><br>Total cost: %{customdata[0]}"
+                "<br>% of total: %{customdata[1]}<extra></extra>"
+            ),
         )
     )
 
