@@ -14568,7 +14568,6 @@ def main() -> None:
             st.error(f"Unable to load scenario cache from {selected_path}: {exc}")
             st.stop()
 
-    solver_gap_placeholder = None
     with st.expander("Scenario selection", expanded=False):
         scenario_cols = st.columns(2)
         with scenario_cols[0]:
@@ -14595,7 +14594,6 @@ def main() -> None:
                 key="cmp_profile_select",
                 label_visibility="collapsed",
             )
-        st.divider()
 
     with st.expander("Advanced filters", expanded=False):
         adv_opt_col, adv_cmp_col = st.columns(2)
