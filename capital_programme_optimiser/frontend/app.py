@@ -6370,7 +6370,28 @@ def _analysis_correlation_help_text(
     )
 
 
-def _analysis_correlation_matrix_chart(
+def _analysis_correlation_title(
+    mode: str,
+    *,
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+) -> str:
+    if mode == "absolute":
+        if zscore:
+            return "Correlation matrix - absolute spend (z-scored, Pearson r)"
+        return "Correlation matrix - absolute spend (Pearson r)"
+    if mode == "yoy":
+        basis_label = "spend share" if change_basis == "share" else "spend"
+        return f"Correlation matrix - YoY change in {basis_label} (Pearson r)"
+    if mode == "clr":
+        group_label = group_filter or "group"
+        return f"Correlation matrix - compositional CLR/Aitchison ({group_label})"
+    group_label = group_filter or "group"
+    return f"Correlation matrix - spend share by {group_label} (Pearson r)"
+
+
+def _analysis_correlation_matrix_data(
     data: DashboardData,
     selection: ScenarioSelection,
     years: List[int],
@@ -6379,7 +6400,8 @@ def _analysis_correlation_matrix_chart(
     change_basis: str = "spend",
     zscore: bool = False,
     group_filter: Optional[str] = None,
-) -> Optional[go.Figure]:
+    include_share_pct: bool = True,
+) -> Optional[pd.DataFrame]:
     if data is None or selection is None or not getattr(selection, "code", None):
         return None
     year_index = pd.Index([int(year) for year in years], dtype=int)
@@ -6473,7 +6495,10 @@ def _analysis_correlation_matrix_chart(
                 continue
             denom_total = group_total if mode in {"group_share", "clr"} or group_filter else overall_total
             share_pct = (category_totals[category] / denom_total) * 100.0
-            label = f"{prefix}: {category} ({share_pct:.1f}%)"
+            if include_share_pct:
+                label = f"{prefix}: {category} ({share_pct:.1f}%)"
+            else:
+                label = f"{prefix}: {category}"
             series_entries.append(series.rename(label))
             label_entries.append(label)
             share_entries.append(share_pct)
@@ -6504,22 +6529,44 @@ def _analysis_correlation_matrix_chart(
     data_matrix = data_matrix[order]
     corr = data_matrix.corr(method="pearson").fillna(0.0)
     np.fill_diagonal(corr.values, 1.0)
+    return corr
+
+
+def _analysis_correlation_matrix_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+    include_share_pct: bool = True,
+    title_suffix: Optional[str] = None,
+) -> Optional[go.Figure]:
+    corr = _analysis_correlation_matrix_data(
+        data,
+        selection,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=include_share_pct,
+    )
+    if corr is None or corr.empty:
+        return None
 
     labels = corr.columns.tolist()
     height = max(420, 24 * len(labels) + 120)
-    if mode == "absolute":
-        title = "Correlation matrix - absolute spend (Pearson r)"
-        if zscore:
-            title = "Correlation matrix - absolute spend (z-scored, Pearson r)"
-    elif mode == "yoy":
-        basis_label = "spend share" if change_basis == "share" else "spend"
-        title = f"Correlation matrix - YoY change in {basis_label} (Pearson r)"
-    elif mode == "clr":
-        group_label = group_filter or "group"
-        title = f"Correlation matrix - compositional CLR/Aitchison ({group_label})"
-    else:
-        group_label = group_filter or "group"
-        title = f"Correlation matrix - spend share by {group_label} (Pearson r)"
+    title = _analysis_correlation_title(
+        mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+    )
+    if title_suffix:
+        title = f"{title} - {title_suffix}"
     fig = go.Figure(
         go.Heatmap(
             x=labels,
@@ -6540,6 +6587,95 @@ def _analysis_correlation_matrix_chart(
                 bgcolor="rgba(0,0,0,0)",
             ),
             hovertemplate="X=%{x}<br>Y=%{y}<br>r=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title=title,
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=220, r=60, t=70, b=140),
+    )
+    fig.update_xaxes(title=None, showgrid=False, zeroline=False, tickangle=-45)
+    fig.update_yaxes(title=None, showgrid=False, zeroline=False, autorange="reversed")
+    return fig
+
+
+def _analysis_correlation_matrix_delta_chart(
+    data: DashboardData,
+    selection_x: ScenarioSelection,
+    selection_y: ScenarioSelection,
+    years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+    label_x: str = "Scenario X",
+    label_y: str = "Scenario Y",
+) -> Optional[go.Figure]:
+    corr_x = _analysis_correlation_matrix_data(
+        data,
+        selection_x,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=False,
+    )
+    corr_y = _analysis_correlation_matrix_data(
+        data,
+        selection_y,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=False,
+    )
+    if corr_x is None or corr_y is None or corr_x.empty or corr_y.empty:
+        return None
+    common = corr_x.index.intersection(corr_y.index)
+    if len(common) < 2:
+        return None
+    order = [label for label in corr_x.columns if label in common]
+    corr_x = corr_x.reindex(index=order, columns=order)
+    corr_y = corr_y.reindex(index=order, columns=order)
+    diff = corr_y - corr_x
+    diff_max = float(np.nanmax(np.abs(diff.to_numpy(dtype=float)))) if not diff.empty else 0.0
+    if diff_max <= 1e-9:
+        diff_max = 1.0
+
+    labels = diff.columns.tolist()
+    height = max(420, 24 * len(labels) + 120)
+    base_title = _analysis_correlation_title(
+        mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+    )
+    title = f"{base_title} delta ({label_y} - {label_x})"
+    fig = go.Figure(
+        go.Heatmap(
+            x=labels,
+            y=labels,
+            z=diff.to_numpy(dtype=float),
+            zmin=-diff_max,
+            zmax=diff_max,
+            zmid=0.0,
+            colorscale=plc.diverging.RdBu,
+            colorbar=dict(
+                title="Delta Pearson r",
+                len=0.75,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            hovertemplate="X=%{x}<br>Y=%{y}<br>delta r=%{z:.2f}<extra></extra>",
         )
     )
     fig.update_traces(hoverlabel=_hoverlabel_style())
@@ -13291,7 +13427,6 @@ def render_analysis_tab(
         else:
             st.info("No spend density data available for the selected breakdown.")
 
-        base_selection = opt_selection if opt_code else comp_selection
         corr_options = {
             "Absolute annual spend": "absolute",
             "Year-over-year change": "yoy",
@@ -13299,18 +13434,41 @@ def render_analysis_tab(
             "Single-group spend share": "group_share",
         }
         corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
+        corr_scenario_key = "analysis_corr_scenario"
+        corr_scenario_options: Dict[str, Dict[str, Any]] = {}
+        if opt_code:
+            corr_scenario_options[f"{opt_label_text} (X)"] = {
+                "kind": "single",
+                "selection": opt_selection,
+                "label": f"{opt_label_text} (X)",
+            }
+        if cmp_code:
+            corr_scenario_options[f"{cmp_label_text} (Y)"] = {
+                "kind": "single",
+                "selection": comp_selection,
+                "label": f"{cmp_label_text} (Y)",
+            }
+        if opt_code and cmp_code:
+            corr_scenario_options[f"Delta ({cmp_label_text} - {opt_label_text})"] = {
+                "kind": "delta",
+                "label": f"Delta ({cmp_label_text} - {opt_label_text})",
+            }
+        corr_scenario_labels = list(corr_scenario_options.keys())
+        if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
+            st.session_state[corr_scenario_key] = corr_scenario_labels[0]
         corr_controls = st.columns([0.78, 0.22], gap="small")
         corr_mode = "absolute"
         corr_change_basis = "spend"
         corr_zscore = False
         corr_group = None
+        corr_scenario_choice = st.session_state.get(corr_scenario_key, corr_scenario_labels[0])
         with corr_controls[0]:
             corr_choice_default = st.session_state.get("analysis_corr_mode")
             if corr_choice_default not in corr_options:
                 corr_choice_default = list(corr_options.keys())[0]
             corr_mode_preview = corr_options[corr_choice_default]
             if corr_mode_preview in {"clr", "group_share"}:
-                corr_select_cols = st.columns(2)
+                corr_select_cols = st.columns(3)
                 with corr_select_cols[0]:
                     corr_choice = st.selectbox(
                         "Correlation view",
@@ -13324,13 +13482,27 @@ def render_analysis_tab(
                         corr_group_options,
                         key="analysis_corr_group",
                     )
+                with corr_select_cols[2]:
+                    corr_scenario_choice = st.selectbox(
+                        "Scenario",
+                        corr_scenario_labels,
+                        key=corr_scenario_key,
+                    )
             else:
-                corr_choice = st.selectbox(
-                    "Correlation view",
-                    list(corr_options.keys()),
-                    key="analysis_corr_mode",
-                )
-                corr_mode = corr_options[corr_choice]
+                corr_select_cols = st.columns(2)
+                with corr_select_cols[0]:
+                    corr_choice = st.selectbox(
+                        "Correlation view",
+                        list(corr_options.keys()),
+                        key="analysis_corr_mode",
+                    )
+                    corr_mode = corr_options[corr_choice]
+                with corr_select_cols[1]:
+                    corr_scenario_choice = st.selectbox(
+                        "Scenario",
+                        corr_scenario_labels,
+                        key=corr_scenario_key,
+                    )
             if corr_mode == "absolute":
                 corr_zscore = st.checkbox(
                     "Z-score per category",
@@ -13344,33 +13516,61 @@ def render_analysis_tab(
                     key="analysis_corr_change_basis",
                 )
                 corr_change_basis = "share" if basis_label == "Spend share" else "spend"
-            elif corr_mode in {"clr", "group_share"} and corr_group is None:
+            if corr_mode in {"clr", "group_share"} and corr_group is None:
                 corr_group = st.selectbox(
                     "Group",
                     corr_group_options,
                     key="analysis_corr_group",
                 )
+            if corr_mode not in {"clr", "group_share"}:
+                corr_group = None
+        corr_scenario = corr_scenario_options.get(corr_scenario_choice, {})
+        corr_scenario_kind = corr_scenario.get("kind", "single")
+        corr_scenario_label = corr_scenario.get("label", corr_scenario_choice)
         help_text = _analysis_correlation_help_text(
             corr_mode,
             change_basis=corr_change_basis,
             zscore=corr_zscore,
             group_filter=corr_group,
         )
+        if corr_scenario_kind == "delta":
+            help_text = (
+                f"{help_text}\nDelta equals correlation({cmp_label_text} (Y)) minus "
+                f"correlation({opt_label_text} (X))."
+            )
         help_attr = html.escape(help_text).replace("\n", "&#10;")
         with corr_controls[1]:
             st.markdown(
                 f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
                 unsafe_allow_html=True,
             )
-        corr_fig = _analysis_correlation_matrix_chart(
-            data,
-            base_selection,
-            years,
-            mode=corr_mode,
-            change_basis=corr_change_basis,
-            zscore=corr_zscore,
-            group_filter=corr_group,
-        )
+        if corr_scenario_kind == "delta":
+            corr_fig = _analysis_correlation_matrix_delta_chart(
+                data,
+                opt_selection,
+                comp_selection,
+                years,
+                mode=corr_mode,
+                change_basis=corr_change_basis,
+                zscore=corr_zscore,
+                group_filter=corr_group,
+                label_x=f"{opt_label_text} (X)",
+                label_y=f"{cmp_label_text} (Y)",
+            )
+        else:
+            corr_selection = corr_scenario.get("selection")
+            if corr_selection is None:
+                corr_selection = opt_selection if opt_code else comp_selection
+            corr_fig = _analysis_correlation_matrix_chart(
+                data,
+                corr_selection,
+                years,
+                mode=corr_mode,
+                change_basis=corr_change_basis,
+                zscore=corr_zscore,
+                group_filter=corr_group,
+                title_suffix=corr_scenario_label,
+            )
         if corr_fig is not None:
             st.plotly_chart(
                 corr_fig,
