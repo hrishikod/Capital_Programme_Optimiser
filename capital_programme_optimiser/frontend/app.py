@@ -13155,9 +13155,9 @@ def render_analysis_tab(
         return export_tables
 
     breakdown_options = [
-        "Activity Class",
-        "GPS Request Tier",
         "Region",
+        "GPS Request Tier",
+        "Activity Class",
         "Strategic Dimension",
     ]
     breakdown_key = "analysis_breakdown"
