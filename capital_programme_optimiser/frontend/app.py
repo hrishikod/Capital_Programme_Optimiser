@@ -8532,7 +8532,7 @@ def _spend_weighted_bcr_time_series_chart(
         )
 
     fig.update_layout(
-        title="BCR - Spend-weighted project average (New)",
+        title="BCR - Spend-weighted project average",
         xaxis_title=None,
         yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
         template=plotly_template(),
@@ -14124,6 +14124,8 @@ def render_scenarios_tab(
     st.markdown('<div class="pbi-section-title">Scenario workspace</div>', unsafe_allow_html=True)
     st.write("Use this workspace to create scenario folders and run new optimisation batches.")
     st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
+    st.markdown('<div class="pbi-section-title">Solver gap summary</div>', unsafe_allow_html=True)
+    render_solver_gap_kpis(opt_selection, comp_selection)
     table_placeholder = st.empty()
 
     def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
@@ -14594,7 +14596,6 @@ def main() -> None:
                 label_visibility="collapsed",
             )
         st.divider()
-        solver_gap_placeholder = st.empty()
 
     with st.expander("Advanced filters", expanded=False):
         adv_opt_col, adv_cmp_col = st.columns(2)
@@ -14727,10 +14728,6 @@ def main() -> None:
         cmp_label = raw_cmp_label
 
     set_scenario_display_labels(opt_label, cmp_label)
-    if solver_gap_placeholder is not None:
-        with solver_gap_placeholder:
-            render_solver_gap_kpis(opt_selection, comp_selection)
-
     nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
     if ENABLE_PREVIEW_NAVIGATION:
         nav_previews = collect_navigation_previews(
