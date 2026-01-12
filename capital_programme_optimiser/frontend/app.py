@@ -13305,12 +13305,32 @@ def render_analysis_tab(
         corr_zscore = False
         corr_group = None
         with corr_controls[0]:
-            corr_choice = st.selectbox(
-                "Correlation view",
-                list(corr_options.keys()),
-                key="analysis_corr_mode",
-            )
-            corr_mode = corr_options[corr_choice]
+            corr_choice_default = st.session_state.get("analysis_corr_mode")
+            if corr_choice_default not in corr_options:
+                corr_choice_default = list(corr_options.keys())[0]
+            corr_mode_preview = corr_options[corr_choice_default]
+            if corr_mode_preview in {"clr", "group_share"}:
+                corr_select_cols = st.columns(2)
+                with corr_select_cols[0]:
+                    corr_choice = st.selectbox(
+                        "Correlation view",
+                        list(corr_options.keys()),
+                        key="analysis_corr_mode",
+                    )
+                    corr_mode = corr_options[corr_choice]
+                with corr_select_cols[1]:
+                    corr_group = st.selectbox(
+                        "Group",
+                        corr_group_options,
+                        key="analysis_corr_group",
+                    )
+            else:
+                corr_choice = st.selectbox(
+                    "Correlation view",
+                    list(corr_options.keys()),
+                    key="analysis_corr_mode",
+                )
+                corr_mode = corr_options[corr_choice]
             if corr_mode == "absolute":
                 corr_zscore = st.checkbox(
                     "Z-score per category",
@@ -13324,7 +13344,7 @@ def render_analysis_tab(
                     key="analysis_corr_change_basis",
                 )
                 corr_change_basis = "share" if basis_label == "Spend share" else "spend"
-            elif corr_mode in {"clr", "group_share"}:
+            elif corr_mode in {"clr", "group_share"} and corr_group is None:
                 corr_group = st.selectbox(
                     "Group",
                     corr_group_options,
