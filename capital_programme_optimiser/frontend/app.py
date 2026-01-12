@@ -13105,6 +13105,63 @@ def render_analysis_tab(
     cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
 
     if page_value == 1:
+        group_totals_opt = _analysis_group_totals(spend_opt)
+        group_totals_cmp = _analysis_group_totals(spend_cmp)
+        group_options, _ = _analysis_group_order_and_share(group_totals_opt, group_totals_cmp)
+
+        dist_fig = _distribution_cost_chart(
+            spend_opt,
+            spend_cmp,
+            breakdown_label=breakdown_label,
+            opt_label=opt_label_text,
+            cmp_label=cmp_label_text,
+        )
+
+        inspector_cols = st.columns([1.25, 1.0], gap="large")
+        with inspector_cols[0]:
+            if group_options:
+                st.markdown("**Group inspector**")
+                st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
+                group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
+                current_group = st.session_state.get(group_key)
+                if current_group not in group_options:
+                    current_group = group_options[0]
+                    st.session_state[group_key] = current_group
+                selected_group = st.selectbox(
+                    f"{breakdown_label} focus",
+                    group_options,
+                    index=group_options.index(current_group),
+                    key=group_key,
+                )
+                delta_fig = _analysis_delta_bar_line_chart(
+                    spend_opt,
+                    spend_cmp,
+                    years=years,
+                    group_label=selected_group,
+                    breakdown_label=breakdown_label,
+                    opt_label=opt_label_text,
+                    cmp_label=cmp_label_text,
+                )
+                if delta_fig is not None:
+                    st.plotly_chart(
+                        delta_fig,
+                        use_container_width=True,
+                        key="analysis_delta_group_chart",
+                    )
+                else:
+                    st.info("No delta data available for the selected group.")
+            else:
+                st.info("No group data available for the selected breakdown.")
+        with inspector_cols[1]:
+            if dist_fig is not None:
+                st.plotly_chart(
+                    dist_fig,
+                    use_container_width=True,
+                    key="analysis_cost_distribution_chart",
+                )
+            else:
+                st.info("No distribution data available for the selected breakdown.")
+
         help_text = (
             "Timing center = sum(Year x Spend) / sum(Spend) using annual spend.\n"
             "Dots show each scenario's timing center for the category.\n"
@@ -13115,8 +13172,8 @@ def render_analysis_tab(
             f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
             unsafe_allow_html=True,
         )
-        order_totals_opt = _analysis_group_totals(spend_opt)
-        order_totals_cmp = _analysis_group_totals(spend_cmp)
+        order_totals_opt = group_totals_opt
+        order_totals_cmp = group_totals_cmp
         combined_order = order_totals_opt.add(order_totals_cmp, fill_value=0.0)
         combined_order = combined_order[combined_order.abs() > 1e-9]
         category_order = combined_order.sort_values(ascending=False).index.astype(str).tolist()
@@ -13234,62 +13291,6 @@ def render_analysis_tab(
         else:
             st.info("No spend density data available for the selected breakdown.")
 
-        group_totals_opt = _analysis_group_totals(spend_opt)
-        group_totals_cmp = _analysis_group_totals(spend_cmp)
-        group_options, _ = _analysis_group_order_and_share(group_totals_opt, group_totals_cmp)
-
-        dist_fig = _distribution_cost_chart(
-            spend_opt,
-            spend_cmp,
-            breakdown_label=breakdown_label,
-            opt_label=opt_label_text,
-            cmp_label=cmp_label_text,
-        )
-
-        inspector_cols = st.columns([1.25, 1.0], gap="large")
-        with inspector_cols[0]:
-            if group_options:
-                st.markdown("**Group inspector**")
-                st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
-                group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
-                current_group = st.session_state.get(group_key)
-                if current_group not in group_options:
-                    current_group = group_options[0]
-                    st.session_state[group_key] = current_group
-                selected_group = st.selectbox(
-                    f"{breakdown_label} focus",
-                    group_options,
-                    index=group_options.index(current_group),
-                    key=group_key,
-                )
-                delta_fig = _analysis_delta_bar_line_chart(
-                    spend_opt,
-                    spend_cmp,
-                    years=years,
-                    group_label=selected_group,
-                    breakdown_label=breakdown_label,
-                    opt_label=opt_label_text,
-                    cmp_label=cmp_label_text,
-                )
-                if delta_fig is not None:
-                    st.plotly_chart(
-                        delta_fig,
-                        use_container_width=True,
-                        key="analysis_delta_group_chart",
-                    )
-                else:
-                    st.info("No delta data available for the selected group.")
-            else:
-                st.info("No group data available for the selected breakdown.")
-        with inspector_cols[1]:
-            if dist_fig is not None:
-                st.plotly_chart(
-                    dist_fig,
-                    use_container_width=True,
-                    key="analysis_cost_distribution_chart",
-                )
-            else:
-                st.info("No distribution data available for the selected breakdown.")
         base_selection = opt_selection if opt_code else comp_selection
         corr_options = {
             "Absolute annual spend": "absolute",
