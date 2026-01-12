@@ -6296,10 +6296,89 @@ def _analysis_total_spend_by_year(
     return totals
 
 
+def _analysis_share_matrix(
+    pivot: pd.DataFrame,
+    totals_by_year: pd.Series,
+    *,
+    within_group: bool,
+) -> pd.DataFrame:
+    if pivot is None or pivot.empty:
+        return pd.DataFrame()
+    if within_group:
+        denom = pivot.sum(axis=1).replace(0.0, np.nan)
+    else:
+        denom = totals_by_year.replace(0.0, np.nan)
+    return pivot.div(denom, axis=0).fillna(0.0)
+
+
+def _analysis_zscore_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    means = frame.mean(axis=0)
+    stds = frame.std(axis=0, ddof=0).replace(0.0, np.nan)
+    return frame.sub(means, axis=1).div(stds, axis=1).fillna(0.0)
+
+
+def _analysis_clr_transform(frame: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if frame is None or frame.empty:
+        return None
+    values = frame.to_numpy(dtype=float)
+    positive = values[values > 0]
+    if positive.size == 0:
+        return None
+    pseudocount = float(np.min(positive)) * 0.5
+    if not np.isfinite(pseudocount) or pseudocount <= 0:
+        pseudocount = 1e-9
+    adjusted = np.where(values <= 0, pseudocount, values)
+    log_vals = np.log(adjusted)
+    mean_log = log_vals.mean(axis=1, keepdims=True)
+    clr_vals = log_vals - mean_log
+    return pd.DataFrame(clr_vals, index=frame.index, columns=frame.columns)
+
+
+def _analysis_correlation_help_text(
+    mode: str,
+    *,
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+) -> str:
+    if mode == "absolute":
+        if zscore:
+            return (
+                "Pearson correlation of annual spend levels by category.\n"
+                "Each category is z-scored before correlation to remove scale effects."
+            )
+        return "Pearson correlation of annual spend levels by category."
+    if mode == "yoy":
+        if change_basis == "share":
+            return (
+                "Pearson correlation of year-over-year changes in spend share by category.\n"
+                "Share is measured as a fraction of total annual spend."
+            )
+        return "Pearson correlation of year-over-year changes in annual spend by category."
+    if mode == "clr":
+        group_label = group_filter or "selected group"
+        return (
+            f"Aitchison-style correlation of CLR-transformed spend shares within {group_label}.\n"
+            "Uses a small pseudocount for zeros to avoid log(0)."
+        )
+    group_label = group_filter or "selected group"
+    return (
+        f"Pearson correlation of spend share time series within {group_label} only.\n"
+        "Avoids cross-group mixing (Tier vs Activity vs Region vs Dimension)."
+    )
+
+
 def _analysis_correlation_matrix_chart(
     data: DashboardData,
     selection: ScenarioSelection,
     years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
 ) -> Optional[go.Figure]:
     if data is None or selection is None or not getattr(selection, "code", None):
         return None
@@ -6316,6 +6395,8 @@ def _analysis_correlation_matrix_chart(
     overall_total = float(totals_by_year.sum())
     if overall_total <= 0:
         return None
+    if mode == "yoy" and len(year_index) < 2:
+        return None
 
     series_entries: List[pd.Series] = []
     label_entries: List[str] = []
@@ -6326,6 +6407,10 @@ def _analysis_correlation_matrix_chart(
         ("Region", "Region", False),
         ("Dimension", "StrategicDimension", True),
     ]
+    if group_filter:
+        group_specs = [spec for spec in group_specs if spec[0] == group_filter]
+        if not group_specs:
+            return None
     for prefix, group_col, is_dimension in group_specs:
         if is_dimension:
             pivot = _annual_cost_breakdown_by_dimension_weights(
@@ -6346,13 +6431,48 @@ def _analysis_correlation_matrix_chart(
         pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
         if pivot.empty:
             continue
-        share_matrix = pivot.div(totals_by_year.replace(0.0, np.nan), axis=0).fillna(0.0)
         category_totals = pivot.sum(axis=0)
+        group_total = float(category_totals.sum())
+        if group_total <= 0:
+            continue
+        within_group_share = mode in {"group_share", "clr"} or (mode == "yoy" and change_basis == "share" and group_filter)
+        share_matrix = None
+        if mode in {"group_share", "clr"} or (mode == "yoy" and change_basis == "share"):
+            share_matrix = _analysis_share_matrix(
+                pivot,
+                totals_by_year,
+                within_group=within_group_share,
+            )
+        if mode == "absolute":
+            working = pivot
+        elif mode == "yoy":
+            if change_basis == "share" and share_matrix is not None and not share_matrix.empty:
+                working = share_matrix.diff().iloc[1:]
+            else:
+                working = pivot.diff().iloc[1:]
+        elif mode == "group_share":
+            working = share_matrix if share_matrix is not None else pd.DataFrame()
+        elif mode == "clr":
+            if share_matrix is None or share_matrix.empty:
+                continue
+            active_rows = share_matrix.sum(axis=1) > 1e-9
+            clr_source = share_matrix.loc[active_rows]
+            clr_matrix = _analysis_clr_transform(clr_source)
+            if clr_matrix is None or clr_matrix.empty:
+                continue
+            working = clr_matrix
+        else:
+            return None
+        if working is None or working.empty:
+            continue
         for category in pivot.columns:
-            series = share_matrix[category].astype(float)
+            if category not in working.columns:
+                continue
+            series = working[category].astype(float)
             if series.abs().sum() <= 1e-9:
                 continue
-            share_pct = (category_totals[category] / overall_total) * 100.0
+            denom_total = group_total if mode in {"group_share", "clr"} or group_filter else overall_total
+            share_pct = (category_totals[category] / denom_total) * 100.0
             label = f"{prefix}: {category} ({share_pct:.1f}%)"
             series_entries.append(series.rename(label))
             label_entries.append(label)
@@ -6361,6 +6481,10 @@ def _analysis_correlation_matrix_chart(
     if not series_entries:
         return None
     data_matrix = pd.concat(series_entries, axis=1).fillna(0.0)
+    if data_matrix.shape[0] < 2 or data_matrix.shape[1] < 2:
+        return None
+    if mode == "absolute" and zscore:
+        data_matrix = _analysis_zscore_frame(data_matrix)
     share_lookup = dict(zip(label_entries, share_entries))
     group_priority = {"Activity": 0, "Tier": 1, "Region": 2, "Dimension": 3}
     def _label_sort_key(label: str) -> Tuple[int, float, str]:
@@ -6370,13 +6494,32 @@ def _analysis_correlation_matrix_chart(
             -float(share_lookup.get(label, 0.0)),
             label,
         )
-    order = sorted(data_matrix.columns, key=_label_sort_key)
+    if group_filter:
+        order = sorted(
+            data_matrix.columns,
+            key=lambda label: (-float(share_lookup.get(label, 0.0)), label),
+        )
+    else:
+        order = sorted(data_matrix.columns, key=_label_sort_key)
     data_matrix = data_matrix[order]
     corr = data_matrix.corr(method="pearson").fillna(0.0)
     np.fill_diagonal(corr.values, 1.0)
 
     labels = corr.columns.tolist()
     height = max(420, 24 * len(labels) + 120)
+    if mode == "absolute":
+        title = "Correlation matrix - absolute spend (Pearson r)"
+        if zscore:
+            title = "Correlation matrix - absolute spend (z-scored, Pearson r)"
+    elif mode == "yoy":
+        basis_label = "spend share" if change_basis == "share" else "spend"
+        title = f"Correlation matrix - YoY change in {basis_label} (Pearson r)"
+    elif mode == "clr":
+        group_label = group_filter or "group"
+        title = f"Correlation matrix - compositional CLR/Aitchison ({group_label})"
+    else:
+        group_label = group_filter or "group"
+        title = f"Correlation matrix - spend share by {group_label} (Pearson r)"
     fig = go.Figure(
         go.Heatmap(
             x=labels,
@@ -6401,7 +6544,7 @@ def _analysis_correlation_matrix_chart(
     )
     fig.update_traces(hoverlabel=_hoverlabel_style())
     fig.update_layout(
-        title="Correlation matrix - spend share (Pearson r)",
+        title=title,
         template=plotly_template(),
         height=height,
         margin=dict(l=220, r=60, t=70, b=140),
@@ -13148,7 +13291,65 @@ def render_analysis_tab(
             else:
                 st.info("No distribution data available for the selected breakdown.")
         base_selection = opt_selection if opt_code else comp_selection
-        corr_fig = _analysis_correlation_matrix_chart(data, base_selection, years)
+        corr_options = {
+            "Absolute annual spend": "absolute",
+            "Year-over-year change": "yoy",
+            "Compositional (CLR / Aitchison)": "clr",
+            "Single-group spend share": "group_share",
+        }
+        corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
+        corr_controls = st.columns([0.78, 0.22], gap="small")
+        corr_mode = "absolute"
+        corr_change_basis = "spend"
+        corr_zscore = False
+        corr_group = None
+        with corr_controls[0]:
+            corr_choice = st.selectbox(
+                "Correlation view",
+                list(corr_options.keys()),
+                key="analysis_corr_mode",
+            )
+            corr_mode = corr_options[corr_choice]
+            if corr_mode == "absolute":
+                corr_zscore = st.checkbox(
+                    "Z-score per category",
+                    value=False,
+                    key="analysis_corr_zscore",
+                )
+            elif corr_mode == "yoy":
+                basis_label = st.selectbox(
+                    "Change basis",
+                    ["Spend", "Spend share"],
+                    key="analysis_corr_change_basis",
+                )
+                corr_change_basis = "share" if basis_label == "Spend share" else "spend"
+            elif corr_mode in {"clr", "group_share"}:
+                corr_group = st.selectbox(
+                    "Group",
+                    corr_group_options,
+                    key="analysis_corr_group",
+                )
+        help_text = _analysis_correlation_help_text(
+            corr_mode,
+            change_basis=corr_change_basis,
+            zscore=corr_zscore,
+            group_filter=corr_group,
+        )
+        help_attr = html.escape(help_text).replace("\n", "&#10;")
+        with corr_controls[1]:
+            st.markdown(
+                f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
+                unsafe_allow_html=True,
+            )
+        corr_fig = _analysis_correlation_matrix_chart(
+            data,
+            base_selection,
+            years,
+            mode=corr_mode,
+            change_basis=corr_change_basis,
+            zscore=corr_zscore,
+            group_filter=corr_group,
+        )
         if corr_fig is not None:
             st.plotly_chart(
                 corr_fig,
