@@ -14589,7 +14589,7 @@ def main() -> None:
         with scenario_cols[0]:
             st.subheader(f"{SCENARIO_PRIMARY_NAME} Profile")
             opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-            opt_default_index = _preferred_option_index(opt_profiles, "MBCM objective best")
+            opt_default_index = _preferred_option_index(opt_profiles, "objective best")
             if st.session_state.get("opt_profile_select") not in opt_profiles:
                 st.session_state["opt_profile_select"] = opt_profiles[opt_default_index]
             selected_opt_profile = st.selectbox(
@@ -14756,18 +14756,21 @@ def main() -> None:
             cache_signature=cache_sig,
         )
 
-    st.session_state.setdefault("active_tab", NAV_TABS[0])
+    if st.session_state.get("active_tab") not in NAV_TABS:
+        fallback_tab = st.session_state.get("pbi_nav")
+        st.session_state["active_tab"] = fallback_tab if fallback_tab in NAV_TABS else NAV_TABS[0]
     nav_col, content_col = st.columns((2.2, 7.8), gap="large")
 
     with nav_col:
         active_tab = render_powerbi_navigation(
             st.session_state["active_tab"],
-            key="pbi_nav",
+            key="active_tab",
             orientation="vertical",
             previews=nav_previews,
         )
 
-    st.session_state["active_tab"] = active_tab
+    if ENABLE_PREVIEW_NAVIGATION:
+        st.session_state["active_tab"] = active_tab
 
     with content_col:
         benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
