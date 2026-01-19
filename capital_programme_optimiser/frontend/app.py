@@ -777,6 +777,9 @@ def inject_powerbi_theme() -> None:
                 border: 1px solid var(--pbi-tertiary);
                 margin-bottom: 1.1rem;
             }}
+            .pbi-hidden-block {{
+                display: none !important;
+            }}
             .pbi-table .stDataFrame {{
                 border-radius: 12px;
                 border: 1px solid var(--pbi-tertiary);
@@ -13162,7 +13165,7 @@ def render_analysis_tab(
     ]
     breakdown_key = "analysis_breakdown"
     if st.session_state.get(breakdown_key) not in breakdown_options:
-        st.session_state[breakdown_key] = "Activity Class"
+        st.session_state[breakdown_key] = "Region"
     breakdown_choice = st.radio(
         "Breakdown by",
         breakdown_options,
@@ -13467,6 +13470,7 @@ def render_analysis_tab(
         corr_scenario_labels = list(corr_scenario_options.keys())
         if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
             st.session_state[corr_scenario_key] = corr_scenario_labels[0]
+        st.markdown("<div class='pbi-hidden-block'>", unsafe_allow_html=True)
         corr_controls = st.columns([0.78, 0.22], gap="small")
         corr_mode = "absolute"
         corr_change_basis = "spend"
@@ -13590,6 +13594,7 @@ def render_analysis_tab(
             )
         else:
             st.info("No correlation data available for the selected scenarios.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return export_tables
 
     if group_col == "StrategicDimension":
