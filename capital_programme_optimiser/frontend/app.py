@@ -63,6 +63,7 @@ _preview_navigation_component = components.declare_component(
 )
 ENABLE_PREVIEW_NAVIGATION = False  # Toggle preview pane without removing supporting code.
 SHOW_REAL_BENEFIT_CHARTS = False  # Hide real benefit profile charts while keeping logic available.
+SHOW_ANALYSIS_CORRELATION = False  # Hide the analysis correlation block (controls + chart).
 
 ROOT_CWD = Path.cwd()
 
@@ -13441,160 +13442,159 @@ def render_analysis_tab(
         else:
             st.info("No spend density data available for the selected breakdown.")
 
-        corr_options = {
-            "Compositional (CLR / Aitchison)": "clr",
-            "Absolute annual spend": "absolute",
-            "Year-over-year change": "yoy",
-            "Single-group spend share": "group_share",
-        }
-        corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
-        corr_scenario_key = "analysis_corr_scenario"
-        corr_scenario_options: Dict[str, Dict[str, Any]] = {}
-        if opt_code:
-            corr_scenario_options[f"{opt_label_text} (X)"] = {
-                "kind": "single",
-                "selection": opt_selection,
-                "label": f"{opt_label_text} (X)",
+        if SHOW_ANALYSIS_CORRELATION:
+            corr_options = {
+                "Compositional (CLR / Aitchison)": "clr",
+                "Absolute annual spend": "absolute",
+                "Year-over-year change": "yoy",
+                "Single-group spend share": "group_share",
             }
-        if cmp_code:
-            corr_scenario_options[f"{cmp_label_text} (Y)"] = {
-                "kind": "single",
-                "selection": comp_selection,
-                "label": f"{cmp_label_text} (Y)",
-            }
-        if opt_code and cmp_code:
-            corr_scenario_options[f"Delta ({opt_label_text} - {cmp_label_text})"] = {
-                "kind": "delta",
-                "label": f"Delta ({opt_label_text} - {cmp_label_text})",
-            }
-        corr_scenario_labels = list(corr_scenario_options.keys())
-        if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
-            st.session_state[corr_scenario_key] = corr_scenario_labels[0]
-        st.markdown("<div class='pbi-hidden-block'>", unsafe_allow_html=True)
-        corr_controls = st.columns([0.78, 0.22], gap="small")
-        corr_mode = "absolute"
-        corr_change_basis = "spend"
-        corr_zscore = False
-        corr_group = None
-        corr_scenario_choice = st.session_state.get(corr_scenario_key, corr_scenario_labels[0])
-        with corr_controls[0]:
-            corr_choice_default = st.session_state.get("analysis_corr_mode")
-            if corr_choice_default not in corr_options:
-                corr_choice_default = list(corr_options.keys())[0]
-            corr_mode_preview = corr_options[corr_choice_default]
-            if corr_mode_preview in {"clr", "group_share"}:
-                corr_select_cols = st.columns(3)
-                with corr_select_cols[0]:
-                    corr_choice = st.selectbox(
-                        "Correlation view",
-                        list(corr_options.keys()),
-                        key="analysis_corr_mode",
+            corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
+            corr_scenario_key = "analysis_corr_scenario"
+            corr_scenario_options: Dict[str, Dict[str, Any]] = {}
+            if opt_code:
+                corr_scenario_options[f"{opt_label_text} (X)"] = {
+                    "kind": "single",
+                    "selection": opt_selection,
+                    "label": f"{opt_label_text} (X)",
+                }
+            if cmp_code:
+                corr_scenario_options[f"{cmp_label_text} (Y)"] = {
+                    "kind": "single",
+                    "selection": comp_selection,
+                    "label": f"{cmp_label_text} (Y)",
+                }
+            if opt_code and cmp_code:
+                corr_scenario_options[f"Delta ({opt_label_text} - {cmp_label_text})"] = {
+                    "kind": "delta",
+                    "label": f"Delta ({opt_label_text} - {cmp_label_text})",
+                }
+            corr_scenario_labels = list(corr_scenario_options.keys())
+            if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
+                st.session_state[corr_scenario_key] = corr_scenario_labels[0]
+            corr_controls = st.columns([0.78, 0.22], gap="small")
+            corr_mode = "absolute"
+            corr_change_basis = "spend"
+            corr_zscore = False
+            corr_group = None
+            corr_scenario_choice = st.session_state.get(corr_scenario_key, corr_scenario_labels[0])
+            with corr_controls[0]:
+                corr_choice_default = st.session_state.get("analysis_corr_mode")
+                if corr_choice_default not in corr_options:
+                    corr_choice_default = list(corr_options.keys())[0]
+                corr_mode_preview = corr_options[corr_choice_default]
+                if corr_mode_preview in {"clr", "group_share"}:
+                    corr_select_cols = st.columns(3)
+                    with corr_select_cols[0]:
+                        corr_choice = st.selectbox(
+                            "Correlation view",
+                            list(corr_options.keys()),
+                            key="analysis_corr_mode",
+                        )
+                        corr_mode = corr_options[corr_choice]
+                    with corr_select_cols[1]:
+                        corr_group = st.selectbox(
+                            "Group",
+                            corr_group_options,
+                            key="analysis_corr_group",
+                        )
+                    with corr_select_cols[2]:
+                        corr_scenario_choice = st.selectbox(
+                            "Scenario",
+                            corr_scenario_labels,
+                            key=corr_scenario_key,
+                        )
+                else:
+                    corr_select_cols = st.columns(2)
+                    with corr_select_cols[0]:
+                        corr_choice = st.selectbox(
+                            "Correlation view",
+                            list(corr_options.keys()),
+                            key="analysis_corr_mode",
+                        )
+                        corr_mode = corr_options[corr_choice]
+                    with corr_select_cols[1]:
+                        corr_scenario_choice = st.selectbox(
+                            "Scenario",
+                            corr_scenario_labels,
+                            key=corr_scenario_key,
+                        )
+                if corr_mode == "absolute":
+                    corr_zscore = st.checkbox(
+                        "Z-score per category",
+                        value=False,
+                        key="analysis_corr_zscore",
                     )
-                    corr_mode = corr_options[corr_choice]
-                with corr_select_cols[1]:
+                elif corr_mode == "yoy":
+                    basis_label = st.selectbox(
+                        "Change basis",
+                        ["Spend", "Spend share"],
+                        key="analysis_corr_change_basis",
+                    )
+                    corr_change_basis = "share" if basis_label == "Spend share" else "spend"
+                if corr_mode in {"clr", "group_share"} and corr_group is None:
                     corr_group = st.selectbox(
                         "Group",
                         corr_group_options,
                         key="analysis_corr_group",
                     )
-                with corr_select_cols[2]:
-                    corr_scenario_choice = st.selectbox(
-                        "Scenario",
-                        corr_scenario_labels,
-                        key=corr_scenario_key,
-                    )
+                if corr_mode not in {"clr", "group_share"}:
+                    corr_group = None
+            corr_scenario = corr_scenario_options.get(corr_scenario_choice, {})
+            corr_scenario_kind = corr_scenario.get("kind", "single")
+            corr_scenario_label = corr_scenario.get("label", corr_scenario_choice)
+            help_text = _analysis_correlation_help_text(
+                corr_mode,
+                change_basis=corr_change_basis,
+                zscore=corr_zscore,
+                group_filter=corr_group,
+            )
+            if corr_scenario_kind == "delta":
+                help_text = (
+                    f"{help_text}\nDelta equals correlation({opt_label_text} (X)) minus "
+                    f"correlation({cmp_label_text} (Y))."
+                )
+            help_attr = html.escape(help_text).replace("\n", "&#10;")
+            with corr_controls[1]:
+                st.markdown(
+                    f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
+                    unsafe_allow_html=True,
+                )
+            if corr_scenario_kind == "delta":
+                corr_fig = _analysis_correlation_matrix_delta_chart(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    years,
+                    mode=corr_mode,
+                    change_basis=corr_change_basis,
+                    zscore=corr_zscore,
+                    group_filter=corr_group,
+                    label_x=f"{opt_label_text} (X)",
+                    label_y=f"{cmp_label_text} (Y)",
+                )
             else:
-                corr_select_cols = st.columns(2)
-                with corr_select_cols[0]:
-                    corr_choice = st.selectbox(
-                        "Correlation view",
-                        list(corr_options.keys()),
-                        key="analysis_corr_mode",
-                    )
-                    corr_mode = corr_options[corr_choice]
-                with corr_select_cols[1]:
-                    corr_scenario_choice = st.selectbox(
-                        "Scenario",
-                        corr_scenario_labels,
-                        key=corr_scenario_key,
-                    )
-            if corr_mode == "absolute":
-                corr_zscore = st.checkbox(
-                    "Z-score per category",
-                    value=False,
-                    key="analysis_corr_zscore",
+                corr_selection = corr_scenario.get("selection")
+                if corr_selection is None:
+                    corr_selection = opt_selection if opt_code else comp_selection
+                corr_fig = _analysis_correlation_matrix_chart(
+                    data,
+                    corr_selection,
+                    years,
+                    mode=corr_mode,
+                    change_basis=corr_change_basis,
+                    zscore=corr_zscore,
+                    group_filter=corr_group,
+                    title_suffix=corr_scenario_label,
                 )
-            elif corr_mode == "yoy":
-                basis_label = st.selectbox(
-                    "Change basis",
-                    ["Spend", "Spend share"],
-                    key="analysis_corr_change_basis",
+            if corr_fig is not None:
+                st.plotly_chart(
+                    corr_fig,
+                    use_container_width=True,
+                    key="analysis_correlation_matrix_chart",
                 )
-                corr_change_basis = "share" if basis_label == "Spend share" else "spend"
-            if corr_mode in {"clr", "group_share"} and corr_group is None:
-                corr_group = st.selectbox(
-                    "Group",
-                    corr_group_options,
-                    key="analysis_corr_group",
-                )
-            if corr_mode not in {"clr", "group_share"}:
-                corr_group = None
-        corr_scenario = corr_scenario_options.get(corr_scenario_choice, {})
-        corr_scenario_kind = corr_scenario.get("kind", "single")
-        corr_scenario_label = corr_scenario.get("label", corr_scenario_choice)
-        help_text = _analysis_correlation_help_text(
-            corr_mode,
-            change_basis=corr_change_basis,
-            zscore=corr_zscore,
-            group_filter=corr_group,
-        )
-        if corr_scenario_kind == "delta":
-            help_text = (
-                f"{help_text}\nDelta equals correlation({opt_label_text} (X)) minus "
-                f"correlation({cmp_label_text} (Y))."
-            )
-        help_attr = html.escape(help_text).replace("\n", "&#10;")
-        with corr_controls[1]:
-            st.markdown(
-                f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
-                unsafe_allow_html=True,
-            )
-        if corr_scenario_kind == "delta":
-            corr_fig = _analysis_correlation_matrix_delta_chart(
-                data,
-                opt_selection,
-                comp_selection,
-                years,
-                mode=corr_mode,
-                change_basis=corr_change_basis,
-                zscore=corr_zscore,
-                group_filter=corr_group,
-                label_x=f"{opt_label_text} (X)",
-                label_y=f"{cmp_label_text} (Y)",
-            )
-        else:
-            corr_selection = corr_scenario.get("selection")
-            if corr_selection is None:
-                corr_selection = opt_selection if opt_code else comp_selection
-            corr_fig = _analysis_correlation_matrix_chart(
-                data,
-                corr_selection,
-                years,
-                mode=corr_mode,
-                change_basis=corr_change_basis,
-                zscore=corr_zscore,
-                group_filter=corr_group,
-                title_suffix=corr_scenario_label,
-            )
-        if corr_fig is not None:
-            st.plotly_chart(
-                corr_fig,
-                use_container_width=True,
-                key="analysis_correlation_matrix_chart",
-            )
-        else:
-            st.info("No correlation data available for the selected scenarios.")
-        st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.info("No correlation data available for the selected scenarios.")
         return export_tables
 
     if group_col == "StrategicDimension":
