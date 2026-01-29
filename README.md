@@ -1,69 +1,72 @@
 # Capital Programme Optimiser
 
-Refactored toolkit for running the NZTA capital programme optimiser, sizing annual envelopes, and producing the board-ready Excel dashboard.
+This project implements an optimization model for the NZTA capital programme, designed to size annual funding envelopes and select projects to maximize benefits under funding constraints.
 
-## Project structure
+## Mathematical Formulation
+The detailed mathematical formulation of the optimization problem is documented in:
+*   [Linear Program Formulation.md](Linear%20Program%20Formulation.md)
 
-```
-capital_programme_optimiser/
-  config/
-    settings.yaml            # Core paths and optimisation settings
-    envelope_selection.yaml  # Default include flags for envelope helper
-  optimisation/
-    solver_core.py           # HiGHS optimisation logic (config-driven)
-  dashboard/
-    builder.py               # Excel dashboard generator
-  tools/
-    envelope.py              # Envelope sizing utilities
-    renamer.py               # Cache renaming helper
-  frontend/
-    app.py                   # Streamlit user interface
-  cli.py                     # Command line entry point
-Solver.ipynb etc.           # Legacy notebooks retained for reference
-```
+## Project Structure
 
-## Getting started
+*   **`src/`**: Contains the source code for the optimization logic and data processing.
+*   **`notebooks/`**: Contains Jupyter notebooks, including `git_copt_solver.ipynb`.
+*   **`output/`**: Directory where logs (`output/logs/`) and generated LP files (`output/lp/`) are stored.
+*   **`legacy/`**: Contains a previous refactored version of the toolkit, including a CLI, Streamlit dashboard, and configuration files. This is retained for reference.
 
-1. Create and activate a Python 3.10+ environment.
-2. Install dependencies listed in [DEPENDENCIES.md](DEPENDENCIES.md).
-3. Validate the configuration in `capital_programme_optimiser/config/settings.yaml` (paths default to the NZTA project directory).
+## Dependencies
 
-## Command line
+To run the solver, you need a Python environment with the following dependencies:
 
-Run the optimiser, build dashboards, or rename cache files via the CLI:
+*   **Python 3.10+**
+*   **COPT Solver**: You must have the Cardinal Optimizer (COPT) installed and a valid license.
+    *   Python binding: `pip install coptpy`
+*   **Python Packages**:
+    *   `numpy`
+    *   `pandas`
+    *   `openpyxl` (for Excel I/O)
+    *   `matplotlib` / `seaborn` (if used for plotting)
 
-```bash
-python -m capital_programme_optimiser.cli run-solver --cost-types "P50 - Real,P95 - Real,P95 - Nominal,P50 - Nominal"
-python -m capital_programme_optimiser.cli build-dashboard --output-dir ./output
-python -m capital_programme_optimiser.cli envelope --baseline-total 115 --baseline-years 50
-python -m capital_programme_optimiser.cli rename-cache --prefix Ncor_
-```
+See `legacy/requirements.txt` for a comprehensive list of dependencies used in the legacy toolkit, many of which are likely required for the notebook as well.
 
-## Streamlit front end
+## Usage
 
-Launch the interactive UI with dropdowns, run-mode suggestions, and dashboard button:
+### Running the Solver
+
+You can run the optimization via the command-line interface:
 
 ```bash
-streamlit run capital_programme_optimiser/frontend/app.py
+python src/main.py [options]
 ```
 
-The app lets you:
-- Choose cost types, scenarios, and objective dimensions.
-- Toggle comparison vs. standard runs and buffer sweeps.
-- Trigger optimisation runs and view logs inline.
-- Compute envelope settings.
-- Build the Excel front end at the push of a button.
+**Options:**
 
-## Envelope sizing helper
+*   `--funding-level FLOAT`: Annual funding envelope (default: 1500.0).
+*   `--dimension STRING`: Dimension to optimize (default: "Total"). Supports full names or tricodes:
+    *   `TOT`: Total
+    *   `INC`: Inclusive Access
+    *   `HSP`: Healthy and safe people
+    *   `ECO`: Economic Prosperity
+    *   `ENV`: Environmental Sustainability
+    *   `RES`: Resilience and Security
+*   `--overflow-tiers STRING`: Overflow tiers as `threshold:penalty` pairs (default: "0.12:1000,0.15:4000,0.20:12000").
+*   `--start-year INT`: Start financial year (default: 2026).
+*   `--horizon INT`: Planning horizon in years (default: 60).
+*   `--generate-only`: Generate the LP file without solving.
+*   `--relax`: Generate LP relaxation (continuous variables).
 
-Adjust the include flags in `config/envelope_selection.yaml` to match shortlisted projects. Then:
+**Example:**
 
 ```bash
-python -m capital_programme_optimiser.cli envelope
+python src/main.py --funding-level 2000 --dimension "Safety" --overflow-tiers "0.1:500,0.2:2000"
 ```
 
-or use the Streamlit tab for instant results.
+Alternatively, you can use the Jupyter Notebook:
 
-## Legacy notebooks
+1.  Navigate to the `notebooks` directory.
+2.  Open `git_copt_solver.ipynb` in Jupyter Lab or Notebook.
+3.  Configure the parameters at the top of the notebook.
+4.  Run all cells to execute the optimization.
 
-The original notebooks remain untouched in the repo root for comparison. The refactored package provides a repeatable, configurable interface without changing the underlying optimisation logic.
+### Legacy Toolkit
+
+To use the legacy CLI or dashboard, refer to the [Legacy README](legacy/README.md).

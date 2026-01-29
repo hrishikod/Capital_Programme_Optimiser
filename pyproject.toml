@@ -1,0 +1,32 @@
+[project]
+name = "capital-programme-optimiser"
+version = "0.1.0"
+description = "Capital Programme Optimizer"
+readme = "README.md"
+requires-python = ">=3.12, <3.13"
+dependencies = [
+    "numpy",
+    "pandas",
+    "ortools",
+    "openpyxl",
+    "matplotlib",
+    "mlflow",
+    "ruff>=0.14.9",
+]
+
+[tool.ruff]
+# Exclude legacy directory from linting
+exclude = ["legacy", "notebooks", "*.ipynb"]
+
+# Same line length as previously used in flake8
+line-length = 127
+
+[tool.ruff.lint]
+# Select rules to match common flake8 defaults + ruff recommendations
+# E: pycodestyle
+# F: Pyflakes
+# I: isort
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/main.py" = ["E402"]

@@ -1,0 +1,42 @@
+name: CD Pipeline
+
+on:
+    push:
+        branches:
+            - main
+    pull_request:
+        types: [opened, synchronize]
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Environment to deploy to"
+                required: true
+                default: "DEV-AAM"
+                type: choice
+                options:
+                    - DEV-AAM
+                    - TEST-AAM
+                    - PROD-AAM
+
+jobs:
+    deploy:
+        name: Deploy
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment || 'DEV-AAM' }}
+        if: >-
+            (github.event_name == 'pull_request' || github.event_name == 'push') ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'DEV-AAM')
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Databricks CLI
+              uses: databricks/setup-cli@v0.221.0
+
+            - name: Deploy to ${{ inputs.environment || 'DEV-AAM' }}
+              env:
+                  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+                  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+              run: |
+                  echo "Starting deployment to ${{ inputs.environment || 'DEV-AAM' }}..."
+                  databricks bundle deploy -t dev
+                  echo "Deployment complete."
