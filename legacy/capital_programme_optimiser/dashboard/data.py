@@ -429,6 +429,16 @@ def _parse_benefit_scenario(stem: str, res: Dict[str, Any]) -> tuple[str, int]:
     return ("A", 60)
 
 
+def _parse_benefit_level(stem: str) -> str:
+    """Parse the benefit level tag (base/high) from the cache filename stem."""
+    import re
+
+    match = re.search(r"(?:^|[_\-\s])(base|high)(?:$|[_\-\s])", str(stem), flags=re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    return "base"
+
+
 def _comp_tag(prefix: str, label: str) -> str:
     import re
 
@@ -445,6 +455,7 @@ def _build_scenario_code(
     conf: str,
     steep: str,
     horizon: int,
+    benefit_level: str,
     mode: str,
     env_val: Optional[float],
     yoy_buf: Optional[float],
@@ -454,6 +465,9 @@ def _build_scenario_code(
     comp_label: str = "",
 ) -> str:
     parts = [f"{conf}", f"{steep}{horizon}"]
+    level = str(benefit_level or "base").strip().lower()
+    if level and level != "base":
+        parts.append(level.capitalize())
     if mode == "unconstrained":
         parts.append("Unc")
     elif mode == "fixed":
@@ -482,13 +496,18 @@ def _build_scenario_title(
     conf: str,
     steep: str,
     horizon: int,
+    benefit_level: str,
     mode: str,
     env_val: Optional[float],
     yoy_buf: Optional[float],
     cash_buf: Optional[float],
     obj_dim: str,
 ) -> str:
-    bits = [f"{conf} costs", f"{steep}{horizon} benefits"]
+    level = str(benefit_level or "base").strip().lower()
+    benefit_desc = f"{steep}{horizon}"
+    if level and level != "base":
+        benefit_desc = f"{benefit_desc} {level}"
+    bits = [f"{conf} costs", f"{benefit_desc} benefits"]
     if mode == "unconstrained":
         bits.append("Unconstrained envelope")
     elif mode == "fixed":
@@ -521,6 +540,7 @@ class ScenarioOptions:
     conf: List[str]
     benefit_steep: List[str]
     benefit_horizon: List[int]
+    benefit_levels: List[str]
     objective_dims: List[str]
     envelopes: List[int]
     buffers: List[int]
@@ -576,10 +596,21 @@ class DashboardData:
         else:
             conf_series = df["Conf"].astype(str)
 
+        benefit_levels: List[str] = []
+        if "BenLevel" in df.columns:
+            benefit_levels = sorted(
+                {str(val).strip().lower() for val in df["BenLevel"].dropna().tolist() if str(val).strip()}
+            )
+        if not benefit_levels:
+            benefit_levels = ["base"]
+        if "base" not in benefit_levels:
+            benefit_levels.insert(0, "base")
+
         return ScenarioOptions(
             conf=sorted(conf_series.dropna().unique().tolist()),
             benefit_steep=sorted(df["BenSteep"].dropna().astype(str).unique().tolist()),
             benefit_horizon=sorted(df["BenHorizon"].dropna().drop_duplicates().astype(int).tolist()),
+            benefit_levels=benefit_levels,
             objective_dims=sorted(df["ObjectiveDim"].dropna().astype(str).unique().tolist()),
             envelopes=envelopes,
             buffers=buffers,
@@ -861,6 +892,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
         except (TypeError, ValueError):
             gap_val = None
         steep, horizon = _parse_benefit_scenario(stem, res)
+        benefit_level = _parse_benefit_level(stem)
         objective_meta = res.get("objective", {}) or {}
         if not isinstance(objective_meta, dict):
             objective_meta = {}
@@ -913,8 +945,8 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 pv_primary_raw = pv_total
         pv_primary = float(pv_primary_raw or 0.0)
 
-        code = _build_scenario_code(conf, steep, horizon, mode, env_val, yoy_buf, cash_buf, obj_dim, pref if is_comp else "", pref_label)
-        title = _build_scenario_title(conf, steep, horizon, mode, env_val, yoy_buf, cash_buf, obj_dim)
+        code = _build_scenario_code(conf, steep, horizon, benefit_level, mode, env_val, yoy_buf, cash_buf, obj_dim, pref if is_comp else "", pref_label)
+        title = _build_scenario_title(conf, steep, horizon, benefit_level, mode, env_val, yoy_buf, cash_buf, obj_dim)
 
         base_code = code
         k = 2
@@ -932,6 +964,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
             "CashPlus": cash_buf if cash_buf is not None else "",
             "BenSteep": steep,
             "BenHorizon": horizon,
+            "BenLevel": benefit_level,
             "ObjectiveDim": obj_dim,
             "ObjectiveDimShort": dim_short(obj_dim),
             "Code": code,
@@ -1106,6 +1139,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                     meta["Conf"],
                     meta["BenSteep"],
                     int(meta["BenHorizon"]),
+                    meta.get("BenLevel", "base"),
                     meta["Mode"],
                     _env_full_value(meta, prefer_envelope_full),
                     float(meta["Buffer"])
@@ -1120,6 +1154,7 @@ def prepare_dashboard_data(results: Dict[str, Dict[str, Any]]) -> DashboardData:
                 "Conf": meta["Conf"],
                 "BenSteep": meta["BenSteep"],
                 "BenHorizon": meta["BenHorizon"],
+                "BenLevel": meta.get("BenLevel", "base"),
                 "Mode": meta["Mode"],
                 "EnvStr": (
                     str(int(round(_env_full_value(meta, prefer_envelope_full))))
@@ -1205,12 +1240,14 @@ def build_scenario_key(
     conf: str,
     benefit_steep: str,
     benefit_horizon: int,
+    benefit_level: str,
     mode: str,
     envelope: Optional[float],
     buffer_value: Optional[float],
     *,
     objective_dim: Optional[str] = None,
 ) -> str:
+    level = str(benefit_level or "base").strip().lower()
     env_str = str(int(round(envelope))) if envelope is not None else ""
     if mode == "buffered":
         buf_str = f"+/-{int(round(buffer_value))}" if buffer_value is not None else ""
@@ -1219,7 +1256,7 @@ def build_scenario_key(
     else:
         buf_str = ""
     dim_str = dim_short(objective_dim) if objective_dim else ""
-    return f"{conf}|{benefit_steep}|{benefit_horizon}|{mode}|{env_str}|{buf_str}|{dim_str}"
+    return f"{conf}|{benefit_steep}|{benefit_horizon}|{level}|{mode}|{env_str}|{buf_str}|{dim_str}"
 
 
 def find_scenario_code(
@@ -1228,6 +1265,7 @@ def find_scenario_code(
     conf: str,
     benefit_steep: str,
     benefit_horizon: int,
+    benefit_level: str,
     mode: str,
     envelope: Optional[float],
     buffer_value: Optional[float],
@@ -1245,6 +1283,7 @@ def find_scenario_code(
         conf,
         benefit_steep,
         benefit_horizon,
+        benefit_level,
         mode,
         envelope,
         buffer_value,
@@ -1259,7 +1298,9 @@ def find_scenario_code(
             (dim_series.str.lower() == target)
             | (dim_series.apply(dim_short).str.lower() == short_target)
         )
-        df = df_source[dim_mask & (df_source["Key"].str.startswith(f"{conf}|{benefit_steep}|{benefit_horizon}|{mode}|"))]
+        level = str(benefit_level or "base").strip().lower()
+        prefix = f"{conf}|{benefit_steep}|{benefit_horizon}|{level}|{mode}|"
+        df = df_source[dim_mask & (df_source["Key"].str.startswith(prefix))]
     if df.empty:
         return None
     flag = 1 if prefer_comparison else 0

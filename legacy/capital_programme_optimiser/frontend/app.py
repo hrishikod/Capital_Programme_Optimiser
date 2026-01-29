@@ -108,6 +108,7 @@ from capital_programme_optimiser.dashboard.data import (
 )
 
 _FIND_SCENARIO_SUPPORTS_DIM = "objective_dim" in inspect.signature(find_scenario_code).parameters
+_FIND_SCENARIO_SUPPORTS_BENEFIT_LEVEL = "benefit_level" in inspect.signature(find_scenario_code).parameters
 
 from capital_programme_optimiser.dashboard.constants import (
     SCENARIO_PRIMARY_NAME,
@@ -2246,6 +2247,8 @@ class ScenarioSelection:
 
     benefit_horizon: int
 
+    benefit_level: str
+
     mode: str
 
     envelope: Optional[int]
@@ -4175,6 +4178,7 @@ def available_envelopes(
     confidence: str,
     steep: str,
     horizon: int,
+    benefit_level: str,
     mode: str,
     prefer_comparison: Optional[bool] = None,
     scenarios_df: Optional[pd.DataFrame] = None,
@@ -4183,12 +4187,15 @@ def available_envelopes(
     df = scenarios_df if scenarios_df is not None else data.scenarios
     if df.empty:
         return []
+    level = str(benefit_level or "base").strip().lower()
     mask = (
         (df["Conf"] == confidence)
         & (df["BenSteep"] == steep)
         & (pd.to_numeric(df["BenHorizon"], errors="coerce") == int(horizon))
         & (df["Mode"] == mode)
     )
+    if "BenLevel" in df.columns:
+        mask = mask & (df["BenLevel"].astype(str).str.lower() == level)
     if prefer_comparison is not None and "IsComp" in df.columns:
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
     if slug_prefix and "CacheStem" in df.columns:
@@ -4212,6 +4219,7 @@ def available_buffer_levels(
     confidence: str,
     steep: str,
     horizon: int,
+    benefit_level: str,
     mode: str,
     envelope: Optional[int] = None,
     prefer_comparison: Optional[bool] = None,
@@ -4221,6 +4229,7 @@ def available_buffer_levels(
     df = scenarios_df if scenarios_df is not None else data.scenarios
     if df.empty:
         return []
+    level = str(benefit_level or "base").strip().lower()
     env_base = _base_envelope_series(df)
     if env_base.isna().all():
         env_base = _full_envelope_series(df, mode, prefer_full=data.prefer_envelope_full)
@@ -4230,6 +4239,8 @@ def available_buffer_levels(
         & (pd.to_numeric(df["BenHorizon"], errors="coerce") == int(horizon))
         & (df["Mode"] == mode)
     )
+    if "BenLevel" in df.columns:
+        mask = mask & (df["BenLevel"].astype(str).str.lower() == level)
     if prefer_comparison is not None and "IsComp" in df.columns:
         mask = mask & (df["IsComp"] == (1 if prefer_comparison else 0))
     if envelope is not None:
@@ -4338,6 +4349,19 @@ def scenario_selector(
 
         key=f"{key_prefix}_conf",
 
+    )
+
+    benefit_levels = list(getattr(options, "benefit_levels", []) or [])
+    if not benefit_levels:
+        benefit_levels = ["base"]
+    if "base" not in [str(level).strip().lower() for level in benefit_levels]:
+        benefit_levels.insert(0, "base")
+    benefit_level_index = _preferred_option_index([str(level) for level in benefit_levels], "base")
+    benefit_level = st.selectbox(
+        f"{name} benefit level",
+        benefit_levels,
+        index=benefit_level_index,
+        key=f"{key_prefix}_benefit_level",
     )
 
     if show_benefit_controls and options.benefit_steep:
@@ -4483,6 +4507,8 @@ def scenario_selector(
 
             horizon=int(benefit_horizon),
 
+            benefit_level=benefit_level,
+
             mode=mode_key,
 
             prefer_comparison=pref,
@@ -4541,6 +4567,8 @@ def scenario_selector(
 
                 horizon=int(benefit_horizon),
 
+                benefit_level=benefit_level,
+
                 mode=mode_key,
 
                 envelope=envelope,
@@ -4596,6 +4624,8 @@ def scenario_selector(
                 steep=benefit_steep,
 
                 horizon=int(benefit_horizon),
+
+                benefit_level=benefit_level,
 
                 mode=mode_key,
 
@@ -4653,6 +4683,9 @@ def scenario_selector(
             & (pd.to_numeric(dim_source["BenHorizon"], errors="coerce") == int(benefit_horizon))
             & (dim_source["Mode"] == mode_key)
         )
+        if "BenLevel" in dim_source.columns:
+            level = str(benefit_level or "base").strip().lower()
+            base_dim_mask = base_dim_mask & (dim_source["BenLevel"].astype(str).str.lower() == level)
         if mode_key in {"fixed", "buffered", "cash"} and envelope is not None:
             env_match = full_env_dim == float(envelope)
             base_dim_mask = base_dim_mask & env_match.fillna(False)
@@ -4761,6 +4794,8 @@ def scenario_selector(
             "prefer_comparison": prefer_comparison,
             "profile": profile_filter,
         }
+        if _FIND_SCENARIO_SUPPORTS_BENEFIT_LEVEL:
+            params["benefit_level"] = benefit_level
         if src is not None:
             params["scenarios_df"] = src
         if _FIND_SCENARIO_SUPPORTS_DIM and dimension_label:
@@ -4784,6 +4819,10 @@ def scenario_selector(
             & (df["Mode"] == mode_key)
 
         )
+
+        if "BenLevel" in df.columns:
+            level = str(benefit_level or "base").strip().lower()
+            mask = mask & (df["BenLevel"].astype(str).str.lower() == level)
 
         if envelope is not None:
 
@@ -4925,6 +4964,8 @@ def scenario_selector(
         benefit_steep=benefit_steep,
 
         benefit_horizon=int(benefit_horizon),
+
+        benefit_level=str(benefit_level or "base").strip().lower(),
 
         mode=mode_key,
 
