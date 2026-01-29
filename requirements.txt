@@ -3,3 +3,9 @@ pandas
 ortools
 openpyxl
 matplotlib
+streamlit
+plotly
+PyYAML
+XlsxWriter
+requests
+streamlit-option-menu

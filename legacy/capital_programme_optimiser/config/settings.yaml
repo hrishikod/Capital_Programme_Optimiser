@@ -34,10 +34,10 @@ optimisation:
   verbose: 2
   cash_pv_rate: 0.015
 paths:
-  cache_dir: scenario_sets/presets/AllProjects_vs_NCorridorBroughtForward
+  cache_dir: legacy/scenario_sets/presets/AllProjects_vs_NCorridorBroughtForward
   dashboard_output_dir: .
-  preset_dir: scenario_sets/presets
-  saved_dir: scenario_sets/saved_runs
+  preset_dir: legacy/scenario_sets/presets
+  saved_dir: legacy/scenario_sets/saved_runs
   default_preset: AllProjects_vs_NCorridorBroughtForward
 ui:
   default_run_mode: standard

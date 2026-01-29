@@ -11,6 +11,8 @@ import copy
 import pickle
 import textwrap
 import html
+import shutil
+import tempfile
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from datetime import datetime
@@ -27,6 +29,7 @@ import pandas as pd
 
 import plotly.graph_objects as go
 import plotly.colors as plc
+import plotly.io as pio
 
 if not hasattr(pd.Index, 'clip'):
 
@@ -60,6 +63,7 @@ _preview_navigation_component = components.declare_component(
 )
 ENABLE_PREVIEW_NAVIGATION = False  # Toggle preview pane without removing supporting code.
 SHOW_REAL_BENEFIT_CHARTS = False  # Hide real benefit profile charts while keeping logic available.
+SHOW_ANALYSIS_CORRELATION = False  # Hide the analysis correlation block (controls + chart).
 
 ROOT_CWD = Path.cwd()
 
@@ -69,6 +73,8 @@ ROOT_PARENT = ROOT_FILE.parent
 
 INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles_new.pkl"
 PCT_BAR_PATH = ROOT_FILE / "scenario_sets" / "Pct_bar.pkl"
+COST_BENEFIT_STREAMS_PATH = ROOT_FILE / "Cost_benefit_streams.xlsx"
+BCR_MAPPING_PATH = ROOT_FILE / "BCR_mapping.xlsx"
 INTERPOLATED_PROFILE_ANIMATION_SECONDS = 16.0
 
 for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
@@ -92,6 +98,7 @@ from capital_programme_optimiser.dashboard.regions import (
 
 from capital_programme_optimiser.dashboard.data import (
     DashboardData,
+    _canonicalise_dimension_label,
     dim_short,
     extract_project_runs,
     find_scenario_code,
@@ -375,6 +382,80 @@ _GANTT_HOTKEY_HTML = """
 """
 
 
+_EXPORT_POPOVER_FOCUS_HTML = """
+<script>
+(() => {
+  const POPOVER_SELECTOR = ".pbi-export-popover,[data-testid='stPopover'],[data-testid='stPopoverContent'],[data-baseweb='popover']";
+  const attach = (doc) => {
+    if (!doc || doc.__pbiExportBlurInstalled) {
+      return;
+    }
+    doc.__pbiExportBlurInstalled = true;
+    let hasPopover = false;
+    let armUntil = 0;
+    const scrubButtons = () => {
+      try {
+        const roots = doc.querySelectorAll(POPOVER_SELECTOR);
+        roots.forEach((root) => {
+          root.querySelectorAll("div.stDownloadButton > button").forEach((btn) => {
+            btn.tabIndex = -1;
+            if (doc.activeElement === btn) {
+              btn.blur();
+            }
+          });
+        });
+      } catch (err) {
+        // ignore query failures
+      }
+    };
+    const arm = () => {
+      armUntil = Date.now() + 700;
+      const active = doc.activeElement;
+      if (active && active.closest && active.closest(POPOVER_SELECTOR)) {
+        active.blur();
+      }
+      scrubButtons();
+    };
+    const handler = (event) => {
+      if (Date.now() > armUntil) {
+        return;
+      }
+      const target = event.target;
+      if (target && target.closest && target.closest(POPOVER_SELECTOR) && target.tagName === 'BUTTON') {
+        setTimeout(() => {
+          try {
+            target.blur();
+          } catch (err) {
+            // ignore focus teardown issues
+          }
+        }, 0);
+      }
+    };
+    doc.addEventListener('focusin', handler, true);
+    if (doc.body && window.MutationObserver) {
+      const observer = new MutationObserver(() => {
+        const popoverOpen = !!doc.querySelector(POPOVER_SELECTOR);
+        if (popoverOpen && !hasPopover) {
+          arm();
+        }
+        hasPopover = popoverOpen;
+      });
+      observer.observe(doc.body, { childList: true, subtree: true });
+    }
+  };
+  attach(document);
+  try {
+    if (window.parent && window.parent.document) {
+      attach(window.parent.document);
+    }
+  } catch (err) {
+    // ignore cross-origin cases
+  }
+})();
+</script>
+"""
+
+
 def _inject_gantt_hotkey_listener() -> None:
     """
     Mount a tiny HTML shim that listens for the 'Z' key and toggles the
@@ -410,21 +491,44 @@ def _inject_gantt_hotkey_listener() -> None:
             st.rerun()
 
 
+def _inject_export_popover_focus_guard() -> None:
+    """Prevent popover download buttons from auto-focusing on open."""
+    try:
+        components.html(
+            _EXPORT_POPOVER_FOCUS_HTML,
+            height=0,
+            width=0,
+            key="_export_popover_focus_guard",
+        )
+    except TypeError:
+        components.html(_EXPORT_POPOVER_FOCUS_HTML, height=0, width=0)
+
+
 
 def _current_gantt_outline_color() -> str:
     variant = st.session_state.get(GANTT_OUTLINE_VARIANT_KEY, "base")
     return GANTT_OUTLINE_COLOR_ALT if variant == "alt" else GANTT_OUTLINE_COLOR_BASE
 
-NAV_TABS = ["Overview", "Programme Schedule", "Cash Flow", "Benefits", "Regions", "Delivery", "Scenario Manager"]
+NAV_TABS = [
+    "Cash Flow",
+    "Programme Schedule",
+    "Analysis",
+    "Benefits",
+    "Regions",
+    "Delivery",
+    "Scenario Manager",
+    "Demo",
+]
 
 NAV_ICON_MAP = {
-    "Overview": "speedometer",
     "Programme Schedule": "calendar-event",
     "Cash Flow": "cash-coin",
+    "Analysis": "bar-chart-line",
     "Benefits": "graph-up-arrow",
     "Regions": "geo-alt",
     "Delivery": "box-seam",
     "Scenario Manager": "kanban",
+    "Demo": "speedometer",
 }
 
 
@@ -543,6 +647,25 @@ def inject_kpi_card_theme() -> None:
         line-height: 1.1;
         letter-spacing: -0.01em;
       }}
+      .kpi-text {{
+        color: var(--kpi-text-1);
+        font-weight: 500;
+        font-size: 1.3rem;
+        line-height: 1.2;
+      }}
+      .kpi-inline {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: baseline;
+      }}
+      .kpi-inline .kpi-text {{
+        display: inline;
+        font-size: 1.05rem;
+      }}
+      .kpi-inline .kpi-delta {{
+        margin-top: 0;
+      }}
       .kpi-sub {{
         color: var(--kpi-text-2);
         font-size: .85rem;
@@ -569,6 +692,11 @@ def inject_kpi_card_theme() -> None:
         color: #CA4142;
         background: rgba(202,65,66,.10);
         border-color: rgba(202,65,66,.30);
+      }}
+      .kpi-delta.muted {{
+        color: #64748B;
+        background: rgba(148,163,184,.18);
+        border-color: rgba(148,163,184,.45);
       }}
       .kpi-delta.neutral {{
         color: var(--pbi-blue);
@@ -621,6 +749,27 @@ def inject_powerbi_theme() -> None:
                 font-weight: 600;
                 margin: 1.0rem 0 0.5rem;
             }}
+            .pbi-help-wrap {{
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                margin: 0.1rem 0 0.25rem;
+            }}
+            .pbi-help-icon {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 22px;
+                height: 22px;
+                border-radius: 999px;
+                border: 1px solid rgba(15, 23, 42, 0.2);
+                color: var(--pbi-blue);
+                background: #ffffff;
+                font-size: 0.78rem;
+                font-weight: 700;
+                cursor: help;
+                box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+            }}
             .pbi-card {{
                 background: #ffffff;
                 border-radius: 16px;
@@ -628,6 +777,9 @@ def inject_powerbi_theme() -> None:
                 box-shadow: 0 10px 24px rgba(25, 69, 107, 0.08);
                 border: 1px solid var(--pbi-tertiary);
                 margin-bottom: 1.1rem;
+            }}
+            .pbi-hidden-block {{
+                display: none !important;
             }}
             .pbi-table .stDataFrame {{
                 border-radius: 12px;
@@ -696,17 +848,13 @@ def inject_powerbi_theme() -> None:
             }}
             div.stButton > button:focus,
             div.stButton > button:active,
-            div.stDownloadButton > button:focus,
-            div.stDownloadButton > button:active,
             div.stFormSubmitButton > button:focus,
             div.stFormSubmitButton > button:active,
             button[kind='primary']:focus,
             button[kind='primary']:active,
             button[data-testid='baseButton-primary']:focus,
             button[data-testid='baseButton-primary']:active,
-            button[aria-pressed='true'],
-            button:active,
-            button:focus {{
+            button[aria-pressed='true'] {{
                 color: #ffffff !important;
             }}
             div[data-baseweb='segmented-control'] button {{
@@ -746,15 +894,129 @@ def inject_powerbi_theme() -> None:
             }}
             div.stButton > button:focus *,
             div.stButton > button:active *,
-            div.stDownloadButton > button:focus *,
-            div.stDownloadButton > button:active *,
-            button[aria-pressed='true'] *,
-            button:active *,
-            button:focus * {{
+            button[kind='primary']:focus *,
+            button[kind='primary']:active *,
+            button[data-testid='baseButton-primary']:focus *,
+            button[data-testid='baseButton-primary']:active *,
+            button[aria-pressed='true'] * {{
                 color: #ffffff !important;
             }}
             .pbi-export-gap {{
                 height: 32px;
+            }}
+            .pbi-export-popover-title {{
+                color: var(--pbi-blue);
+                font-size: 0.95rem;
+                font-weight: 700;
+                margin: 0 0 0.15rem;
+            }}
+            .pbi-export-popover-sub {{
+                color: #475569;
+                font-size: 0.82rem;
+                margin: 0 0 0.6rem;
+            }}
+            .pbi-export-popover div[data-testid='stRadio'] > div {{
+                flex-wrap: nowrap;
+                gap: 0.4rem;
+            }}
+            .pbi-export-popover div[data-testid='stRadio'] label[data-baseweb='radio'] {{
+                white-space: nowrap;
+                padding: 0.28rem 0.7rem;
+                font-size: 0.82rem;
+            }}
+            .pbi-export-popover div.stDownloadButton > button {{
+                width: 100%;
+                font-size: 0.82rem;
+                padding: 0.45rem 0.7rem;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:disabled {{
+                background: rgba(148, 163, 184, 0.18) !important;
+                border-color: rgba(148, 163, 184, 0.45) !important;
+                color: #64748B !important;
+                opacity: 1 !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:disabled * {{
+                color: #64748B !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled) {{
+                background: #ffffff !important;
+                border: 1px solid rgba(15, 23, 42, 0.16) !important;
+                color: #1f2937 !important;
+                border-radius: 12px;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):hover {{
+                border-color: rgba(25, 69, 107, 0.35) !important;
+                background: rgba(25, 69, 107, 0.08) !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):active,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus-visible {{
+                color: #1f2937 !important;
+            }}
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled) *,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):focus *,
+            .pbi-export-popover div.stDownloadButton > button:not(:disabled):active * {{
+                color: #1f2937 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button,
+            div[data-baseweb='popover'] div.stDownloadButton > button {{
+                background: #ffffff !important;
+                border: 1px solid rgba(15, 23, 42, 0.16) !important;
+                color: #1f2937 !important;
+                border-radius: 12px;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:hover,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:hover,
+            div[data-baseweb='popover'] div.stDownloadButton > button:hover {{
+                border-color: rgba(25, 69, 107, 0.35) !important;
+                background: rgba(25, 69, 107, 0.08) !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button *,
+            div[data-baseweb='popover'] div.stDownloadButton > button * {{
+                color: inherit !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:active,
+            div[data-baseweb='popover'] div.stDownloadButton > button:active,
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus-visible,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus-visible,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus-visible {{
+                color: #1f2937 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus *,
+            div[data-testid='stPopover'] div.stDownloadButton > button:active *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:active *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:active *,
+            div[data-testid='stPopover'] div.stDownloadButton > button:focus-visible *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:focus-visible *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:focus-visible * {{
+                color: inherit !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:disabled,
+            div[data-baseweb='popover'] div.stDownloadButton > button:disabled {{
+                background: rgba(148, 163, 184, 0.18) !important;
+                border-color: rgba(148, 163, 184, 0.45) !important;
+                color: #64748B !important;
+                opacity: 1 !important;
+            }}
+            div[data-testid='stPopover'] div.stDownloadButton > button:disabled *,
+            div[data-testid='stPopoverContent'] div.stDownloadButton > button:disabled *,
+            div[data-baseweb='popover'] div.stDownloadButton > button:disabled * {{
+                color: #64748B !important;
+            }}
+            div[data-testid='stPopover'] > div {{
+                background: linear-gradient(180deg, rgba(25, 69, 107, 0.10), rgba(255, 255, 255, 0.98));
+                border: 1px solid rgba(25, 69, 107, 0.22);
+                border-radius: 14px;
+                box-shadow: 0 18px 30px rgba(15, 23, 42, 0.16);
             }}
             div[data-baseweb='segmented-control'] button[aria-pressed='true'] *,
             div[data-baseweb='segmented-control'] button:focus *,
@@ -966,19 +1228,126 @@ def render_powerbi_navigation(
             styles=styles,
         )
 
-def render_export_download(tables: Dict[str, pd.DataFrame]) -> None:
+def render_export_download(
+    tables: Dict[str, pd.DataFrame],
+    *,
+    active_tab: str = "",
+) -> None:
     if not tables:
         return
     filename = f"capital_programme_dashboard_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    export_bytes = build_export_workbook(tables)
     st.markdown("<div class='pbi-export-gap'></div>", unsafe_allow_html=True)
-    st.download_button(
-        "Export current tab",
-        data=export_bytes,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
-    )
+
+    if active_tab == "Programme Schedule":
+        order_key = "gantt_export_order"
+        if order_key not in st.session_state:
+            st.session_state[order_key] = "project"
+        popover = st.popover("Export current tab") if hasattr(st, "popover") else st.expander("Export current tab")
+        with popover:
+            st.markdown("<div class='pbi-export-popover'>", unsafe_allow_html=True)
+            st.markdown("<div class='pbi-export-popover-title'>Export ordering</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='pbi-export-popover-sub'>Order by project name or by the Gantt start year.</div>",
+                unsafe_allow_html=True,
+            )
+            order_choice = st.radio(
+                "Order by",
+                options=["project", "start_year"],
+                format_func=lambda val: "Project order (1, 2, 3)"
+                if val == "project"
+                else "Project start year (Gantt order)",
+                key=order_key,
+                horizontal=True,
+            )
+            ordered_tables = _apply_programme_schedule_export_order(tables, order_choice)
+            export_bytes = build_export_workbook(ordered_tables)
+            st.download_button(
+                "Download Excel",
+                data=export_bytes,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_{hash(tuple(ordered_tables.keys())) & 0xffff}_{order_choice}",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+    elif active_tab == "Cash Flow":
+        _inject_export_popover_focus_guard()
+        breakdown_label = st.session_state.get("cash_flow_profile_spend_breakdown", "Total")
+        cumulative_tables = {k: v for k, v in tables.items() if k == "Cumulative spend vs benefit"}
+        bcr_tables = {k: v for k, v in tables.items() if str(k).startswith("BCR - ")}
+        stack_tables = {
+            k: v
+            for k, v in tables.items()
+            if str(k).startswith("Costs vs benefits stack") or str(k).startswith("Costs vs benefits delta")
+        }
+        cashflow_tables = {k: v for k, v in tables.items() if str(k).startswith("Cash flow - ")}
+        popover = st.popover("Export cash flow") if hasattr(st, "popover") else st.expander("Export cash flow")
+        with popover:
+            st.markdown("<div class='pbi-export-popover'>", unsafe_allow_html=True)
+            st.markdown("<div class='pbi-export-popover-title'>Cash flow exports</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='pbi-export-popover-sub'>Breakdown: {html.escape(str(breakdown_label))}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<div class='pbi-export-popover-sub'>Choose what to download:</div>",
+                unsafe_allow_html=True,
+            )
+            row1 = st.columns(2)
+            with row1[0]:
+                cumulative_bytes = build_export_workbook(cumulative_tables) if cumulative_tables else b""
+                st.download_button(
+                    "Cumulative chart",
+                    data=cumulative_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(cumulative_tables.keys())) & 0xffff}_cumulative",
+                    disabled=not cumulative_tables,
+                    help="Cumulative spend vs benefit.",
+                )
+            with row1[1]:
+                stack_bytes = build_export_workbook(stack_tables) if stack_tables else b""
+                st.download_button(
+                    "Stacked costs/benefits",
+                    data=stack_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(stack_tables.keys())) & 0xffff}_stack",
+                    disabled=not stack_tables,
+                    help="Costs vs benefits stack using current settings.",
+                )
+            row2 = st.columns(2)
+            with row2[0]:
+                bcr_bytes = build_export_workbook(bcr_tables) if bcr_tables else b""
+                st.download_button(
+                    "BCR charts",
+                    data=bcr_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(bcr_tables.keys())) & 0xffff}_bcr",
+                    disabled=not bcr_tables,
+                    help="Both BCR charts in one workbook.",
+                )
+            with row2[1]:
+                cashflow_bytes = build_export_workbook(cashflow_tables) if cashflow_tables else b""
+                st.download_button(
+                    "Cash flow charts",
+                    data=cashflow_bytes,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_{hash(tuple(cashflow_tables.keys())) & 0xffff}_cashflow",
+                    disabled=not cashflow_tables,
+                    help="Cash flow tables for both scenarios.",
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        export_bytes = build_export_workbook(tables)
+        st.download_button(
+            "Export current tab",
+            data=export_bytes,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_{hash(tuple(tables.keys())) & 0xffff}",
+        )
 
 
 def _json_sanitise(value: Any) -> Any:
@@ -1075,7 +1444,7 @@ def collect_navigation_previews(
     previews: Dict[str, List[Dict[str, Any]]] = {}
     profile_assets, profile_meta = load_interpolated_profile_assets()
 
-    # Overview tab previews
+    # Demo tab previews
     if profile_assets:
         order = profile_meta.get("profile_order") or sorted(profile_assets)
         if order:
@@ -1084,7 +1453,7 @@ def collect_navigation_previews(
                 overview_fig = go.Figure(asset["plot_json"])
                 _append_preview(
                     previews,
-                    "Overview",
+                    "Demo",
                     title=_figure_title(overview_fig, asset.get("title", f"Cash flow - {asset['label']}")),
                     fig=overview_fig,
                 )
@@ -1429,6 +1798,7 @@ def is_dark_mode() -> bool:
 
 def plotly_template() -> str:
     """Resolve the Plotly template name based on the detected theme."""
+    _ensure_global_hoverformat()
     return "plotly_dark" if is_dark_mode() else "plotly_white"
 
 def _hoverlabel_style() -> dict:
@@ -1446,6 +1816,33 @@ def _hoverlabel_style() -> dict:
         "font": dict(color="#0F172A", size=12, family="Inter, 'Segoe UI', sans-serif"),
         "namelength": 0,
     }
+
+
+_GLOBAL_HOVERFORMAT = ".2~f"
+_HOVERFORMAT_READY = False
+
+
+def _ensure_global_hoverformat() -> None:
+    """Apply a global hoverformat cap to Plotly templates."""
+    global _HOVERFORMAT_READY
+    if _HOVERFORMAT_READY:
+        return
+    for template_name in ("plotly_white", "plotly_dark"):
+        try:
+            template = pio.templates[template_name]
+        except Exception:
+            continue
+        try:
+            template.layout.xaxis.hoverformat = _GLOBAL_HOVERFORMAT
+            template.layout.yaxis.hoverformat = _GLOBAL_HOVERFORMAT
+        except Exception:
+            pass
+        try:
+            template.layout.polar.radialaxis.hoverformat = _GLOBAL_HOVERFORMAT
+            template.layout.polar.angularaxis.hoverformat = _GLOBAL_HOVERFORMAT
+        except Exception:
+            pass
+    _HOVERFORMAT_READY = True
 
 
 DEFAULT_LEGEND_BOTTOM: Dict[str, Any] = {
@@ -1472,6 +1869,267 @@ def _normalise_project_key(name: str) -> str:
         return ''
     normalised = str(name).strip().lower()
     return re.sub(r'\s+', ' ', normalised)
+
+
+def _clean_mapping_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def _canonicalise_gps_tier(value: Any) -> str:
+    text = _clean_mapping_value(value)
+    if text is None:
+        return "Unknown"
+    normalised = re.sub(r"[\s_-]+", " ", text).strip().lower()
+    if not normalised or normalised == "unknown":
+        return "Unknown"
+    if "must" in normalised:
+        return "Must do"
+    if "should" in normalised:
+        return "Should do"
+    if "could" in normalised:
+        return "Could do"
+    return text.strip()
+
+
+def _read_excel_safe(path: Path, *, sheet_name: str) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        pass
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=path.suffix) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            shutil.copy2(path, tmp_path)
+            return pd.read_excel(tmp_path, sheet_name=sheet_name, engine="openpyxl")
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        return pd.DataFrame()
+
+
+def _build_project_attribute_mapping(workbook_path: Path) -> pd.DataFrame:
+    """Build project-to-attribute mappings used for breakdown charts."""
+
+    def _read_sheet(sheet_name: str, column_map: Dict[str, str]) -> pd.DataFrame:
+        if not workbook_path.exists():
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+        df = _read_excel_safe(workbook_path, sheet_name=sheet_name)
+        if df.empty:
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+
+        df = df.copy()
+        df.columns = [str(col).strip() for col in df.columns]
+        lookup = {str(col).strip().lower(): col for col in df.columns}
+        project_col = lookup.get("project")
+        if project_col is None:
+            return pd.DataFrame(columns=["ProjectKey", "Project", *column_map.keys()])
+
+        out = pd.DataFrame()
+        out["Project"] = df[project_col].map(_clean_mapping_value)
+        out = out.dropna(subset=["Project"]).copy()
+        out["Project"] = out["Project"].astype(str).str.strip()
+        out = out[out["Project"].ne("")]
+        out["ProjectKey"] = out["Project"].map(_normalise_project_key)
+
+        for out_col, src_col_name in column_map.items():
+            src_col = lookup.get(str(src_col_name).strip().lower())
+            out[out_col] = df[src_col].map(_clean_mapping_value) if src_col is not None else None
+
+        out = out.drop_duplicates(subset=["ProjectKey"], keep="first")
+        return out[["ProjectKey", "Project", *column_map.keys()]]
+
+    costs = _read_sheet(
+        "Costs",
+        {
+            "Region": "Region",
+            "ActivityClass": "Activity Class",
+            "GPSTier": "GPS Request Tier",
+            "StrategicDimension": "Strategic Dimension",
+        },
+    )
+    benefits = _read_sheet(
+        "Benefits Linear 40yrs",
+        {
+            "Region": "Region",
+            "ActivityClass": "Activity Class",
+            "StrategicDimension": "Strategic Dimension",
+        },
+    )
+
+    if costs.empty and benefits.empty:
+        return pd.DataFrame(
+            columns=["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"]
+        )
+
+    merged = costs.set_index("ProjectKey").combine_first(benefits.set_index("ProjectKey")).reset_index()
+    for col in ("Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"):
+        if col not in merged.columns:
+            merged[col] = None
+    merged = merged[["ProjectKey", "Project", "Region", "ActivityClass", "GPSTier", "StrategicDimension"]].copy()
+    merged["Region"] = merged["Region"].fillna("Unknown")
+    merged["ActivityClass"] = merged["ActivityClass"].fillna("Unknown")
+    merged["GPSTier"] = merged["GPSTier"].fillna("Unknown")
+    merged["StrategicDimension"] = merged["StrategicDimension"].fillna("Unknown")
+    return merged
+
+
+@st.cache_resource(show_spinner=False)
+def load_project_attribute_mapping(
+    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
+) -> pd.DataFrame:
+    """Load project-to-attribute mappings used for breakdown charts."""
+    return _build_project_attribute_mapping(workbook_path)
+
+
+@st.cache_resource(show_spinner=False)
+def load_project_bcr_mapping(
+    workbook_path: Path = BCR_MAPPING_PATH,
+) -> pd.DataFrame:
+    """Return per-project original BCR values from the mapping workbook."""
+    if not workbook_path.exists():
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (Original)"])
+    df = _read_excel_safe(workbook_path, sheet_name=0)
+    if df.empty:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (Original)"])
+
+    df = df.copy()
+    df.columns = [str(col).strip() for col in df.columns]
+    lookup = {str(col).strip().lower(): col for col in df.columns}
+    project_col = lookup.get("project")
+    bcr_col = lookup.get("bcr")
+    if project_col is None or bcr_col is None:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (Original)"])
+
+    out = pd.DataFrame()
+    out["Project"] = df[project_col].map(_clean_mapping_value)
+    out = out.dropna(subset=["Project"]).copy()
+    out["Project"] = out["Project"].astype(str).str.strip()
+    out = out[out["Project"].ne("")]
+    out["ProjectKey"] = out["Project"].map(_normalise_project_key)
+    out["BCR (Original)"] = pd.to_numeric(df[bcr_col], errors="coerce")
+    out = out.drop_duplicates(subset=["ProjectKey"], keep="first")
+    return out[["ProjectKey", "Project", "BCR (Original)"]]
+
+
+@st.cache_resource(show_spinner=False)
+def load_project_new_bcr_mapping(
+    workbook_path: Path = COST_BENEFIT_STREAMS_PATH,
+    *,
+    base_year: Optional[int] = None,
+) -> pd.DataFrame:
+    """Return per-project BCR from PV'd cost/benefit cashflows (40-year benefits)."""
+    if not workbook_path.exists():
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+    costs = _read_excel_safe(workbook_path, sheet_name="Costs")
+    benefits = _read_excel_safe(workbook_path, sheet_name="Benefits Linear 40yrs")
+    if costs.empty or benefits.empty:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+
+    if costs is None or costs.empty or "Project" not in costs.columns:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+    if benefits is None or benefits.empty or "Project" not in benefits.columns:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+
+    costs = costs.copy()
+    costs["Project"] = costs["Project"].map(_clean_mapping_value)
+    costs = costs.dropna(subset=["Project"]).copy()
+    costs["Project"] = costs["Project"].astype(str).str.strip()
+    costs = costs[costs["Project"].ne("")]
+
+    benefits = benefits.copy()
+    benefits["Project"] = benefits["Project"].map(_clean_mapping_value)
+    benefits = benefits.dropna(subset=["Project"]).copy()
+    benefits["Project"] = benefits["Project"].astype(str).str.strip()
+    benefits = benefits[benefits["Project"].ne("")]
+
+    year_map: Dict[Any, int] = {}
+    for col in costs.columns:
+        if isinstance(col, (int, np.integer)):
+            year_map[col] = int(col)
+        elif isinstance(col, str) and col.strip().isdigit():
+            year_map[col] = int(col.strip())
+    if not year_map:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+    costs = costs.rename(columns=year_map)
+    year_cols = sorted(set(year_map.values()))
+    costs[year_cols] = costs[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    if base_year is None:
+        base_year = int(min(year_cols))
+
+    t_map: Dict[Any, int] = {}
+    for col in benefits.columns:
+        if not isinstance(col, str):
+            continue
+        match = re.match(r"t\\s*\\+\\s*(\\d+)", col.strip().lower())
+        if match:
+            t_map[col] = int(match.group(1))
+    if not t_map:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+    benefits = benefits.rename(columns=t_map)
+    t_cols = sorted(set(t_map.values()))
+    benefits[t_cols] = benefits[t_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    if "Dimension" in benefits.columns:
+        dim_values = benefits["Dimension"].astype(str).str.strip().str.lower()
+        total_mask = dim_values == "total"
+        if total_mask.any():
+            benefits = benefits[total_mask]
+
+    cost_table = costs.groupby("Project")[year_cols].sum()
+    benefit_table = benefits.groupby("Project")[t_cols].sum()
+
+    records: List[Dict[str, Any]] = []
+    year_array = np.asarray(year_cols, dtype=int)
+    offset_array = np.asarray(t_cols, dtype=int)
+
+    for project, cost_row in cost_table.iterrows():
+        cost_vals = cost_row.to_numpy(dtype=float)
+        nonzero_mask = np.abs(cost_vals) > 1e-9
+        if not nonzero_mask.any():
+            continue
+        start_year = int(year_array[np.argmax(nonzero_mask)])
+        cost_offsets = year_array - int(base_year)
+        cost_pv = float(
+            np.sum(cost_vals / mbcm_discount_divisors(cost_offsets))
+        ) if cost_vals.size else 0.0
+
+        bcr_value = np.nan
+        if cost_pv > 0 and project in benefit_table.index and offset_array.size:
+            benefit_vals = benefit_table.loc[project].to_numpy(dtype=float)
+            benefit_years = start_year + offset_array
+            benefit_offsets = benefit_years - int(base_year)
+            benefit_pv = float(
+                np.sum(benefit_vals / mbcm_discount_divisors(benefit_offsets))
+            )
+            if np.isfinite(benefit_pv):
+                bcr_value = benefit_pv / cost_pv
+
+        records.append(
+            {
+                "Project": project,
+                "ProjectKey": _normalise_project_key(project),
+                "BCR (New)": bcr_value,
+            }
+        )
+
+    if not records:
+        return pd.DataFrame(columns=["ProjectKey", "Project", "BCR (New)"])
+    out = pd.DataFrame(records)
+    out = out.drop_duplicates(subset=["ProjectKey"], keep="first")
+    return out[["ProjectKey", "Project", "BCR (New)"]]
 
 def rgba_from_hex(hex_color: str, alpha: float) -> str:
     '''Return an rgba string for a hex colour code or existing rgba string.'''
@@ -1639,7 +2297,7 @@ def resolve_selection_label(
             return text
     return fallback
 
-LOAD_DATA_SCHEMA_VERSION = 3
+LOAD_DATA_SCHEMA_VERSION = 5
 
 
 def _cache_signature(cache_path: Path) -> Tuple[Tuple[str, int, int], ...]:
@@ -2022,6 +2680,62 @@ def sorted_years(*dfs: Optional[pd.DataFrame]) -> List[int]:
         years.update(numeric_years.tolist())
     return sorted(years)
 
+MBCM_DISCOUNT_RATE_FIRST = 0.02
+MBCM_DISCOUNT_RATE_LATER = 0.015
+MBCM_DISCOUNT_FIRST_YEARS = 30
+
+
+def mbcm_discount_divisors(offsets: np.ndarray) -> np.ndarray:
+    """Return discount divisors per NZTA MBCM (2% for first 30 years, 1.5% thereafter)."""
+    year_offsets = np.asarray(offsets)
+    if year_offsets.size == 0:
+        return year_offsets.astype(float)
+    year_offsets = np.clip(year_offsets.astype(int), a_min=0, a_max=None)
+    first_years = np.minimum(year_offsets, MBCM_DISCOUNT_FIRST_YEARS)
+    later_years = np.maximum(year_offsets - MBCM_DISCOUNT_FIRST_YEARS, 0)
+    divisors = np.power(1.0 + MBCM_DISCOUNT_RATE_FIRST, first_years) * np.power(
+        1.0 + MBCM_DISCOUNT_RATE_LATER, later_years
+    )
+    divisors[divisors == 0] = 1.0
+    return divisors
+
+
+def mbcm_discount_label() -> str:
+    return (
+        f"{MBCM_DISCOUNT_RATE_FIRST * 100:.1f}% for years 1-{MBCM_DISCOUNT_FIRST_YEARS}, "
+        f"{MBCM_DISCOUNT_RATE_LATER * 100:.1f}% from year {MBCM_DISCOUNT_FIRST_YEARS + 1}+"
+    )
+
+
+VALUE_BASIS_PV = "PV'd at MBCM rates"
+VALUE_BASIS_REAL = "Real $2025"
+VALUE_BASIS_NOMINAL = "Nominal"
+VALUE_BASIS_OPTIONS = (VALUE_BASIS_PV, VALUE_BASIS_REAL, VALUE_BASIS_NOMINAL)
+
+
+def _resolve_value_basis(session_key: str, legacy_apply_key: str, *, default: str = VALUE_BASIS_REAL) -> str:
+    """Resolve the selected value basis, falling back to legacy checkbox state when present."""
+    basis = st.session_state.get(session_key)
+    if basis in VALUE_BASIS_OPTIONS:
+        return str(basis)
+    legacy = st.session_state.get(legacy_apply_key)
+    if legacy is not None:
+        return VALUE_BASIS_PV if bool(legacy) else VALUE_BASIS_REAL
+    return default
+
+
+def value_basis_multiplier(start_year: int, years: np.ndarray, basis: str) -> np.ndarray:
+    """Return per-year multipliers to convert base $2025 flows into the selected basis."""
+    year_values = np.asarray(years, dtype=int)
+    offsets = np.clip(year_values - int(start_year), a_min=0, a_max=None)
+    divisors = mbcm_discount_divisors(offsets)
+    basis_norm = (basis or "").strip().lower()
+    if basis_norm.startswith("pv"):
+        return np.divide(1.0, divisors, out=np.ones_like(divisors, dtype=float), where=divisors != 0)
+    if basis_norm.startswith("nom"):
+        return divisors.astype(float)
+    return np.ones_like(divisors, dtype=float)
+
 
 
 def _create_export_table(years: Iterable[int]) -> Tuple[pd.DataFrame, pd.Index]:
@@ -2031,12 +2745,10 @@ def _create_export_table(years: Iterable[int]) -> Tuple[pd.DataFrame, pd.Index]:
 
 def pv_to_nominal_index(data: DashboardData, years: Iterable[int]) -> pd.Series:
     """Return discount multipliers to convert PV back to nominal dollars."""
-    base_rate = float(getattr(data, "benefit_rate", 0.0) or 0.0)
     start_year = int(getattr(data, "start_fy", 0))
-    factor = 1.0 + base_rate
     year_index = pd.Index([int(year) for year in years], name="Financial year")
-    offsets = (year_index - start_year).to_numpy()
-    multipliers = np.power(factor, np.clip(offsets, a_min=0, a_max=None))
+    offsets = np.clip((year_index - start_year).to_numpy(dtype=int), a_min=0, a_max=None)
+    multipliers = mbcm_discount_divisors(offsets)
     return pd.Series(multipliers, index=year_index, name="Discount multiplier")
 
 def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
@@ -2055,11 +2767,46 @@ def sanitize_sheet_name(name: str, existing: Set[str]) -> str:
 
 def build_export_workbook(tables: Dict[str, pd.DataFrame]) -> bytes:
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer) as writer:
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         seen: Set[str] = set()
         for name, df in tables.items():
             sheet_name = sanitize_sheet_name(name, seen)
             (df if df is not None else pd.DataFrame()).to_excel(writer, sheet_name=sheet_name, index=False)
+            if df is None or df.empty:
+                continue
+            sheet = writer.sheets.get(sheet_name)
+            if sheet is None:
+                continue
+            weight_cols = [
+                idx + 1
+                for idx, col in enumerate(df.columns)
+                if isinstance(col, str) and col.startswith("Strategic Dimension ")
+            ]
+            bcr_cols = [
+                idx + 1
+                for idx, col in enumerate(df.columns)
+                if isinstance(col, str) and "bcr" in col.lower()
+            ]
+            year_cols = []
+            for idx, col in enumerate(df.columns):
+                if isinstance(col, (int, np.integer)):
+                    year_value = int(col)
+                elif isinstance(col, str) and col.isdigit():
+                    year_value = int(col)
+                else:
+                    continue
+                if year_value >= 2026:
+                    year_cols.append(idx + 1)
+            format_cols = sorted(set(weight_cols + bcr_cols))
+            max_row = sheet.max_row
+            for col_idx in format_cols:
+                for row_idx in range(2, max_row + 1):
+                    sheet.cell(row=row_idx, column=col_idx).number_format = "0.00"
+            if year_cols and "Project" in df.columns:
+                accounting_format = '_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)'
+                for col_idx in year_cols:
+                    for row_idx in range(2, max_row + 1):
+                        sheet.cell(row=row_idx, column=col_idx).number_format = accounting_format
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -2072,44 +2819,159 @@ def prepare_efficiency_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    cost_basis = _resolve_value_basis(
+        "npv_cost_value_basis",
+        "npv_apply_cost_discount",
+        default=VALUE_BASIS_PV,
+    )
+    benefit_basis = _resolve_value_basis(
+        "npv_benefit_value_basis",
+        "npv_apply_discount",
+        default=VALUE_BASIS_PV,
+    )
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+    start_year = int(getattr(data, "start_fy", 2025) or 2025)
+
+    def _basis_descriptor(basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if basis_norm.startswith("pv"):
+            return "PV"
+        if basis_norm.startswith("nom"):
+            return "nominal"
+        return "real $2025"
+
+    def _scale_to_dollars(values: pd.Series) -> float:
+        values = pd.to_numeric(values, errors="coerce").fillna(0.0)
+        magnitude = float(values.abs().max()) if not values.empty else 0.0
+        if magnitude >= 10_000_000.0:
+            return 1.0
+        return 1_000_000.0
+
+    def _cumulative_series_dollars(
+        frame: pd.DataFrame,
+        *,
+        flow_column: str,
+        basis: str,
+        horizon_years: Optional[int],
+    ) -> pd.Series:
+        years_raw = pd.to_numeric(frame.get("Year"), errors="coerce")
+        flows_raw = pd.to_numeric(frame.get(flow_column), errors="coerce").fillna(0.0)
+        mask = years_raw.notna()
+        if not mask.any():
+            return pd.Series(dtype=float)
+        years = years_raw[mask].astype(int)
+        flows = flows_raw[mask].astype(float)
+        if basis == VALUE_BASIS_PV and horizon_years:
+            limit_year = int(start_year) + int(horizon_years) - 1
+            flows = flows.where(years <= limit_year, 0.0)
+        multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), basis)
+        adjusted = flows.to_numpy(dtype=float) * multipliers
+        cumulative = np.cumsum(adjusted)
+        scale = _scale_to_dollars(flows)
+        return pd.Series(cumulative * scale, index=years.to_numpy(dtype=int), dtype=float)
+
     years = sorted_years(opt_df, cmp_df)
     if not years:
         return None
     export, index = _create_export_table(years)
     if opt_df is not None and not opt_df.empty:
-        cum_spend = series_from_df(opt_df, "CumSpend")
-        if not cum_spend.empty:
-            aligned_spend = cum_spend.reindex(index)
+        spend_series = _cumulative_series_dollars(
+            opt_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        if not spend_series.empty:
+            aligned_spend = spend_series.reindex(index)
             if aligned_spend.notna().any():
-                export[f"{primary_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_spend)
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
-        if not series_opt.empty:
-            year_values = pd.to_numeric(opt_df.get("Year"), errors="coerce")
-            mask = year_values.notna()
-            if mask.any():
-                aligned = pd.Series(
-                    series_opt[mask].astype(float).to_numpy(),
-                    index=year_values[mask].astype(int).to_numpy(),
-                ).reindex(index)
-                if aligned.notna().any():
-                    export[f"{label_opt} ($)"] = scale_series_to_nzd(aligned)
+                export[
+                    f"{primary_label} cumulative {_basis_descriptor(cost_basis)} spend ($)"
+                ] = aligned_spend
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in opt_df.columns else "BenefitFlow"
+        benefit_series = _cumulative_series_dollars(
+            opt_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        if not benefit_series.empty:
+            aligned = benefit_series.reindex(index)
+            if aligned.notna().any():
+                export[
+                    f"{primary_label} cumulative {_basis_descriptor(benefit_basis)} benefit ($)"
+                ] = aligned
     if cmp_df is not None and not cmp_df.empty:
-        cum_spend_cmp = series_from_df(cmp_df, "CumSpend")
-        if not cum_spend_cmp.empty:
-            aligned_cmp_spend = cum_spend_cmp.reindex(index)
+        spend_series_cmp = _cumulative_series_dollars(
+            cmp_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        if not spend_series_cmp.empty:
+            aligned_cmp_spend = spend_series_cmp.reindex(index)
             if aligned_cmp_spend.notna().any():
-                export[f"{comparison_label} cumulative spend ($)"] = scale_series_to_nzd(aligned_cmp_spend)
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
-        if not series_cmp.empty:
-            year_values = pd.to_numeric(cmp_df.get("Year"), errors="coerce")
-            mask = year_values.notna()
-            if mask.any():
-                aligned = pd.Series(
-                    series_cmp[mask].astype(float).to_numpy(),
-                    index=year_values[mask].astype(int).to_numpy(),
-                ).reindex(index)
-                if aligned.notna().any():
-                    export[f"{label_cmp} ($)"] = scale_series_to_nzd(aligned)
+                export[
+                    f"{comparison_label} cumulative {_basis_descriptor(cost_basis)} spend ($)"
+                ] = aligned_cmp_spend
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in cmp_df.columns else "BenefitFlow"
+        benefit_series_cmp = _cumulative_series_dollars(
+            cmp_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        if not benefit_series_cmp.empty:
+            aligned = benefit_series_cmp.reindex(index)
+            if aligned.notna().any():
+                export[
+                    f"{comparison_label} cumulative {_basis_descriptor(benefit_basis)} benefit ($)"
+                ] = aligned
+    if export.shape[1] == 0:
+        return None
+    return export.reset_index()
+
+
+def prepare_bcr_time_series_export(
+    data: DashboardData,
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    years = sorted_years(opt_df, cmp_df)
+    if not years:
+        return None
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+    start_year = _bcr_start_year(opt_df, cmp_df)
+
+    export, index = _create_export_table(years)
+    opt_series = _bcr_series_from_frame(
+        opt_df,
+        start_year=start_year,
+        pv_horizon_years=pv_horizon_years,
+    )
+    if opt_series is not None and not opt_series.empty:
+        aligned = opt_series.reindex(index)
+        if aligned.notna().any():
+            export[f"{primary_label} BCR (PV)"] = aligned
+    cmp_series = _bcr_series_from_frame(
+        cmp_df,
+        start_year=start_year,
+        pv_horizon_years=pv_horizon_years,
+    )
+    if cmp_series is not None and not cmp_series.empty:
+        aligned = cmp_series.reindex(index)
+        if aligned.notna().any():
+            export[f"{comparison_label} BCR (PV)"] = aligned
+
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -2118,6 +2980,9 @@ def prepare_cash_export(
     df: Optional[pd.DataFrame],
     *,
     label_prefix: str,
+    spend_breakdown: str = "Total",
+    data: Optional[DashboardData] = None,
+    selection: Optional[ScenarioSelection] = None,
 ) -> Optional[pd.DataFrame]:
     if df is None or df.empty:
         return None
@@ -2125,25 +2990,57 @@ def prepare_cash_export(
     if not years:
         return None
     export, index = _create_export_table(years)
-    column_map = {
-        "Spend": "Annual spend ($)",
-        "ClosingNet": "Closing net ($)",
-        "Envelope": "Envelope ($)",
-        "BenefitFlow": "Benefit flow ($)",
-        "PVBenefit": "PV benefit ($)",
-        "CumSpend": "Cumulative spend ($)",
-        "CumBenefit": "Cumulative benefit ($)",
-        "CumPVBenefit": "Cumulative PV benefit ($)",
-    }
-    for source, label in column_map.items():
-        if source not in df.columns:
-            continue
-        series = series_from_df(df, source)
+    prefix = (label_prefix or "").strip()
+
+    def _label(text: str) -> str:
+        if prefix:
+            return f"{prefix} {text}"
+        return text
+
+    def _add_series(series: pd.Series, label: str) -> None:
         if series.empty:
-            continue
+            return
         aligned = series.reindex(index)
         if aligned.notna().any():
-            export[f"{label_prefix} {label}"] = scale_series_to_nzd(aligned)
+            export[label] = scale_series_to_nzd(aligned)
+
+    breakdown_key = re.sub(r"\s+", " ", str(spend_breakdown or "Total").strip().lower())
+    group_col: Optional[str] = None
+    if breakdown_key == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_key == "region":
+        group_col = "Region"
+    elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
+        group_col = "GPSTier"
+
+    breakdown_table: Optional[pd.DataFrame] = None
+    if group_col and data is not None and selection is not None and getattr(selection, "code", None):
+        breakdown_table = _annual_spend_breakdown_by_attribute(
+            data,
+            selection,
+            group_col=group_col,
+            years=years,
+        )
+
+    if breakdown_table is None or breakdown_table.empty:
+        spend_series = series_from_df(df, "Spend")
+        _add_series(spend_series, _label("Annual spend ($)"))
+    else:
+        for label in breakdown_table.columns:
+            series = pd.to_numeric(breakdown_table[label], errors="coerce").fillna(0.0)
+            series = pd.Series(series.to_numpy(dtype=float), index=breakdown_table.index)
+            _add_series(series, _label(f"Spend: {label} ($)"))
+
+    benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in df.columns else "BenefitFlow"
+    benefit_series = series_from_df(df, benefit_flow_col)
+    _add_series(benefit_series, _label("Benefit flow ($)"))
+
+    closing_series = series_from_df(df, "ClosingNet")
+    _add_series(closing_series, _label("Closing net ($)"))
+
+    envelope_series = series_from_df(df, "Envelope")
+    _add_series(envelope_series, _label("Envelope ($)"))
+
     if export.shape[1] == 0:
         return None
     return export.reset_index()
@@ -2167,17 +3064,17 @@ def prepare_cumulative_cash_export(
         if aligned_cost.notna().any():
             export[f"{label_prefix} cumulative cost ($)"] = scale_series_to_nzd(aligned_cost)
 
-    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
-    if isinstance(revenue_series, pd.Series) and not revenue_series.empty:
-        aligned_revenue = pd.to_numeric(revenue_series, errors="coerce").reindex(index)
-        if aligned_revenue.notna().any():
-            is_real = "PV" in (revenue_label or "")
-            revenue_label_text = (
-                f"{label_prefix} cumulative revenue (real $)"
+    benefit_series, benefit_label = _benefit_series_and_label(df, selection, prefix="")
+    if isinstance(benefit_series, pd.Series) and not benefit_series.empty:
+        aligned_benefit = pd.to_numeric(benefit_series, errors="coerce").reindex(index)
+        if aligned_benefit.notna().any():
+            is_real = "PV" in (benefit_label or "")
+            benefit_label_text = (
+                f"{label_prefix} cumulative benefits (real $2025)"
                 if is_real
-                else f"{label_prefix} cumulative revenue ($)"
+                else f"{label_prefix} cumulative benefits ($)"
             )
-            export[revenue_label_text] = scale_series_to_nzd(aligned_revenue)
+            export[benefit_label_text] = scale_series_to_nzd(aligned_benefit)
 
     if export.shape[1] <= 1:
         return None
@@ -2304,6 +3201,20 @@ def prepare_waterfall_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    if apply_discount:
+        primary_col = f"{primary_label} NPV ($)"
+        comparison_col = f"{comparison_label} NPV ($)"
+        delta_col = "Delta ($)"
+    else:
+        primary_col = f"{primary_label} Benefits ($2025)"
+        comparison_col = f"{comparison_label} Benefits ($2025)"
+        delta_col = "Delta ($2025)"
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2322,9 +3233,9 @@ def prepare_waterfall_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{primary_label} NPV ($)": opt_val * 1_000_000.0,
-                f"{comparison_label} NPV ($)": cmp_val * 1_000_000.0,
-                "Delta ($)": (opt_val - cmp_val) * 1_000_000.0,
+                primary_col: opt_val * 1_000_000.0,
+                comparison_col: cmp_val * 1_000_000.0,
+                delta_col: (opt_val - cmp_val) * 1_000_000.0,
             }
         )
     total_dim = next((dim for dim in ordered_dims if str(dim).strip().lower() == "total"), None)
@@ -2335,9 +3246,9 @@ def prepare_waterfall_export(
     rows.append(
         {
             "Dimension": "Total",
-            f"{primary_label} NPV ($)": total_opt * 1_000_000.0,
-            f"{comparison_label} NPV ($)": total_cmp * 1_000_000.0,
-            "Delta ($)": (total_opt - total_cmp) * 1_000_000.0,
+            primary_col: total_opt * 1_000_000.0,
+            comparison_col: total_cmp * 1_000_000.0,
+            delta_col: (total_opt - total_cmp) * 1_000_000.0,
         }
     )
     return pd.DataFrame(rows)
@@ -2353,6 +3264,14 @@ def prepare_bridge_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    metric_token = "NPV" if apply_discount else "Benefits ($2025)"
+    value_col = "Value ($)" if apply_discount else "Value ($2025)"
     if pv_opt is None:
         pv_opt = pv_by_dimension(data, opt_selection, horizon_years=horizon_years) if opt_selection and opt_selection.code else None
     if pv_cmp is None:
@@ -2376,18 +3295,18 @@ def prepare_bridge_export(
     total_cmp = float(pv_cmp.get(total_dim, sum(pv_cmp.values())))
     bridge_diffs = [float(pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0)) for dim in dim_sequence]
     rows = [
-        {"Step": f"{primary_label} NPV total", "Value ($)": total_opt * 1_000_000.0, "Measure": "relative"}
+        {"Step": f"{primary_label} {metric_token} total", value_col: total_opt * 1_000_000.0, "Measure": "relative"}
     ]
     for dim, delta in zip(dim_sequence, bridge_diffs):
         rows.append(
             {
-                "Step": f"{dim} delta NPV",
-                "Value ($)": (-delta) * 1_000_000.0,
+                "Step": f"{dim} delta {metric_token}",
+                value_col: (-delta) * 1_000_000.0,
                 "Measure": "relative",
             }
         )
     rows.append(
-        {"Step": f"{comparison_label} NPV total", "Value ($)": total_cmp * 1_000_000.0, "Measure": "total"}
+        {"Step": f"{comparison_label} {metric_token} total", value_col: total_cmp * 1_000_000.0, "Measure": "total"}
     )
     return pd.DataFrame(rows)
 
@@ -2402,6 +3321,18 @@ def prepare_radar_export(
 ) -> Optional[pd.DataFrame]:
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    if apply_discount:
+        primary_col = f"{primary_label} NPV ($)"
+        comparison_col = f"{comparison_label} NPV ($)"
+    else:
+        primary_col = f"{primary_label} Benefits ($2025)"
+        comparison_col = f"{comparison_label} Benefits ($2025)"
     if pv_opt is None and opt_selection and opt_selection.code:
         kwargs = {}
         if horizon_years is not None:
@@ -2432,8 +3363,8 @@ def prepare_radar_export(
         rows.append(
             {
                 "Dimension": str(dim),
-                f"{primary_label} NPV ($)": float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
-                f"{comparison_label} NPV ($)": float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
+                primary_col: float(pv_opt.get(dim, 0.0) if pv_opt else 0.0) * 1_000_000.0,
+                comparison_col: float(pv_cmp.get(dim, 0.0) if pv_cmp else 0.0) * 1_000_000.0,
             }
         )
     return pd.DataFrame(rows)
@@ -2465,6 +3396,247 @@ def _raw_result_for_code(data: DashboardData, code: Optional[str]) -> Optional[D
     if not stem:
         return None
     return data.raw_results.get(stem)
+
+
+def _project_activity_class_map() -> Dict[str, str]:
+    mapping = load_project_attribute_mapping()
+    if mapping is None or mapping.empty:
+        return {}
+    working = mapping.dropna(subset=["ProjectKey"]).copy()
+    if "ActivityClass" not in working.columns:
+        return {}
+    working["ActivityClass"] = working["ActivityClass"].fillna("Unknown")
+    return dict(zip(working["ProjectKey"], working["ActivityClass"]))
+
+
+def _attach_activity_class_column(
+    table: Optional[pd.DataFrame],
+    activity_map: Dict[str, str],
+) -> Optional[pd.DataFrame]:
+    if table is None or table.empty:
+        return table
+    if "Project" not in table.columns or "Activity Class" in table.columns:
+        return table
+    if activity_map:
+        activity_values = table["Project"].map(
+            lambda name: activity_map.get(_normalise_project_key(name), "Unknown")
+        )
+    else:
+        activity_values = pd.Series(["Unknown"] * len(table), index=table.index)
+    table = table.copy()
+    table.insert(1, "Activity Class", activity_values)
+    return table
+
+
+def _project_dimension_weight_table(
+    data: DashboardData,
+    selection: ScenarioSelection,
+) -> pd.DataFrame:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return pd.DataFrame()
+    raw = _raw_result_for_code(data, selection.code)
+    if not raw:
+        return pd.DataFrame()
+    benefits = raw.get("benefits_by_project_dimension_by_year")
+    if not isinstance(benefits, pd.DataFrame) or benefits.empty:
+        return pd.DataFrame()
+
+    working = benefits.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    if "Project" not in working.columns or "Dimension" not in working.columns:
+        return pd.DataFrame()
+
+    year_cols = [
+        col
+        for col in working.columns
+        if isinstance(col, (int, np.integer)) or (isinstance(col, str) and str(col).isdigit())
+    ]
+    if not year_cols:
+        return pd.DataFrame()
+    col_map = {col: int(str(col)) for col in year_cols}
+    working = working.rename(columns=col_map)
+    year_cols = [col_map[col] for col in year_cols]
+
+    working["Project"] = working["Project"].astype(str)
+    working["Dimension"] = (
+        working["Dimension"].apply(_canonicalise_dimension_label).astype(str).str.strip()
+    )
+    working = working[working["Dimension"].ne("")]
+    working = working[working["Dimension"].str.strip().str.lower() != "total"]
+    if working.empty:
+        return pd.DataFrame()
+
+    working[year_cols] = working[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    dim_totals = working.groupby(["Project", "Dimension"], as_index=False)[year_cols].sum()
+    dim_totals["Total"] = dim_totals[year_cols].sum(axis=1)
+    dim_totals = dim_totals[dim_totals["Total"] > 0]
+    if dim_totals.empty:
+        return pd.DataFrame()
+
+    project_totals = dim_totals.groupby("Project")["Total"].sum().rename("ProjectTotal")
+    dim_totals = dim_totals.merge(project_totals, on="Project", how="left")
+    dim_totals = dim_totals[dim_totals["ProjectTotal"] > 0]
+    if dim_totals.empty:
+        return pd.DataFrame()
+
+    dim_totals["Weight"] = dim_totals["Total"] / dim_totals["ProjectTotal"]
+    pivot = dim_totals.pivot_table(
+        index="Project", columns="Dimension", values="Weight", aggfunc="first"
+    ).fillna(0.0)
+    if pivot.empty:
+        return pd.DataFrame()
+
+    ordered_dims = [str(dim) for dim in getattr(data, "dims", []) if str(dim).strip().lower() != "total"]
+    ordered_cols: List[str] = []
+    for dim in ordered_dims:
+        if dim in pivot.columns:
+            ordered_cols.append(dim)
+    for dim in pivot.columns:
+        if dim not in ordered_cols:
+            ordered_cols.append(dim)
+    pivot = pivot[ordered_cols]
+
+    columns = {dim: f"Strategic Dimension {dim_short(dim)}" for dim in pivot.columns}
+    pivot = pivot.rename(columns=columns)
+    pivot = pivot.reset_index()
+    pivot["ProjectKey"] = pivot["Project"].map(_normalise_project_key)
+    return pivot.drop(columns=["Project"])
+
+
+def _project_new_bcr_from_tables(
+    cost_table: Optional[pd.DataFrame],
+    benefit_table: Optional[pd.DataFrame],
+    *,
+    base_year: int,
+) -> pd.DataFrame:
+    if (
+        cost_table is None
+        or benefit_table is None
+        or cost_table.empty
+        or benefit_table.empty
+        or "Project" not in cost_table.columns
+        or "Project" not in benefit_table.columns
+    ):
+        return pd.DataFrame(columns=["ProjectKey", "BCR (New)"])
+
+    cost_years = sorted(
+        [col for col in cost_table.columns if isinstance(col, (int, np.integer))]
+    )
+    benefit_years = sorted(
+        [col for col in benefit_table.columns if isinstance(col, (int, np.integer))]
+    )
+    if not cost_years or not benefit_years:
+        return pd.DataFrame(columns=["ProjectKey", "BCR (New)"])
+
+    cost_df = cost_table[["Project"] + cost_years].copy()
+    cost_df["Project"] = cost_df["Project"].astype(str)
+    cost_df["ProjectKey"] = cost_df["Project"].map(_normalise_project_key)
+    cost_values = cost_df[cost_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    cost_offsets = np.asarray(cost_years, dtype=int) - int(base_year)
+    cost_divisors = mbcm_discount_divisors(cost_offsets)
+    cost_pv = cost_values.dot(1.0 / cost_divisors) if cost_divisors.size else np.zeros(len(cost_df))
+    cost_map = pd.DataFrame({"ProjectKey": cost_df["ProjectKey"], "CostPV": cost_pv})
+    cost_map = cost_map.groupby("ProjectKey", as_index=False)["CostPV"].sum()
+
+    benefit_df = benefit_table[["Project"] + benefit_years].copy()
+    benefit_df["Project"] = benefit_df["Project"].astype(str)
+    benefit_df["ProjectKey"] = benefit_df["Project"].map(_normalise_project_key)
+    benefit_values = (
+        benefit_df[benefit_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
+    benefit_offsets = np.asarray(benefit_years, dtype=int) - int(base_year)
+    benefit_divisors = mbcm_discount_divisors(benefit_offsets)
+    benefit_pv = benefit_values.dot(1.0 / benefit_divisors) if benefit_divisors.size else np.zeros(len(benefit_df))
+    benefit_map = pd.DataFrame({"ProjectKey": benefit_df["ProjectKey"], "BenefitPV": benefit_pv})
+    benefit_map = benefit_map.groupby("ProjectKey", as_index=False)["BenefitPV"].sum()
+
+    merged = cost_map.merge(benefit_map, on="ProjectKey", how="left")
+    merged["BenefitPV"] = merged["BenefitPV"].fillna(0.0)
+    merged["BCR (New)"] = np.divide(
+        merged["BenefitPV"].to_numpy(dtype=float),
+        merged["CostPV"].to_numpy(dtype=float),
+        out=np.full(len(merged), np.nan, dtype=float),
+        where=merged["CostPV"].to_numpy(dtype=float) > 0,
+    )
+    return merged[["ProjectKey", "BCR (New)"]]
+
+
+def _attach_project_attribute_columns(
+    table: Optional[pd.DataFrame],
+    mapping: pd.DataFrame,
+    weight_table: pd.DataFrame,
+    *,
+    base_year: Optional[int] = None,
+    new_bcr_table: Optional[pd.DataFrame] = None,
+) -> Optional[pd.DataFrame]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return table
+    table = table.copy()
+    table["ProjectKey"] = table["Project"].map(_normalise_project_key)
+
+    attrs = pd.DataFrame({"ProjectKey": table["ProjectKey"]})
+    if mapping is not None and not mapping.empty:
+        attrs = mapping[["ProjectKey", "ActivityClass", "GPSTier", "Region"]].copy()
+        attrs = attrs.drop_duplicates(subset=["ProjectKey"]).copy()
+        attrs = attrs.rename(
+            columns={
+                "ActivityClass": "Activity Class",
+                "GPSTier": "GPS Request Tier",
+                "Region": "Region",
+            }
+        )
+        attrs["Activity Class"] = attrs["Activity Class"].fillna("Unknown")
+        attrs["GPS Request Tier"] = attrs["GPS Request Tier"].map(_canonicalise_gps_tier)
+        attrs["Region"] = attrs["Region"].fillna("Unknown")
+        attrs["GPS Request Tier"] = attrs["GPS Request Tier"].fillna("Unknown")
+
+    merged = table.merge(attrs, on="ProjectKey", how="left")
+
+    bcr_table = load_project_bcr_mapping()
+    if bcr_table is not None and not bcr_table.empty:
+        merged = merged.merge(
+            bcr_table[["ProjectKey", "BCR (Original)"]],
+            on="ProjectKey",
+            how="left",
+        )
+    if new_bcr_table is None or new_bcr_table.empty:
+        new_bcr_table = load_project_new_bcr_mapping(base_year=base_year)
+    if new_bcr_table is not None and not new_bcr_table.empty:
+        merged = merged.merge(
+            new_bcr_table[["ProjectKey", "BCR (New)"]],
+            on="ProjectKey",
+            how="left",
+        )
+    if "BCR (Original)" not in merged.columns:
+        merged["BCR (Original)"] = np.nan
+    if "BCR (New)" not in merged.columns:
+        merged["BCR (New)"] = np.nan
+
+    dim_cols: List[str] = []
+    if weight_table is not None and not weight_table.empty:
+        merged = merged.merge(weight_table, on="ProjectKey", how="left")
+        dim_cols = [col for col in weight_table.columns if col != "ProjectKey"]
+        for col in dim_cols:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0.0)
+
+    for col in ("Activity Class", "GPS Request Tier", "Region"):
+        if col in merged.columns:
+            merged[col] = merged[col].fillna("Unknown")
+        else:
+            merged[col] = "Unknown"
+
+    ordered_cols = [
+        "Project",
+        "Activity Class",
+        "GPS Request Tier",
+        "Region",
+        "BCR (Original)",
+        "BCR (New)",
+    ] + dim_cols
+    remaining = [col for col in merged.columns if col not in ordered_cols and col != "ProjectKey"]
+    merged = merged[ordered_cols + remaining]
+    return merged
 
 
 def _scenario_project_cost_table(
@@ -2574,6 +3746,7 @@ def prepare_gantt_export(
 ) -> Dict[str, pd.DataFrame]:
     years = _gantt_export_years(data)
     tables: Dict[str, pd.DataFrame] = {}
+    mapping = load_project_attribute_mapping()
     for selection, label in (
         (opt_selection, opt_label),
         (comp_selection, cmp_label),
@@ -2582,13 +3755,163 @@ def prepare_gantt_export(
         if not code:
             continue
         sheet_label = label or code
+        runs = extract_project_runs(data, code)
+        order_lookup = {str(run.project): idx for idx, run in enumerate(runs)} if runs else {}
+        weight_table = _project_dimension_weight_table(data, selection)
         cost_table = _scenario_project_cost_table(data, code, years)
+        benefit_table = _scenario_project_benefit_table(data, code, years)
+        base_year = int(getattr(data, "start_fy", 2025) or 2025)
+        new_bcr_table = _project_new_bcr_from_tables(
+            cost_table,
+            benefit_table,
+            base_year=base_year,
+        )
+        cost_table = _attach_project_attribute_columns(
+            cost_table,
+            mapping,
+            weight_table,
+            base_year=base_year,
+            new_bcr_table=new_bcr_table,
+        )
+        if cost_table is not None and not cost_table.empty and order_lookup:
+            cost_table = cost_table.copy()
+            cost_table["_gantt_order_idx"] = (
+                cost_table["Project"].astype(str).map(order_lookup).fillna(1_000_000).astype(int)
+            )
         if cost_table is not None and not cost_table.empty:
             tables[f"{sheet_label} - Costs"] = cost_table
-        benefit_table = _scenario_project_benefit_table(data, code, years)
+        benefit_table = _attach_project_attribute_columns(
+            benefit_table,
+            mapping,
+            weight_table,
+            base_year=base_year,
+            new_bcr_table=new_bcr_table,
+        )
+        if benefit_table is not None and not benefit_table.empty and order_lookup:
+            benefit_table = benefit_table.copy()
+            benefit_table["_gantt_order_idx"] = (
+                benefit_table["Project"].astype(str).map(order_lookup).fillna(1_000_000).astype(int)
+            )
         if benefit_table is not None and not benefit_table.empty:
             tables[f"{sheet_label} - Benefits"] = benefit_table
     return tables
+
+
+def _split_gantt_export_label(sheet_name: str) -> Tuple[str, str]:
+    if sheet_name.endswith(" - Costs"):
+        return sheet_name[: -len(" - Costs")], "Costs"
+    if sheet_name.endswith(" - Benefits"):
+        return sheet_name[: -len(" - Benefits")], "Benefits"
+    return sheet_name, ""
+
+
+def _project_sort_key(name: str) -> Tuple[Tuple[int, Any], ...]:
+    text = str(name).strip().lower()
+    parts = re.split(r"(\d+)", text)
+    key: List[Tuple[int, Any]] = []
+    for part in parts:
+        if part.isdigit():
+            key.append((1, int(part)))
+        else:
+            key.append((0, part))
+    return tuple(key)
+
+
+def _project_start_year_order(table: pd.DataFrame) -> List[str]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return []
+    year_cols = sorted([col for col in table.columns if isinstance(col, (int, np.integer))])
+    if not year_cols:
+        return sorted(table["Project"].astype(str).tolist(), key=_project_sort_key)
+    values = (
+        table[year_cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .to_numpy(dtype=float, copy=True)
+    )
+    threshold = 1e-6
+    order: List[Tuple[int, str, str]] = []
+    for idx, row in enumerate(values):
+        mask = np.abs(row) > threshold
+        if mask.any():
+            first_idx = int(np.argmax(mask))
+            start_year = int(year_cols[first_idx])
+        else:
+            start_year = 999999
+        project_name = str(table.iloc[idx]["Project"])
+        order.append((start_year, _project_sort_key(project_name), project_name))
+    order.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in order]
+
+
+def _project_alpha_order(table: pd.DataFrame) -> List[str]:
+    if table is None or table.empty or "Project" not in table.columns:
+        return []
+    return sorted(table["Project"].astype(str).tolist(), key=_project_sort_key)
+
+
+def _order_export_table(table: pd.DataFrame, order: List[str]) -> pd.DataFrame:
+    if table is None or table.empty or "Project" not in table.columns or not order:
+        return table
+    table = table.copy()
+    existing = table["Project"].astype(str).tolist()
+    missing = [name for name in existing if name not in order]
+    if missing:
+        order = list(order) + sorted(missing, key=_project_sort_key)
+    table["_order"] = pd.Categorical(table["Project"], categories=order, ordered=True)
+    table = table.sort_values("_order").drop(columns="_order").reset_index(drop=True)
+    return table
+
+
+def _apply_programme_schedule_export_order(
+    tables: Dict[str, pd.DataFrame],
+    order_by: str,
+) -> Dict[str, pd.DataFrame]:
+    if not tables:
+        return tables
+    order_by = (order_by or "project").strip().lower()
+    scenario_orders: Dict[str, List[str]] = {}
+    if order_by == "start_year":
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, kind = _split_gantt_export_label(name)
+            if scenario_label in scenario_orders:
+                continue
+            if "_gantt_order_idx" in table.columns:
+                ordered = table.sort_values("_gantt_order_idx", kind="stable")
+                scenario_orders[scenario_label] = ordered["Project"].astype(str).tolist()
+                continue
+            if kind == "Costs" and scenario_label not in scenario_orders:
+                scenario_orders[scenario_label] = _project_start_year_order(table)
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, _ = _split_gantt_export_label(name)
+            if scenario_label not in scenario_orders:
+                if "_gantt_order_idx" in table.columns:
+                    ordered = table.sort_values("_gantt_order_idx", kind="stable")
+                    scenario_orders[scenario_label] = ordered["Project"].astype(str).tolist()
+                else:
+                    scenario_orders[scenario_label] = _project_start_year_order(table)
+    else:
+        for name, table in tables.items():
+            if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+                continue
+            scenario_label, _ = _split_gantt_export_label(name)
+            if scenario_label not in scenario_orders:
+                scenario_orders[scenario_label] = _project_alpha_order(table)
+
+    ordered_tables: Dict[str, pd.DataFrame] = {}
+    for name, table in tables.items():
+        if not isinstance(table, pd.DataFrame) or "Project" not in table.columns:
+            ordered_tables[name] = table
+            continue
+        scenario_label, _ = _split_gantt_export_label(name)
+        order = scenario_orders.get(scenario_label, [])
+        ordered = _order_export_table(table, order)
+        ordered_tables[name] = ordered.drop(columns=["_gantt_order_idx"], errors="ignore")
+    return ordered_tables
 
 def prepare_schedule_export(
     data: DashboardData,
@@ -2645,21 +3968,24 @@ def prepare_capacity_export(series: Optional[pd.DataFrame]) -> Optional[pd.DataF
     return df.rename(columns={"Year": "Financial year"})
 
 
-def format_npv_context(rate: float, *horizon_values: Optional[int]) -> str:
-    """Describe the NPV scope including horizon and discount rate."""
-    rate_pct = float(rate) * 100.0
+def format_npv_context(*horizon_values: Optional[int], apply_discount: bool = True) -> str:
+    """Describe the benefit scope including horizon."""
     years = sorted({int(value) for value in horizon_values if value is not None})
+    label = "NPV" if apply_discount else "Benefits ($2025)"
     if not years:
-        return f"NPV @ {rate_pct:.1f}% discount"
+        return label
     if len(years) == 1:
-        return f"{years[0]}-year NPV @ {rate_pct:.1f}% discount"
-    horizon_text = '/'.join(str(year) for year in years)
-    return f"{horizon_text}-year NPV @ {rate_pct:.1f}% discount"
+        return f"{years[0]}-year {label}"
+    horizon_text = "/".join(str(year) for year in years)
+    return f"{horizon_text}-year {label}"
 
 
-def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horizon_override: Optional[int] = None) -> str:
-
-    rates: List[float] = []
+def npv_context_label(
+    data: DashboardData,
+    *selections: ScenarioSelection,
+    horizon_override: Optional[int] = None,
+    apply_discount: Optional[bool] = None,
+) -> str:
 
     horizons: List[int] = []
 
@@ -2670,18 +3996,6 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
             continue
 
         meta = selection.metadata or {}
-
-        rate = meta.get('BenRate')
-
-        if rate is not None:
-
-            try:
-
-                rates.append(float(rate))
-
-            except (TypeError, ValueError):
-
-                pass
 
         horizon = meta.get('HorizonYears')
 
@@ -2694,12 +4008,6 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
             except (TypeError, ValueError):
 
                 pass
-
-    rate_value: Optional[float] = rates[0] if rates else getattr(data, 'benefit_rate', None)
-
-    if rate_value is None:
-
-        rate_value = 0.0
 
     if horizon_override is not None:
 
@@ -2725,7 +4033,15 @@ def npv_context_label(data: DashboardData, *selections: ScenarioSelection, horiz
 
                 pass
 
-    return format_npv_context(rate_value, *horizons)
+    if apply_discount is None:
+        try:
+            import streamlit as st
+        except Exception:
+            apply_discount = False
+        else:
+            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    return format_npv_context(*horizons, apply_discount=bool(apply_discount))
 
 
 
@@ -2769,6 +4085,17 @@ def _sorted_profile_labels(labels: Iterable[str]) -> List[str]:
         ordered.insert(0, DEFAULT_PROFILE_LABEL)
 
     return ordered
+
+
+def _preferred_option_index(options: List[str], preferred: Optional[str]) -> int:
+    if not options:
+        return 0
+    target = str(preferred or "").strip().lower()
+    if target:
+        for idx, option in enumerate(options):
+            if str(option).strip().lower() == target:
+                return idx
+    return 0
 
 
 def profile_options(
@@ -3613,7 +4940,12 @@ def scenario_selector(
 
     )
 
-def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optional[pd.DataFrame]:
+def build_timeseries(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    apply_discount: Optional[bool] = None,
+) -> Optional[pd.DataFrame]:
 
     if not selection.code:
 
@@ -3670,18 +5002,26 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
     df["BenefitFlowDimension"] = pd.to_numeric(df.get("BenefitFlowDimension"), errors="coerce")
     df["BenefitFlow"] = df["BenefitFlowTotal"]
 
-    year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0)
+    if apply_discount is None:
+        try:
+            import streamlit as st
+        except Exception:
+            apply_discount = False
+        else:
+            apply_discount = bool(st.session_state.get("npv_apply_discount", False))
 
-    discount_base = 1.0 + data.benefit_rate
-
-    discount = np.power(discount_base, year_offsets.to_numpy())
-
-    discount[discount == 0] = 1.0
-
-    df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
+    if apply_discount:
+        year_offsets = (df["Year"].astype(int) - data.start_fy).clip(lower=0).to_numpy(dtype=int)
+        discount = mbcm_discount_divisors(year_offsets)
+        df["PVBenefitTotal"] = df["BenefitFlowTotal"] / discount
+    else:
+        df["PVBenefitTotal"] = df["BenefitFlowTotal"]
     df["PVBenefit"] = df["PVBenefitTotal"]
     if "BenefitFlowDimension" in df.columns:
-        df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0) / discount
+        if apply_discount:
+            df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0) / discount
+        else:
+            df["PVBenefitDimension"] = df["BenefitFlowDimension"].fillna(0.0)
 
     df["CumPVBenefitTotal"] = df["PVBenefitTotal"].cumsum()
     df["CumPVBenefit"] = df["CumPVBenefitTotal"]
@@ -3697,7 +5037,14 @@ def build_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optio
 
     return df
 
-def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizon_years: Optional[int] = None) -> Optional[Dict[str, float]]:
+def pv_by_dimension(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    horizon_years: Optional[int] = None,
+    apply_discount: Optional[bool] = None,
+    value_basis: Optional[str] = None,
+) -> Optional[Dict[str, float]]:
 
     if not selection.code:
 
@@ -3717,7 +5064,15 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
     base_years = pd.DataFrame({"Year": data.years})
 
-    rate = 1.0 + data.benefit_rate
+    if value_basis is None:
+        if apply_discount is None:
+            try:
+                import streamlit as st
+            except Exception:
+                apply_discount = False
+            else:
+                apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+        value_basis = VALUE_BASIS_PV if apply_discount else VALUE_BASIS_REAL
 
     ordered_dims = [dim for dim in data.dims if dim in dims_present.tolist()]
 
@@ -3739,25 +5094,21 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
         merged = base_years.merge(dim_rows, on="Year", how="left").fillna(0.0)
 
-        offsets = (merged["Year"].astype(int) - data.start_fy).clip(lower=0)
-
         if horizon_years is not None:
 
             try:
 
-                limit = max(int(horizon_years) - 1, 0)
+                limit_year = int(data.start_fy) + int(horizon_years) - 1
 
             except (TypeError, ValueError):
 
-                limit = None
+                limit_year = None
 
-            if limit is not None:
+            if limit_year is not None:
 
-                mask = offsets <= limit
+                mask = merged["Year"].astype(int) <= limit_year
 
                 merged = merged.loc[mask].copy()
-
-                offsets = offsets[mask]
 
         if merged.empty:
 
@@ -3765,11 +5116,10 @@ def pv_by_dimension(data: DashboardData, selection: ScenarioSelection, *, horizo
 
             continue
 
-        discount = np.power(rate, offsets.to_numpy())
-
-        discount[discount == 0] = 1.0
-
-        pv[str(dim)] = float((merged["BenefitFlow"] / discount).sum())
+        values = pd.to_numeric(merged["BenefitFlow"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        year_values = pd.to_numeric(merged["Year"], errors="coerce").fillna(data.start_fy).astype(int).to_numpy(dtype=int)
+        multipliers = value_basis_multiplier(int(data.start_fy), year_values, str(value_basis))
+        pv[str(dim)] = float((values * multipliers).sum())
 
     return pv or None
 
@@ -3797,13 +5147,19 @@ def scenario_metrics(
 
             window = df
 
+    spend_values = pd.to_numeric(window.get("Spend"), errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    year_values = pd.to_numeric(window.get("Year"), errors="coerce").fillna(start_year).astype(int).to_numpy(dtype=int)
+    year_offsets = np.clip(year_values - int(start_year), a_min=0, a_max=None)
+    spend_pv = float((spend_values / mbcm_discount_divisors(year_offsets)).sum()) if spend_values.size else 0.0
+
     return {
 
-        "total_spend": float(window["Spend"].sum()),
+        "total_spend": float(spend_values.sum()),
+        "total_spend_pv": spend_pv,
 
-        "total_benefit": float(window[benefit_col].sum()),
+        "total_benefit": float(pd.to_numeric(window.get(benefit_col), errors="coerce").fillna(0.0).sum()),
 
-        "total_pv": float(window[pv_col].sum()),
+        "total_pv": float(pd.to_numeric(window.get(pv_col), errors="coerce").fillna(0.0).sum()),
 
     }
 
@@ -3844,6 +5200,251 @@ def _effective_year_range(
         min_year = max_year
     return (min_year, max_year)
 
+
+def _annual_spend_breakdown_by_attribute(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    group_col: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    if group_col not in {"ActivityClass", "GPSTier", "Region", "StrategicDimension"}:
+        return None
+
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+
+    year_cols = [int(year) for year in years if year is not None and int(year) in subset.columns]
+    if not year_cols:
+        return None
+
+    values = subset[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    values.insert(0, "Project", subset["Project"].astype(str))
+    long = values.melt(id_vars="Project", value_vars=year_cols, var_name="Year", value_name="Spend")
+    long["Spend"] = pd.to_numeric(long["Spend"], errors="coerce").fillna(0.0)
+    long = long[long["Spend"].abs() > 1e-9]
+    if long.empty:
+        return None
+    long["Year"] = pd.to_numeric(long["Year"], errors="coerce").astype(int)
+    long["ProjectKey"] = long["Project"].map(_normalise_project_key)
+
+    mapping = load_project_attribute_mapping()
+    if mapping.empty or group_col not in mapping.columns:
+        mapping = _build_project_attribute_mapping(COST_BENEFIT_STREAMS_PATH)
+    if mapping.empty or group_col not in mapping.columns:
+        return None
+
+    merged = long.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
+
+    pivot = (
+        merged.pivot_table(index="Year", columns=group_col, values="Spend", aggfunc="sum", fill_value=0.0)
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+    if pivot.empty:
+        return None
+
+    totals = pivot.sum(axis=0).sort_values(ascending=False)
+    ordered = totals.index.tolist()
+    if "Unknown" in ordered:
+        ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
+    pivot = pivot[ordered]
+
+    return pivot
+
+
+def _annual_benefit_breakdown_by_attribute(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    group_col: str,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    if group_col not in {"ActivityClass", "GPSTier", "Region", "StrategicDimension"}:
+        return None
+
+    benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+    if benefit_table is None or benefit_table.empty:
+        return None
+
+    year_cols = [int(year) for year in years if year is not None and int(year) in benefit_table.columns]
+    if not year_cols:
+        return None
+
+    values = benefit_table[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    values.insert(0, "Project", benefit_table["Project"].astype(str))
+    long = values.melt(id_vars="Project", value_vars=year_cols, var_name="Year", value_name="Benefit")
+    long["Benefit"] = pd.to_numeric(long["Benefit"], errors="coerce").fillna(0.0)
+    long = long[long["Benefit"].abs() > 1e-9]
+    if long.empty:
+        return None
+    long["Year"] = pd.to_numeric(long["Year"], errors="coerce").astype(int)
+    long["ProjectKey"] = long["Project"].map(_normalise_project_key)
+
+    mapping = load_project_attribute_mapping()
+    if mapping.empty or group_col not in mapping.columns:
+        mapping = _build_project_attribute_mapping(COST_BENEFIT_STREAMS_PATH)
+    if mapping.empty or group_col not in mapping.columns:
+        return None
+
+    merged = long.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
+
+    pivot = (
+        merged.pivot_table(index="Year", columns=group_col, values="Benefit", aggfunc="sum", fill_value=0.0)
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+    if pivot.empty:
+        return None
+
+    totals = pivot.sum(axis=0).sort_values(ascending=False)
+    ordered = totals.index.tolist()
+    if "Unknown" in ordered:
+        ordered = [col for col in ordered if col != "Unknown"] + ["Unknown"]
+    pivot = pivot[ordered]
+
+    return pivot
+
+
+def _annual_cost_breakdown_by_dimension_weights(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    years: List[int],
+) -> Optional[pd.DataFrame]:
+    """Allocate spend by strategic dimension using project benefit weights."""
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    raw = _raw_result_for_code(data, selection.code)
+    if not raw:
+        return None
+    benefits = raw.get("benefits_by_project_dimension_by_year")
+    if not isinstance(benefits, pd.DataFrame) or benefits.empty:
+        return None
+
+    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    if cost_table is None or cost_table.empty:
+        return None
+
+    working = benefits.copy()
+    if isinstance(working.index, pd.MultiIndex):
+        working = working.reset_index()
+    if "Project" not in working.columns or "Dimension" not in working.columns:
+        return None
+
+    col_map = {col: int(str(col)) for col in working.columns if str(col).isdigit()}
+    if col_map:
+        working = working.rename(columns=col_map)
+
+    year_cols = [col for col in working.columns if isinstance(col, int)]
+    if not year_cols:
+        return None
+    year_cols = [col for col in year_cols if col in years]
+    if not year_cols:
+        return None
+
+    working[year_cols] = working[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    working["Project"] = working["Project"].astype(str)
+    working["Dimension"] = (
+        working["Dimension"]
+        .apply(_canonicalise_dimension_label)
+        .astype(str)
+        .str.strip()
+    )
+    working = working[working["Dimension"].ne("")]
+    working = working[working["Dimension"].str.strip().str.lower() != "total"]
+    if working.empty:
+        return None
+
+    dim_totals = (
+        working.groupby(["Project", "Dimension"], as_index=False)[year_cols]
+        .sum()
+    )
+    dim_totals["BenefitTotal"] = dim_totals[year_cols].sum(axis=1)
+    dim_totals = dim_totals[dim_totals["BenefitTotal"].abs() > 1e-9]
+    if dim_totals.empty:
+        return None
+
+    project_totals = dim_totals.groupby("Project")["BenefitTotal"].sum().rename("ProjectTotal")
+    dim_totals = dim_totals.merge(project_totals, on="Project", how="left")
+    dim_totals = dim_totals[dim_totals["ProjectTotal"] > 0]
+    if dim_totals.empty:
+        return None
+    dim_totals["Weight"] = dim_totals["BenefitTotal"] / dim_totals["ProjectTotal"]
+    weights = dim_totals[["Project", "Dimension", "Weight"]]
+
+    cost_year_cols = [col for col in cost_table.columns if isinstance(col, int)]
+    if not cost_year_cols:
+        return None
+    cost_year_cols = [col for col in cost_year_cols if col in years]
+    if not cost_year_cols:
+        return None
+
+    cost_long = cost_table.melt(
+        id_vars="Project",
+        value_vars=cost_year_cols,
+        var_name="Year",
+        value_name="Spend",
+    )
+    cost_long["Year"] = pd.to_numeric(cost_long["Year"], errors="coerce").astype(int)
+    cost_long["Spend"] = pd.to_numeric(cost_long["Spend"], errors="coerce").fillna(0.0)
+
+    merged = cost_long.merge(weights, on="Project", how="left")
+    merged["Weight"] = pd.to_numeric(merged["Weight"], errors="coerce").fillna(0.0)
+    merged["WeightedSpend"] = merged["Spend"] * merged["Weight"]
+
+    pivot = (
+        merged.pivot_table(
+            index="Year",
+            columns="Dimension",
+            values="WeightedSpend",
+            aggfunc="sum",
+            fill_value=0.0,
+        )
+        .reindex([int(year) for year in years], fill_value=0.0)
+    )
+    if pivot.empty:
+        return None
+
+    ordered: List[str] = []
+    for dim in getattr(data, "dims", []):
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label in pivot.columns and dim_label not in ordered:
+            ordered.append(dim_label)
+    for dim in pivot.columns:
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label not in ordered:
+            ordered.append(dim_label)
+    if ordered:
+        pivot = pivot[ordered]
+
+    return pivot
+
+
 def cash_chart(
 
     df: pd.DataFrame,
@@ -3853,6 +5454,8 @@ def cash_chart(
     *,
 
     color: str,
+
+    spend_breakdown: str = "Total",
 
     data: Optional[DashboardData] = None,
 
@@ -3883,27 +5486,68 @@ def cash_chart(
         np.concatenate(non_empty_samples) if non_empty_samples else [0.0]
     )
 
-    fig.add_trace(
+    breakdown_key = re.sub(r"\s+", " ", str(spend_breakdown or "Total").strip().lower())
+    group_col: Optional[str] = None
+    if breakdown_key == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_key == "region":
+        group_col = "Region"
+    elif breakdown_key in {"gps request tier", "gps tier request", "gps tier"}:
+        group_col = "GPSTier"
 
-        go.Bar(
-
-            x=df["Year"],
-
-            y=spend_values,
-
-            name="Annual spend",
-
-            marker_color=color,
-
-            opacity=BAR_OPACITY,
-
-            customdata=[format_large_amount(val) for val in spend_values],
-
-            hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
-
+    breakdown_table: Optional[pd.DataFrame] = None
+    if group_col and data is not None and selection is not None:
+        years = pd.to_numeric(df["Year"], errors="coerce").dropna().astype(int).tolist()
+        breakdown_table = _annual_spend_breakdown_by_attribute(
+            data,
+            selection,
+            group_col=group_col,
+            years=years,
         )
 
-    )
+    if breakdown_table is None or breakdown_table.empty:
+        fig.add_trace(
+            go.Bar(
+                x=df["Year"],
+                y=spend_values,
+                name="Annual spend",
+                marker_color=color,
+                opacity=BAR_OPACITY,
+                customdata=[format_large_amount(val) for val in spend_values],
+                hovertemplate="<b>Annual spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+            )
+        )
+    else:
+        group_labels = [str(col) for col in breakdown_table.columns]
+        unknown_mask = [label.strip().lower() == "unknown" for label in group_labels]
+        palette_count = len(group_labels) - sum(1 for flag in unknown_mask if flag)
+        if palette_count <= 0:
+            palette_count = len(group_labels)
+        palette_positions = (
+            [(0.55 + 0.95) / 2.0]
+            if palette_count == 1
+            else np.linspace(0.55, 0.95, palette_count).tolist()
+        )
+        palette = list(reversed(plc.sample_colorscale("Blues", palette_positions, colortype="rgb")))
+        palette_iter = iter(palette)
+        for label in group_labels:
+            if label.strip().lower() == "unknown":
+                trace_color = "rgb(156, 163, 175)"
+            else:
+                trace_color = next(palette_iter, "rgb(59, 130, 246)")
+            values_m = pd.to_numeric(breakdown_table[label], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            values_dollars = values_m * 1_000_000.0
+            fig.add_trace(
+                go.Bar(
+                    x=df["Year"],
+                    y=values_dollars,
+                    name=f"Spend: {label}",
+                    marker_color=trace_color,
+                    opacity=BAR_OPACITY,
+                    customdata=[format_large_amount(val) for val in values_dollars],
+                    hovertemplate=f"<b>Spend: {html.escape(label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+                )
+            )
 
     fig.add_trace(
 
@@ -3966,7 +5610,7 @@ def cash_chart(
 
         title=title,
 
-        barmode="overlay",
+        barmode="stack" if breakdown_table is not None and not breakdown_table.empty else "overlay",
 
         legend=legend_bottom(),
 
@@ -3985,7 +5629,1393 @@ def cash_chart(
     return fig
 
 
-def cumulative_revenue_vs_cost_chart(
+def _analysis_activity_classes(
+    spend_opt: Optional[pd.DataFrame],
+    spend_cmp: Optional[pd.DataFrame],
+    benefit_opt: Optional[pd.DataFrame],
+    benefit_cmp: Optional[pd.DataFrame],
+    *,
+    limit: int = 5,
+) -> List[str]:
+    totals = pd.Series(dtype=float)
+    for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+        if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+            totals = totals.add(pivot.sum(axis=0), fill_value=0.0)
+    if totals.empty:
+        columns: List[str] = []
+        for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+            if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+                columns.extend([str(col) for col in pivot.columns])
+        totals = pd.Series(1.0, index=pd.Index(columns)).groupby(level=0).sum()
+    if totals.empty:
+        return []
+    totals = totals[totals.index.astype(str).str.strip().str.lower() != "total"]
+    ordered = totals.sort_values(ascending=False).index.astype(str).tolist()
+    if limit > 0:
+        ordered = ordered[:limit]
+    return ordered
+
+
+def _analysis_dimension_labels(
+    data: DashboardData,
+    spend_opt: Optional[pd.DataFrame],
+    spend_cmp: Optional[pd.DataFrame],
+    benefit_opt: Optional[pd.DataFrame],
+    benefit_cmp: Optional[pd.DataFrame],
+    *,
+    limit: int = 0,
+) -> List[str]:
+    labels: List[str] = []
+    for dim in getattr(data, "dims", []) or []:
+        dim_label = str(dim).strip()
+        if not dim_label or dim_label.lower() == "total":
+            continue
+        if dim_label not in labels:
+            labels.append(dim_label)
+
+    for pivot in (spend_opt, spend_cmp, benefit_opt, benefit_cmp):
+        if isinstance(pivot, pd.DataFrame) and not pivot.empty:
+            for col in pivot.columns:
+                col_label = str(col).strip()
+                if not col_label:
+                    continue
+                if col_label.lower() in {"total", "unknown"}:
+                    continue
+                if col_label not in labels:
+                    labels.append(col_label)
+
+    if limit > 0 and len(labels) > limit:
+        env_label = next(
+            (label for label in labels if label.strip().lower() == "environmental sustainability"),
+            None,
+        )
+        trimmed = labels[:limit]
+        if env_label and env_label not in trimmed:
+            trimmed = labels[: max(limit - 1, 0)]
+            trimmed.append(env_label)
+        labels = trimmed
+
+    return labels
+
+
+def _analysis_series_for_class(
+    pivot: Optional[pd.DataFrame],
+    label: str,
+    years: List[int],
+) -> pd.Series:
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    if pivot is None or pivot.empty or label not in pivot.columns:
+        return pd.Series(0.0, index=year_index, dtype=float)
+    series = pd.to_numeric(pivot[label], errors="coerce").fillna(0.0)
+    series = pd.Series(series.to_numpy(dtype=float), index=pivot.index.astype(int))
+    return series.reindex(year_index, fill_value=0.0)
+
+
+def _analysis_last_nonzero_year(series: pd.Series) -> Optional[int]:
+    if series is None or series.empty:
+        return None
+    values = pd.to_numeric(series, errors="coerce").fillna(0.0)
+    mask = values.abs().to_numpy() > 1e-9
+    if not mask.any():
+        return None
+    years = pd.Index(series.index).astype(int)
+    return int(years[mask].max())
+
+
+def _analysis_max_year_for_classes(
+    classes: List[str],
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    years: List[int],
+) -> Optional[int]:
+    if not classes:
+        return None
+    last_years: List[int] = []
+    for label in classes:
+        series_opt = _analysis_series_for_class(pivot_opt, label, years)
+        series_cmp = _analysis_series_for_class(pivot_cmp, label, years)
+        last_opt = _analysis_last_nonzero_year(series_opt)
+        last_cmp = _analysis_last_nonzero_year(series_cmp)
+        candidates = [year for year in (last_opt, last_cmp) if year is not None]
+        if candidates:
+            last_years.append(max(candidates))
+    if not last_years:
+        return max(years) if years else None
+    return max(last_years)
+
+
+def _analysis_max_value_for_classes(
+    classes: List[str],
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    years: List[int],
+) -> float:
+    if not classes:
+        return 0.0
+    max_value = 0.0
+    for label in classes:
+        series_opt = _analysis_series_for_class(pivot_opt, label, years)
+        series_cmp = _analysis_series_for_class(pivot_cmp, label, years)
+        max_value = max(
+            max_value,
+            float(pd.to_numeric(series_opt, errors="coerce").fillna(0.0).max()),
+            float(pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).max()),
+        )
+    if max_value <= 0:
+        return 0.0
+    return max_value * 1_000_000.0 * 1.05
+
+
+def _analysis_sparkline_chart(
+    label: str,
+    years: List[int],
+    series_opt: pd.Series,
+    series_cmp: pd.Series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+    color_opt: str,
+    color_cmp: str,
+    x_max: Optional[int],
+    y_max: Optional[float],
+    show_xaxis: bool,
+) -> go.Figure:
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    opt_values = pd.to_numeric(series_opt, errors="coerce").fillna(0.0).to_numpy(dtype=float) * 1_000_000.0
+    cmp_values = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).to_numpy(dtype=float) * 1_000_000.0
+
+    fig = go.Figure()
+    if opt_label:
+        fig.add_trace(
+            go.Scatter(
+                x=year_index,
+                y=opt_values,
+                name=opt_label,
+                mode="lines",
+                line=dict(color=color_opt, width=2),
+                customdata=[format_large_amount(val) for val in opt_values],
+                hovertemplate=f"<b>{html.escape(opt_label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            )
+        )
+    if cmp_label:
+        fig.add_trace(
+            go.Scatter(
+                x=year_index,
+                y=cmp_values,
+                name=cmp_label,
+                mode="lines",
+                line=dict(color=color_cmp, width=2),
+                customdata=[format_large_amount(val) for val in cmp_values],
+                hovertemplate=f"<b>{html.escape(cmp_label)}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            )
+        )
+
+    min_year = int(year_index.min()) if len(year_index) else 0
+    max_year = int(x_max) if x_max is not None else (int(year_index.max()) if len(year_index) else min_year)
+    fig.update_layout(
+        title=dict(text=label, x=0.01, y=0.92, xanchor="left", yanchor="top", font=dict(size=12)),
+        height=120,
+        margin=dict(l=30, r=20, t=26, b=18 if show_xaxis else 6),
+        showlegend=False,
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+    )
+    fig.update_xaxes(
+        title=None,
+        showgrid=True,
+        showticklabels=show_xaxis,
+        range=[min_year - 0.4, max_year + 0.4],
+        zeroline=False,
+    )
+    yaxis_config: Dict[str, Any] = {
+        "title": None,
+        "showgrid": True,
+        "showticklabels": False,
+        "zeroline": False,
+    }
+    if y_max is not None and y_max > 0:
+        pad = float(y_max) * 0.02
+        if pad <= 0:
+            pad = 1.0
+        yaxis_config["range"] = [-pad, float(y_max) + pad]
+    fig.update_yaxes(**yaxis_config)
+    return fig
+
+
+def _timing_center_from_pivot(
+    pivot: Optional[pd.DataFrame],
+) -> Tuple[pd.Series, pd.Series]:
+    if pivot is None or pivot.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    years = pd.Index(pivot.index).astype(int)
+    totals = values.sum(axis=0)
+    weighted = values.mul(years, axis=0).sum(axis=0)
+    centers = weighted.divide(totals.replace(0.0, np.nan))
+    return centers.astype(float), totals.astype(float)
+
+
+def _overall_timing_center(pivot: Optional[pd.DataFrame]) -> Optional[float]:
+    if pivot is None or pivot.empty:
+        return None
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    totals_by_year = values.sum(axis=1)
+    total = float(totals_by_year.sum())
+    if total <= 0:
+        return None
+    years = pd.Index(pivot.index).astype(int)
+    weighted = (totals_by_year.to_numpy(dtype=float) * years.to_numpy(dtype=int)).sum()
+    return float(weighted / total)
+
+
+def _timing_paddle_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    centers_opt, totals_opt = _timing_center_from_pivot(pivot_opt)
+    centers_cmp, totals_cmp = _timing_center_from_pivot(pivot_cmp)
+
+    combined_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined_totals = combined_totals[combined_totals.abs() > 1e-9]
+    if combined_totals.empty:
+        return None
+
+    total_sum = float(combined_totals.sum())
+    categories = combined_totals.sort_values(ascending=False).index.astype(str).tolist()
+    share_labels: List[str] = []
+    for cat in categories:
+        share = (combined_totals.get(cat, 0.0) / total_sum * 100.0) if total_sum else 0.0
+        share_labels.append(f"{cat} ({share:.1f}%)")
+
+    line_x: List[Optional[float]] = []
+    line_y: List[str] = []
+    opt_x: List[float] = []
+    opt_y: List[str] = []
+    cmp_x: List[float] = []
+    cmp_y: List[str] = []
+    text_x: List[float] = []
+    text_y: List[str] = []
+    text_vals: List[str] = []
+
+    for cat, label in zip(categories, share_labels):
+        opt_val = centers_opt.get(cat, np.nan)
+        cmp_val = centers_cmp.get(cat, np.nan)
+        if np.isfinite(opt_val):
+            opt_x.append(float(opt_val))
+            opt_y.append(label)
+        if np.isfinite(cmp_val):
+            cmp_x.append(float(cmp_val))
+            cmp_y.append(label)
+        if np.isfinite(opt_val) and np.isfinite(cmp_val):
+            line_x.extend([float(opt_val), float(cmp_val), None])
+            line_y.extend([label, label, None])
+            delta = float(opt_val) - float(cmp_val)
+            text_x.append((float(opt_val) + float(cmp_val)) / 2.0)
+            text_y.append(label)
+            text_vals.append(f"{delta:+.1f}y")
+
+    overall_opt = _overall_timing_center(pivot_opt)
+    overall_cmp = _overall_timing_center(pivot_cmp)
+    if overall_opt is not None and overall_cmp is not None:
+        overall_shift = overall_opt - overall_cmp
+        overall_center = (overall_opt + overall_cmp) / 2.0
+    elif overall_opt is not None:
+        overall_shift = 0.0
+        overall_center = overall_opt
+    elif overall_cmp is not None:
+        overall_shift = 0.0
+        overall_center = overall_cmp
+    else:
+        overall_shift = 0.0
+        overall_center = None
+
+    fig = go.Figure()
+    if line_x:
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_y,
+                mode="lines",
+                line=dict(color="rgba(71, 85, 105, 0.6)", width=2.0),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    if opt_x:
+        fig.add_trace(
+            go.Scatter(
+                x=opt_x,
+                y=opt_y,
+                mode="markers",
+                marker=dict(color=PRIMARY_COLOR, size=9, line=dict(color="#ffffff", width=1)),
+                name=opt_label,
+                customdata=opt_x,
+                hovertemplate="<b>%{y}</b><br>Timing center: %{customdata:.1f}y<extra></extra>",
+            )
+        )
+    if cmp_x:
+        fig.add_trace(
+            go.Scatter(
+                x=cmp_x,
+                y=cmp_y,
+                mode="markers",
+                marker=dict(color=CAPACITY_HEAT_RED, size=9, line=dict(color="#ffffff", width=1)),
+                name=cmp_label,
+                customdata=cmp_x,
+                hovertemplate="<b>%{y}</b><br>Timing center: %{customdata:.1f}y<extra></extra>",
+            )
+        )
+    if text_x:
+        fig.add_trace(
+            go.Scatter(
+                x=text_x,
+                y=text_y,
+                mode="text",
+                text=text_vals,
+                textfont=dict(color="#0f172a", size=12),
+                textposition="top center",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    if overall_center is not None:
+        fig.add_vline(
+            x=overall_center,
+            line=dict(color="rgba(15, 23, 42, 0.45)", width=1.5, dash="dash"),
+        )
+
+    title_text = f"{breakdown_label} - overall programme timing shift: {overall_shift:+.2f} yrs"
+    height = max(360, 140 + len(categories) * 38)
+    fig.update_layout(
+        title=title_text,
+        xaxis_title="Year (weighted by spend)",
+        yaxis_title="Category (share of total spend)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(y=-0.28),
+        margin=dict(l=200, r=40, t=70, b=120),
+        height=height,
+    )
+    fig.update_xaxes(title_standoff=18)
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=share_labels[::-1],
+    )
+
+    return fig
+
+
+def _analysis_group_totals(pivot: Optional[pd.DataFrame]) -> pd.Series:
+    if pivot is None or pivot.empty:
+        return pd.Series(dtype=float)
+    values = pivot.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    return values.sum(axis=0).astype(float)
+
+
+def _analysis_group_order_and_share(
+    totals_opt: pd.Series,
+    totals_cmp: pd.Series,
+) -> Tuple[List[str], pd.Series]:
+    combined = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined = combined[combined.abs() > 1e-9]
+    if combined.empty:
+        return [], pd.Series(dtype=float)
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = combined
+    base_totals = base_totals.reindex(combined.index).fillna(0.0)
+    order = base_totals.sort_values(ascending=False).index.astype(str).tolist()
+    if "Unknown" in order:
+        order = [val for val in order if val != "Unknown"] + ["Unknown"]
+    total_sum = float(base_totals.sum())
+    share = base_totals / total_sum if total_sum > 0 else base_totals * 0.0
+    share = share.reindex(order).fillna(0.0)
+    return order, share
+
+
+def _analysis_matrix_from_pivot(
+    pivot: Optional[pd.DataFrame],
+    groups: List[str],
+    years: List[int],
+) -> pd.DataFrame:
+    if not groups or not years:
+        return pd.DataFrame()
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    if pivot is None or pivot.empty:
+        return pd.DataFrame(0.0, index=groups, columns=year_index)
+    values = (
+        pivot.reindex(index=year_index, columns=groups, fill_value=0.0)
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+    )
+    values = values.T
+    values.index = values.index.astype(str)
+    return values
+
+
+def _analysis_density_from_values(values: pd.DataFrame) -> pd.DataFrame:
+    if values is None or values.empty:
+        return pd.DataFrame()
+    totals = values.sum(axis=1).replace(0.0, np.nan)
+    density = values.divide(totals, axis=0).fillna(0.0)
+    return density
+
+
+def _analysis_heatmap_chart(
+    matrix: pd.DataFrame,
+    *,
+    title: str,
+    y_labels: List[str],
+    colorscale: List[Any],
+    customdata: Optional[List[List[str]]] = None,
+    zmin: Optional[float] = None,
+    zmax: Optional[float] = None,
+    zmid: Optional[float] = None,
+    hovertemplate: str,
+    show_colorbar: bool,
+    colorbar_title: Optional[str],
+    height: int,
+    left_margin: int,
+    right_margin: int,
+    show_ylabels: bool,
+) -> go.Figure:
+    years = matrix.columns.tolist()
+    fig = go.Figure(
+        go.Heatmap(
+            x=years,
+            y=y_labels,
+            z=matrix.to_numpy(dtype=float),
+            customdata=customdata,
+            colorscale=colorscale,
+            zmin=zmin,
+            zmax=zmax,
+            zmid=zmid,
+            showscale=show_colorbar,
+            xgap=0,
+            ygap=1,
+            hovertemplate=hovertemplate,
+            colorbar=dict(
+                title=colorbar_title or "",
+                len=0.72,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            )
+            if show_colorbar
+            else None,
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title=title,
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=left_margin, r=right_margin, t=70, b=50),
+    )
+    fig.update_xaxes(title="Year", showgrid=False, zeroline=False)
+    fig.update_yaxes(
+        title="Group (share of total spend)" if show_ylabels else None,
+        showgrid=False,
+        zeroline=False,
+        showticklabels=show_ylabels,
+        autorange="reversed",
+    )
+    return fig
+
+
+def _analysis_spend_density_charts(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    years: List[int],
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+    diff_mode: str,
+) -> Optional[Tuple[go.Figure, go.Figure, go.Figure]]:
+    totals_opt = _analysis_group_totals(pivot_opt)
+    totals_cmp = _analysis_group_totals(pivot_cmp)
+    groups, share = _analysis_group_order_and_share(totals_opt, totals_cmp)
+    if not groups or not years:
+        return None
+
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    last_year: Optional[int] = None
+    for pivot in (pivot_opt, pivot_cmp):
+        if pivot is None or pivot.empty:
+            continue
+        values = (
+            pivot.reindex(index=year_index, fill_value=0.0)
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0.0)
+        )
+        active = values.sum(axis=1)
+        active = active[active.abs() > 1e-9]
+        if not active.empty:
+            candidate = int(active.index.max())
+            last_year = candidate if last_year is None else max(last_year, candidate)
+    if last_year is None:
+        last_year = int(year_index.max())
+    trimmed_years = [int(year) for year in years if int(year) <= last_year]
+    if not trimmed_years:
+        trimmed_years = [int(year) for year in years]
+
+    values_opt = _analysis_matrix_from_pivot(pivot_opt, groups, trimmed_years)
+    values_cmp = _analysis_matrix_from_pivot(pivot_cmp, groups, trimmed_years)
+    density_opt = _analysis_density_from_values(values_opt)
+    density_cmp = _analysis_density_from_values(values_cmp)
+
+    diff_values = values_opt.subtract(values_cmp, fill_value=0.0)
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    base_totals = base_totals.reindex(groups).fillna(0.0).replace(0.0, np.nan)
+    diff_ratio = diff_values.divide(base_totals, axis=0).fillna(0.0)
+
+    label_share = (share.reindex(groups).fillna(0.0) * 100.0).to_numpy(dtype=float)
+    y_labels = [f"{group} ({pct:.1f}%)" for group, pct in zip(groups, label_share)]
+
+    density_max = float(
+        max(
+            density_opt.to_numpy(dtype=float).max() if not density_opt.empty else 0.0,
+            density_cmp.to_numpy(dtype=float).max() if not density_cmp.empty else 0.0,
+            0.05,
+        )
+    )
+
+    diff_matrix = diff_ratio if diff_mode == "relative" else diff_values
+    diff_max = float(np.nanmax(np.abs(diff_matrix.to_numpy(dtype=float)))) if not diff_matrix.empty else 0.0
+    if diff_max <= 0:
+        diff_max = 0.05 if diff_mode == "relative" else 1.0
+
+    height = max(300, int(len(groups) * 26 + 160))
+    density_scale = plc.sequential.Blues
+    diff_scale = plc.diverging.RdBu
+
+    opt_title = f"{opt_label}: density (row sums to 100%)"
+    cmp_title = f"{cmp_label}: density (row sums to 100%)"
+    diff_title = (
+        f"Differential density ({opt_label} - {cmp_label}), as % of group total"
+        if diff_mode == "relative"
+        else f"Differential spend ({opt_label} - {cmp_label}), absolute ($m)"
+    )
+
+    density_hover = "<b>%{y}</b><br>FY %{x}<br>Density: %{z:.2%}<extra></extra>"
+    diff_values_arr = diff_matrix.to_numpy(dtype=float)
+    if diff_mode == "relative":
+        diff_custom = [
+            ["" if not np.isfinite(val) else f"{val:+.2%}" for val in row]
+            for row in diff_values_arr
+        ]
+        diff_hover = "<b>%{y}</b><br>FY %{x}<br>Δ / group total: %{customdata}<extra></extra>"
+    else:
+        diff_custom = [
+            ["" if not np.isfinite(val) else f"{val:+,.2f}m" for val in row]
+            for row in diff_values_arr
+        ]
+        diff_hover = "<b>%{y}</b><br>FY %{x}<br>Δ spend: %{customdata}<extra></extra>"
+
+    fig_opt = _analysis_heatmap_chart(
+        density_opt.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=opt_title,
+        y_labels=y_labels,
+        colorscale=density_scale,
+        zmin=0.0,
+        zmax=density_max,
+        hovertemplate=density_hover,
+        show_colorbar=False,
+        colorbar_title=None,
+        height=height,
+        left_margin=180,
+        right_margin=20,
+        show_ylabels=True,
+    )
+    fig_cmp = _analysis_heatmap_chart(
+        density_cmp.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=cmp_title,
+        y_labels=y_labels,
+        colorscale=density_scale,
+        zmin=0.0,
+        zmax=density_max,
+        hovertemplate=density_hover,
+        show_colorbar=False,
+        colorbar_title=None,
+        height=height,
+        left_margin=40,
+        right_margin=20,
+        show_ylabels=False,
+    )
+    fig_diff = _analysis_heatmap_chart(
+        diff_matrix.reindex(index=groups).reindex(columns=trimmed_years, fill_value=0.0),
+        title=diff_title,
+        y_labels=y_labels,
+        colorscale=diff_scale,
+        customdata=diff_custom,
+        zmin=-diff_max,
+        zmax=diff_max,
+        zmid=0.0,
+        hovertemplate=diff_hover,
+        show_colorbar=True,
+        colorbar_title="Δ / group total" if diff_mode == "relative" else "Δ spend ($m)",
+        height=height,
+        left_margin=40,
+        right_margin=60,
+        show_ylabels=False,
+    )
+    return fig_opt, fig_cmp, fig_diff
+
+
+def _analysis_total_spend_by_year(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: pd.Index,
+) -> Optional[pd.Series]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+    year_cols = [int(year) for year in years if int(year) in subset.columns]
+    if not year_cols:
+        return None
+    totals = subset[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=0)
+    totals.index = pd.Index(year_cols, dtype=int)
+    return totals
+
+
+def _analysis_share_matrix(
+    pivot: pd.DataFrame,
+    totals_by_year: pd.Series,
+    *,
+    within_group: bool,
+) -> pd.DataFrame:
+    if pivot is None or pivot.empty:
+        return pd.DataFrame()
+    if within_group:
+        denom = pivot.sum(axis=1).replace(0.0, np.nan)
+    else:
+        denom = totals_by_year.replace(0.0, np.nan)
+    return pivot.div(denom, axis=0).fillna(0.0)
+
+
+def _analysis_zscore_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    means = frame.mean(axis=0)
+    stds = frame.std(axis=0, ddof=0).replace(0.0, np.nan)
+    return frame.sub(means, axis=1).div(stds, axis=1).fillna(0.0)
+
+
+def _analysis_clr_transform(frame: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if frame is None or frame.empty:
+        return None
+    values = frame.to_numpy(dtype=float)
+    positive = values[values > 0]
+    if positive.size == 0:
+        return None
+    pseudocount = float(np.min(positive)) * 0.5
+    if not np.isfinite(pseudocount) or pseudocount <= 0:
+        pseudocount = 1e-9
+    adjusted = np.where(values <= 0, pseudocount, values)
+    log_vals = np.log(adjusted)
+    mean_log = log_vals.mean(axis=1, keepdims=True)
+    clr_vals = log_vals - mean_log
+    return pd.DataFrame(clr_vals, index=frame.index, columns=frame.columns)
+
+
+def _analysis_correlation_help_text(
+    mode: str,
+    *,
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+) -> str:
+    if mode == "absolute":
+        if zscore:
+            return (
+                "Pearson correlation of annual spend levels by category.\n"
+                "Each category is z-scored before correlation to remove scale effects."
+            )
+        return "Pearson correlation of annual spend levels by category."
+    if mode == "yoy":
+        if change_basis == "share":
+            return (
+                "Pearson correlation of year-over-year changes in spend share by category.\n"
+                "Share is measured as a fraction of total annual spend."
+            )
+        return "Pearson correlation of year-over-year changes in annual spend by category."
+    if mode == "clr":
+        group_label = group_filter or "selected group"
+        return (
+            f"Aitchison-style correlation of CLR-transformed spend shares within {group_label}.\n"
+            "Uses a small pseudocount for zeros to avoid log(0)."
+        )
+    group_label = group_filter or "selected group"
+    return (
+        f"Pearson correlation of spend share time series within {group_label} only.\n"
+        "Avoids cross-group mixing (Tier vs Activity vs Region vs Dimension)."
+    )
+
+
+def _analysis_correlation_title(
+    mode: str,
+    *,
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+) -> str:
+    if mode == "absolute":
+        if zscore:
+            return "Correlation matrix - absolute spend (z-scored, Pearson r)"
+        return "Correlation matrix - absolute spend (Pearson r)"
+    if mode == "yoy":
+        basis_label = "spend share" if change_basis == "share" else "spend"
+        return f"Correlation matrix - YoY change in {basis_label} (Pearson r)"
+    if mode == "clr":
+        group_label = group_filter or "group"
+        return f"Correlation matrix - compositional CLR/Aitchison ({group_label})"
+    group_label = group_filter or "group"
+    return f"Correlation matrix - spend share by {group_label} (Pearson r)"
+
+
+def _analysis_correlation_matrix_data(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+    include_share_pct: bool = True,
+) -> Optional[pd.DataFrame]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    totals_by_year = _analysis_total_spend_by_year(data, selection, year_index)
+    if totals_by_year is None or totals_by_year.abs().sum() <= 1e-9:
+        return None
+    active_years = totals_by_year[totals_by_year.abs() > 1e-9]
+    if active_years.empty:
+        return None
+    last_year = int(active_years.index.max())
+    year_index = year_index[year_index <= last_year]
+    totals_by_year = totals_by_year.reindex(year_index).fillna(0.0)
+    overall_total = float(totals_by_year.sum())
+    if overall_total <= 0:
+        return None
+    if mode == "yoy" and len(year_index) < 2:
+        return None
+
+    series_entries: List[pd.Series] = []
+    label_entries: List[str] = []
+    share_entries: List[float] = []
+    group_specs = [
+        ("Activity", "ActivityClass", False),
+        ("Tier", "GPSTier", False),
+        ("Region", "Region", False),
+        ("Dimension", "StrategicDimension", True),
+    ]
+    if group_filter:
+        group_specs = [spec for spec in group_specs if spec[0] == group_filter]
+        if not group_specs:
+            return None
+    for prefix, group_col, is_dimension in group_specs:
+        if is_dimension:
+            pivot = _annual_cost_breakdown_by_dimension_weights(
+                data,
+                selection,
+                years=year_index.tolist(),
+            )
+        else:
+            pivot = _annual_spend_breakdown_by_attribute(
+                data,
+                selection,
+                group_col=group_col,
+                years=year_index.tolist(),
+            )
+        if pivot is None or pivot.empty:
+            continue
+        pivot = pivot.reindex(year_index, fill_value=0.0)
+        pivot = pivot.loc[:, pivot.abs().sum(axis=0) > 1e-9]
+        if pivot.empty:
+            continue
+        category_totals = pivot.sum(axis=0)
+        group_total = float(category_totals.sum())
+        if group_total <= 0:
+            continue
+        within_group_share = mode in {"group_share", "clr"} or (mode == "yoy" and change_basis == "share" and group_filter)
+        share_matrix = None
+        if mode in {"group_share", "clr"} or (mode == "yoy" and change_basis == "share"):
+            share_matrix = _analysis_share_matrix(
+                pivot,
+                totals_by_year,
+                within_group=within_group_share,
+            )
+        if mode == "absolute":
+            working = pivot
+        elif mode == "yoy":
+            if change_basis == "share" and share_matrix is not None and not share_matrix.empty:
+                working = share_matrix.diff().iloc[1:]
+            else:
+                working = pivot.diff().iloc[1:]
+        elif mode == "group_share":
+            working = share_matrix if share_matrix is not None else pd.DataFrame()
+        elif mode == "clr":
+            if share_matrix is None or share_matrix.empty:
+                continue
+            active_rows = share_matrix.sum(axis=1) > 1e-9
+            clr_source = share_matrix.loc[active_rows]
+            clr_matrix = _analysis_clr_transform(clr_source)
+            if clr_matrix is None or clr_matrix.empty:
+                continue
+            working = clr_matrix
+        else:
+            return None
+        if working is None or working.empty:
+            continue
+        for category in pivot.columns:
+            if category not in working.columns:
+                continue
+            series = working[category].astype(float)
+            if series.abs().sum() <= 1e-9:
+                continue
+            denom_total = group_total if mode in {"group_share", "clr"} or group_filter else overall_total
+            share_pct = (category_totals[category] / denom_total) * 100.0
+            if include_share_pct:
+                label = f"{prefix}: {category} ({share_pct:.1f}%)"
+            else:
+                label = f"{prefix}: {category}"
+            series_entries.append(series.rename(label))
+            label_entries.append(label)
+            share_entries.append(share_pct)
+
+    if not series_entries:
+        return None
+    data_matrix = pd.concat(series_entries, axis=1).fillna(0.0)
+    if data_matrix.shape[0] < 2 or data_matrix.shape[1] < 2:
+        return None
+    if mode == "absolute" and zscore:
+        data_matrix = _analysis_zscore_frame(data_matrix)
+    share_lookup = dict(zip(label_entries, share_entries))
+    group_priority = {"Activity": 0, "Tier": 1, "Region": 2, "Dimension": 3}
+    def _label_sort_key(label: str) -> Tuple[int, float, str]:
+        prefix = label.split(":", 1)[0].strip()
+        return (
+            group_priority.get(prefix, 99),
+            -float(share_lookup.get(label, 0.0)),
+            label,
+        )
+    if group_filter:
+        order = sorted(
+            data_matrix.columns,
+            key=lambda label: (-float(share_lookup.get(label, 0.0)), label),
+        )
+    else:
+        order = sorted(data_matrix.columns, key=_label_sort_key)
+    data_matrix = data_matrix[order]
+    corr = data_matrix.corr(method="pearson").fillna(0.0)
+    np.fill_diagonal(corr.values, 1.0)
+    return corr
+
+
+def _analysis_correlation_matrix_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+    include_share_pct: bool = True,
+    title_suffix: Optional[str] = None,
+) -> Optional[go.Figure]:
+    corr = _analysis_correlation_matrix_data(
+        data,
+        selection,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=include_share_pct,
+    )
+    if corr is None or corr.empty:
+        return None
+
+    labels = corr.columns.tolist()
+    height = max(420, 24 * len(labels) + 120)
+    title = _analysis_correlation_title(
+        mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+    )
+    if title_suffix:
+        title = f"{title} - {title_suffix}"
+    fig = go.Figure(
+        go.Heatmap(
+            x=labels,
+            y=labels,
+            z=corr.to_numpy(dtype=float),
+            zmin=-1.0,
+            zmax=1.0,
+            zmid=0.0,
+            colorscale=plc.diverging.RdBu,
+            colorbar=dict(
+                title="Pearson r",
+                len=0.75,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            hovertemplate="X=%{x}<br>Y=%{y}<br>r=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title=title,
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=220, r=60, t=70, b=140),
+    )
+    fig.update_xaxes(title=None, showgrid=False, zeroline=False, tickangle=-45)
+    fig.update_yaxes(title=None, showgrid=False, zeroline=False, autorange="reversed")
+    return fig
+
+
+def _analysis_correlation_matrix_delta_chart(
+    data: DashboardData,
+    selection_x: ScenarioSelection,
+    selection_y: ScenarioSelection,
+    years: List[int],
+    *,
+    mode: str = "absolute",
+    change_basis: str = "spend",
+    zscore: bool = False,
+    group_filter: Optional[str] = None,
+    label_x: str = "Scenario X",
+    label_y: str = "Scenario Y",
+) -> Optional[go.Figure]:
+    corr_x = _analysis_correlation_matrix_data(
+        data,
+        selection_x,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=False,
+    )
+    corr_y = _analysis_correlation_matrix_data(
+        data,
+        selection_y,
+        years,
+        mode=mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+        include_share_pct=False,
+    )
+    if corr_x is None or corr_y is None or corr_x.empty or corr_y.empty:
+        return None
+    common = corr_x.index.intersection(corr_y.index)
+    if len(common) < 2:
+        return None
+    order = [label for label in corr_x.columns if label in common]
+    corr_x = corr_x.reindex(index=order, columns=order)
+    corr_y = corr_y.reindex(index=order, columns=order)
+    diff = corr_x - corr_y
+    diff_max = float(np.nanmax(np.abs(diff.to_numpy(dtype=float)))) if not diff.empty else 0.0
+    if diff_max <= 1e-9:
+        diff_max = 1.0
+
+    labels = diff.columns.tolist()
+    height = max(420, 24 * len(labels) + 120)
+    base_title = _analysis_correlation_title(
+        mode,
+        change_basis=change_basis,
+        zscore=zscore,
+        group_filter=group_filter,
+    )
+    title = f"{base_title} delta ({label_x} - {label_y})"
+    fig = go.Figure(
+        go.Heatmap(
+            x=labels,
+            y=labels,
+            z=diff.to_numpy(dtype=float),
+            zmin=-diff_max,
+            zmax=diff_max,
+            zmid=0.0,
+            colorscale=plc.diverging.RdBu,
+            colorbar=dict(
+                title="Delta Pearson r",
+                len=0.75,
+                thickness=12,
+                x=1.02,
+                y=0.5,
+                ticks="outside",
+                outlinewidth=0,
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            hovertemplate="X=%{x}<br>Y=%{y}<br>delta r=%{z:.2f}<extra></extra>",
+        )
+    )
+    fig.update_traces(hoverlabel=_hoverlabel_style())
+    fig.update_layout(
+        title=title,
+        template=plotly_template(),
+        height=height,
+        margin=dict(l=220, r=60, t=70, b=140),
+    )
+    fig.update_xaxes(title=None, showgrid=False, zeroline=False, tickangle=-45)
+    fig.update_yaxes(title=None, showgrid=False, zeroline=False, autorange="reversed")
+    return fig
+
+
+def _analysis_delta_bar_line_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    years: List[int],
+    group_label: str,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if not years:
+        return None
+    year_index = pd.Index([int(year) for year in years], dtype=int)
+    series_opt = _analysis_series_for_class(pivot_opt, group_label, years)
+    series_cmp = _analysis_series_for_class(pivot_cmp, group_label, years)
+    if series_opt.abs().sum() <= 1e-9 and series_cmp.abs().sum() <= 1e-9:
+        return None
+
+    delta_m = pd.to_numeric(series_opt, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_m = delta_m - pd.to_numeric(series_cmp, errors="coerce").fillna(0.0).reindex(year_index, fill_value=0.0)
+    delta_nzd = delta_m.to_numpy(dtype=float) * 1_000_000.0
+    cumulative_nzd = np.cumsum(delta_nzd)
+
+    max_abs_annual = float(np.nanmax(np.abs(delta_nzd))) if delta_nzd.size else 0.0
+    max_abs_cum = float(np.nanmax(np.abs(cumulative_nzd))) if cumulative_nzd.size else 0.0
+    if max_abs_annual <= 0:
+        max_abs_annual = 1.0
+    if max_abs_cum <= 0:
+        max_abs_cum = 1.0
+    pad_annual = max_abs_annual * 0.05
+    pad_cum = max_abs_cum * 0.05
+    annual_ticks, annual_text, _ = compute_cash_axis_ticks([-max_abs_annual, max_abs_annual])
+    cumulative_ticks, cumulative_text, _ = compute_cash_axis_ticks([-max_abs_cum, max_abs_cum])
+
+    bar_color = POWERBI_GREEN
+    line_color = POWERBI_BLUE
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=year_index,
+            y=delta_nzd,
+            name="Annual Δ spend",
+            yaxis="y1",
+            marker_color=bar_color,
+            opacity=0.85,
+            customdata=[format_large_amount(val) for val in delta_nzd],
+            hovertemplate="<b>Annual Δ spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=year_index,
+            y=cumulative_nzd,
+            name="Cumulative Δ spend",
+            mode="lines",
+            line=dict(color=line_color, width=2),
+            yaxis="y2",
+            customdata=[format_large_amount(val) for val in cumulative_nzd],
+            hovertemplate="<b>Cumulative Δ spend</b><br>FY %{x}: %{customdata}<extra></extra>",
+        )
+    )
+    fig.add_hline(y=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1, dash="dash"))
+    fig.update_layout(
+        title=f"Annual Δ$ + cumulative Δ$ — {group_label}",
+        template=plotly_template(),
+        height=320,
+        margin=dict(l=70, r=70, t=60, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hoverlabel=_hoverlabel_style(),
+        yaxis=dict(
+            title="Annual Δ spend ($)",
+            tickvals=annual_ticks,
+            ticktext=annual_text,
+            range=[-(max_abs_annual + pad_annual), max_abs_annual + pad_annual],
+            zeroline=False,
+            showgrid=True,
+        ),
+        yaxis2=dict(
+            title="Cumulative Δ spend ($)",
+            tickvals=cumulative_ticks,
+            ticktext=cumulative_text,
+            range=[-(max_abs_cum + pad_cum), max_abs_cum + pad_cum],
+            zeroline=False,
+            showgrid=False,
+            overlaying="y",
+            side="right",
+        ),
+    )
+    min_year = int(year_index.min())
+    nonzero_mask = np.abs(delta_nzd) > 1e-9
+    if nonzero_mask.any():
+        max_year = int(year_index[nonzero_mask].max())
+    else:
+        max_year = int(year_index.max())
+    fig.update_xaxes(
+        title="Year",
+        showgrid=True,
+        zeroline=False,
+        range=[min_year - 0.4, max_year + 0.4],
+    )
+    return fig
+
+
+def _distribution_cost_chart(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if pivot_opt is None or pivot_opt.empty:
+        return None
+    totals = pivot_opt.apply(pd.to_numeric, errors="coerce").fillna(0.0).sum(axis=0)
+    totals = totals[totals.abs() > 1e-9]
+    if totals.empty:
+        return None
+
+    categories = totals.sort_values(ascending=False).index.astype(str).tolist()
+    values = totals.reindex(categories).fillna(0.0) * 1_000_000.0
+    total_sum = float(values.sum())
+
+    def _compact_amount_label(value: float) -> str:
+        abs_value = abs(value)
+        if abs_value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:.2f}b"
+        if abs_value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}m"
+        if abs_value >= 1_000:
+            return f"{value / 1_000:.2f}k"
+        return f"{value:.2f}"
+
+    fig = go.Figure()
+    share_labels = []
+    for val in values.to_numpy(dtype=float):
+        share = (val / total_sum * 100.0) if abs(total_sum) > 1e-9 else 0.0
+        share_labels.append(f"{share:.1f}%")
+    fig.add_trace(
+        go.Bar(
+            x=categories,
+            y=values.to_numpy(dtype=float),
+            name="Total cost",
+            marker_color=PRIMARY_COLOR,
+            customdata=[
+                [_compact_amount_label(val), share_label]
+                for val, share_label in zip(values.to_numpy(dtype=float), share_labels)
+            ],
+            hovertemplate=(
+                "<b>%{x}</b><br>Total cost: %{customdata[0]}"
+                "<br>% of total: %{customdata[1]}<extra></extra>"
+            ),
+        )
+    )
+
+    sample_values = values.to_numpy(dtype=float)
+    tick_vals, tick_text, _ = compute_cash_axis_ticks(sample_values, force_unit="b")
+
+    fig.update_layout(
+        title=f"Distribution of Total Cost by {breakdown_label}",
+        barmode="group",
+        template=plotly_template(),
+        showlegend=False,
+        margin=dict(l=40, r=30, t=60, b=80),
+        xaxis=dict(tickangle=-25, title=None),
+        yaxis=dict(title="Total cost (NZD)", tickmode="array", tickvals=tick_vals, ticktext=tick_text),
+        hoverlabel=dict(namelength=-1),
+    )
+
+    return fig
+
+
+def _timing_shift_summary(
+    pivot_opt: Optional[pd.DataFrame],
+    pivot_cmp: Optional[pd.DataFrame],
+) -> Optional[pd.DataFrame]:
+    centers_opt, totals_opt = _timing_center_from_pivot(pivot_opt)
+    centers_cmp, totals_cmp = _timing_center_from_pivot(pivot_cmp)
+    combined_totals = totals_opt.add(totals_cmp, fill_value=0.0)
+    combined_totals = combined_totals[combined_totals.abs() > 1e-9]
+    if combined_totals.empty:
+        return None
+    if totals_opt.abs().sum() > 1e-9:
+        base_totals = totals_opt
+    elif totals_cmp.abs().sum() > 1e-9:
+        base_totals = totals_cmp
+    else:
+        base_totals = combined_totals
+    base_totals = base_totals.reindex(combined_totals.index).fillna(0.0)
+    total_sum = float(base_totals.sum())
+    if total_sum <= 0:
+        return None
+    df = pd.DataFrame(
+        {
+            "Category": combined_totals.index.astype(str),
+            "Total": base_totals.to_numpy(dtype=float),
+            "SharePct": base_totals.to_numpy(dtype=float) / total_sum * 100.0,
+            "CenterOpt": centers_opt.reindex(combined_totals.index).to_numpy(dtype=float),
+            "CenterCmp": centers_cmp.reindex(combined_totals.index).to_numpy(dtype=float),
+        }
+    )
+    df["Shift"] = df["CenterOpt"] - df["CenterCmp"]
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=["Shift"])
+    if df.empty:
+        return None
+    return df
+
+
+def _importance_bubble_chart(
+    summary: pd.DataFrame,
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+) -> Optional[go.Figure]:
+    if summary is None or summary.empty:
+        return None
+    df = summary.sort_values("Total", ascending=False).copy()
+    sizes = df["Total"].to_numpy(dtype=float)
+    max_size = float(np.nanmax(sizes)) if sizes.size else 0.0
+    if max_size <= 0:
+        return None
+    desired_max = 60.0
+    sizeref = 2.0 * max_size / (desired_max**2)
+    show_text = len(df) <= 12
+    mode = "markers+text" if show_text else "markers"
+    text_values = df["Category"].astype(str).tolist() if show_text else None
+    text_positions = "top center"
+    text_color = "#E2E8F0" if is_dark_mode() else "#0F172A"
+
+    fig = go.Figure(
+        go.Scatter(
+            x=df["Shift"].to_numpy(dtype=float),
+            y=df["SharePct"].to_numpy(dtype=float),
+            mode=mode,
+            text=text_values,
+            textposition=text_positions,
+            textfont=dict(color=text_color, size=12),
+            marker=dict(
+                size=sizes,
+                sizemode="area",
+                sizeref=sizeref,
+                sizemin=8,
+                color=PRIMARY_COLOR,
+                line=dict(color="#ffffff", width=1),
+                opacity=0.78,
+            ),
+            customdata=np.stack([df["Category"], df["SharePct"], df["Total"]], axis=1),
+            hovertemplate=(
+                "<b>%{customdata[0]}</b>"
+                "<br>Shift: %{x:+.1f}y"
+                "<br>Spend share: %{customdata[1]:.1f}%"
+                "<br>Total spend: %{customdata[2]:,.1f}m"
+                "<extra></extra>"
+            ),
+        )
+    )
+    fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
+    fig.update_layout(
+        title=f"{breakdown_label} - bubble view (shift vs spend share; bubble size = total spend)",
+        xaxis_title=f"Raw timing shift (years) [{opt_label} - {cmp_label}]",
+        yaxis_title="Spend share (%)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        margin=dict(l=60, r=30, t=60, b=60),
+    )
+    return fig
+
+
+def _importance_rank_chart(
+    summary: pd.DataFrame,
+    *,
+    breakdown_label: str,
+    opt_label: str,
+    cmp_label: str,
+    category_order: Optional[List[str]] = None,
+) -> Optional[go.Figure]:
+    if summary is None or summary.empty:
+        return None
+    df = summary.copy()
+    if category_order:
+        order = [str(cat) for cat in category_order]
+        existing = df["Category"].astype(str).tolist()
+        remaining = [cat for cat in existing if cat not in order]
+        order = order + remaining
+        df["Category"] = df["Category"].astype(str)
+        df["Category"] = pd.Categorical(df["Category"], categories=order, ordered=True)
+        df = df.sort_values("Category")
+        df["Category"] = df["Category"].astype(str)
+    else:
+        df["AbsShift"] = df["Shift"].abs()
+        df = df.sort_values("AbsShift", ascending=False)
+    labels = [f"{cat} ({share:.1f}%)" for cat, share in zip(df["Category"], df["SharePct"])]
+    shifts = df["Shift"].to_numpy(dtype=float)
+    fig = go.Figure(
+        go.Bar(
+            x=shifts,
+            y=labels,
+            orientation="h",
+            marker_color=PRIMARY_COLOR,
+            text=[f"{val:+.1f}y" for val in shifts],
+            textposition="outside",
+            cliponaxis=False,
+            customdata=np.round(shifts, 2),
+            hovertemplate="<b>%{y}</b><br>Shift: %{customdata:+.2f}y<extra></extra>",
+        )
+    )
+    fig.add_vline(x=0, line=dict(color="rgba(15, 23, 42, 0.35)", width=1.2, dash="dash"))
+    fig.update_layout(
+        title=f"{breakdown_label} - timing shift",
+        xaxis_title=f"Raw timing shift (years) [{opt_label} - {cmp_label}]",
+        yaxis_title="Category (share of total spend)",
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        margin=dict(l=235, r=30, t=60, b=60),
+    )
+    fig.update_yaxes(categoryorder="array", categoryarray=labels[::-1], ticklabelstandoff=8)
+    return fig
+
+
+def cumulative_benefits_vs_cost_chart(
     df: pd.DataFrame,
     selection: ScenarioSelection,
     *,
@@ -3994,10 +7024,10 @@ def cumulative_revenue_vs_cost_chart(
     line_color: str = COMPARISON_COLOR,
 ) -> go.Figure:
     """
-    Show cumulative cost (stack-like bar per FY) vs cumulative revenue (improvements) as a line.
+    Show cumulative cost (stack-like bar per FY) vs cumulative benefits as a line.
    - Uses 'CumSpend' for cumulative costs.
-   - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
-   - Axis tick labels automatically switch between $m / $b.
+    - Uses 'CumPVBenefit' when the selection confidence implies 'real', otherwise 'CumBenefit'.
+    - Axis tick labels automatically switch between $m / $b.
     """
     fig = go.Figure()
 
@@ -4005,12 +7035,12 @@ def cumulative_revenue_vs_cost_chart(
     cum_cost = pd.to_numeric(df.get("CumSpend", 0.0), errors="coerce").fillna(0.0) * 1_000_000.0
 
     # Re-use existing helper to pick PV vs nominal series from confidence setting.
-    revenue_series, revenue_label = _benefit_series_and_label(df, selection, prefix="")
-    cum_revenue = pd.to_numeric(revenue_series, errors="coerce").fillna(0.0) * 1_000_000.0
-    is_real = "PV" in (revenue_label or "")
+    benefit_series, benefit_label = _benefit_series_and_label(df, selection, prefix="")
+    cum_benefit = pd.to_numeric(benefit_series, errors="coerce").fillna(0.0) * 1_000_000.0
+    is_real = "PV" in (benefit_label or "")
 
     # --- Axis ticks ($m / $b) ---
-    sample_values = np.concatenate([cum_cost.to_numpy(), cum_revenue.to_numpy()]) if len(df) else np.array([0.0])
+    sample_values = np.concatenate([cum_cost.to_numpy(), cum_benefit.to_numpy()]) if len(df) else np.array([0.0])
     tick_vals, tick_text, unit_label = compute_cash_axis_ticks(sample_values, force_unit="b")
 
     # --- Traces ---
@@ -4027,17 +7057,19 @@ def cumulative_revenue_vs_cost_chart(
         )
     )
 
-    # Line = cumulative revenue from improvements
-    rev_display_name = "Cumulative revenue (improvements, real $)" if is_real else "Cumulative revenue (improvements)"
+    # Line = cumulative benefits
+    benefit_display_name = (
+        "Cumulative benefits (real $2025)" if is_real else "Cumulative benefits ($)"
+    )
     fig.add_trace(
         go.Scatter(
             x=df["Year"],
-            y=cum_revenue,
-            name=rev_display_name,
+            y=cum_benefit,
+            name=benefit_display_name,
             mode="lines",
             line=dict(color=line_color, width=3.0),
-            customdata=[format_large_amount(v) for v in cum_revenue],
-            hovertemplate=f"<b>{rev_display_name}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
+            customdata=[format_large_amount(v) for v in cum_benefit],
+            hovertemplate=f"<b>{benefit_display_name}</b><br>FY %{{x}}: %{{customdata}}<extra></extra>",
         )
     )
 
@@ -4668,15 +7700,34 @@ def benefit_waterfall_chart(
 
     fig = go.Figure()
 
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    metric_token = "NPV" if apply_discount else "Benefit"
+    metric_phrase = "NPV" if apply_discount else "benefit"
+
     if not opt_selection.code or not cmp_selection.code:
 
-        fig.add_annotation(text="Select both scenarios to view the NPV waterfall", showarrow=False)
+        fig.add_annotation(
+            text=f"Select both scenarios to view the {metric_phrase} waterfall",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
         return fig
 
-    context_label = npv_context_label(data, opt_selection, cmp_selection, horizon_override=horizon_years)
+    context_label = npv_context_label(
+        data,
+        opt_selection,
+        cmp_selection,
+        horizon_override=horizon_years,
+        apply_discount=apply_discount,
+    )
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
@@ -4686,7 +7737,10 @@ def benefit_waterfall_chart(
 
     if not pv_opt or not pv_cmp:
 
-        fig.add_annotation(text="Dimension-level NPV data unavailable for the selected scenarios", showarrow=False)
+        fig.add_annotation(
+            text=f"Dimension-level {metric_phrase} data unavailable for the selected scenarios",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4714,10 +7768,10 @@ def benefit_waterfall_chart(
 
         total_dim = next((dim for dim in dims if str(dim).lower() == "total"), None)
 
-    delta_labels = [f"{dim} delta NPV" for dim in dim_sequence]
+    delta_labels = [f"{dim} delta {metric_token}" for dim in dim_sequence]
     delta_values = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    net_delta_label = "Net delta NPV"
+    net_delta_label = f"Net delta {metric_token}"
     net_delta_value = (
         pv_opt.get(total_dim, sum(pv_opt.values())) - pv_cmp.get(total_dim, sum(pv_cmp.values()))
         if total_dim
@@ -4733,7 +7787,7 @@ def benefit_waterfall_chart(
 
         go.Waterfall(
 
-            name="Delta Benefit Real",
+            name=f"Delta {metric_token}",
 
             orientation="v",
 
@@ -4759,7 +7813,7 @@ def benefit_waterfall_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} delta by dimension ({primary_label} - {comparison_label})",
+        title=f"Delta {context_label} by dimension - {primary_label} vs {comparison_label}",
 
         template=plotly_template(),
         hoverlabel=dict(namelength=-1),
@@ -4794,6 +7848,16 @@ def benefit_bridge_chart(
 
     fig = go.Figure()
 
+    try:
+        import streamlit as st
+    except Exception:
+        apply_discount = False
+    else:
+        apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+
+    metric_token = "NPV" if apply_discount else "Benefit"
+    metric_phrase = "NPV" if apply_discount else "benefit"
+
     primary_label = scenario_primary_label()
 
     comparison_label = scenario_comparison_label()
@@ -4807,12 +7871,16 @@ def benefit_bridge_chart(
         cmp_selection,
 
         horizon_override=horizon_years,
+        apply_discount=apply_discount,
 
     )
 
     if not opt_selection.code or not cmp_selection.code:
 
-        fig.add_annotation(text="Select both scenarios to build the NPV bridge", showarrow=False)
+        fig.add_annotation(
+            text=f"Select both scenarios to build the {metric_phrase} bridge",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4824,7 +7892,10 @@ def benefit_bridge_chart(
 
     if not pv_opt or not pv_cmp:
 
-        fig.add_annotation(text="Missing dimension NPV data for bridge", showarrow=False)
+        fig.add_annotation(
+            text=f"Missing dimension {metric_phrase} data for bridge",
+            showarrow=False,
+        )
 
         fig.update_layout(template=plotly_template())
 
@@ -4850,16 +7921,20 @@ def benefit_bridge_chart(
 
     bridge_diffs = [pv_opt.get(dim, 0.0) - pv_cmp.get(dim, 0.0) for dim in dim_sequence]
 
-    bridge_labels = [f"{dim} delta NPV" for dim in dim_sequence]
-    primary_internal = f"{primary_label} NPV total"
-    comparison_internal = f"{comparison_label} NPV total"
+    bridge_labels = [f"{dim} delta {metric_token}" for dim in dim_sequence]
+    primary_internal = f"{primary_label} {metric_token} total"
+    comparison_internal = f"{comparison_label} {metric_token} total"
     tickvals: Optional[List[str]] = None
     ticktext: Optional[List[str]] = None
     if primary_label == comparison_label:
-        primary_internal = f"{primary_label} NPV total (1)"
-        comparison_internal = f"{comparison_label} NPV total (2)"
+        primary_internal = f"{primary_label} {metric_token} total (1)"
+        comparison_internal = f"{comparison_label} {metric_token} total (2)"
         tickvals = [primary_internal, *bridge_labels, comparison_internal]
-        ticktext = [f"{primary_label} NPV total", *bridge_labels, f"{comparison_label} NPV total"]
+        ticktext = [
+            f"{primary_label} {metric_token} total",
+            *bridge_labels,
+            f"{comparison_label} {metric_token} total",
+        ]
     labels = [primary_internal] + bridge_labels + [comparison_internal]
 
     measures = ["absolute"] + ["relative"] * len(dim_sequence) + ["total"]
@@ -4867,16 +7942,19 @@ def benefit_bridge_chart(
     values = [total_opt] + [-delta for delta in bridge_diffs] + [total_cmp]
 
     hovertexts = [
-        f"{primary_label} NPV total: {total_opt:,.0f} m",
-        *[f"{dim} delta NPV: {delta:,.0f} m" for dim, delta in zip(dim_sequence, bridge_diffs)],
-        f"{comparison_label} NPV total: {total_cmp:,.0f} m",
+        f"{primary_label} {metric_token} total: {total_opt:,.0f} m",
+        *[
+            f"{dim} delta {metric_token}: {delta:,.0f} m"
+            for dim, delta in zip(dim_sequence, bridge_diffs)
+        ],
+        f"{comparison_label} {metric_token} total: {total_cmp:,.0f} m",
     ]
 
     fig.add_trace(
 
         go.Waterfall(
 
-            name="NPV bridge",
+            name=f"{metric_token} bridge",
 
             orientation="v",
 
@@ -4904,7 +7982,7 @@ def benefit_bridge_chart(
 
     fig.update_layout(
 
-        title=f"{context_label} bridge ({primary_label} to {comparison_label})",
+        title=f"Bridge {context_label} - {primary_label} to {comparison_label}",
 
         template=plotly_template(),
 
@@ -4969,23 +8047,88 @@ def efficiency_chart(
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
 
+    cost_basis = _resolve_value_basis(
+        "npv_cost_value_basis",
+        "npv_apply_cost_discount",
+        default=VALUE_BASIS_PV,
+    )
+    benefit_basis = _resolve_value_basis(
+        "npv_benefit_value_basis",
+        "npv_apply_discount",
+        default=VALUE_BASIS_PV,
+    )
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+
+    def _start_year() -> int:
+        for frame in (opt_df, cmp_df):
+            if frame is None or frame.empty:
+                continue
+            years_raw = pd.to_numeric(frame.get("Year"), errors="coerce").dropna()
+            if not years_raw.empty:
+                return int(years_raw.min())
+        return 2025
+
+    start_year = _start_year()
+
+    def _basis_descriptor(basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if basis_norm.startswith("pv"):
+            return "PV"
+        if basis_norm.startswith("nom"):
+            return "nominal"
+        return "real $2025"
+
+    def _scale_to_dollars(values: pd.Series) -> float:
+        values = pd.to_numeric(values, errors="coerce").fillna(0.0)
+        magnitude = float(values.abs().max()) if not values.empty else 0.0
+        if magnitude >= 10_000_000.0:
+            return 1.0
+        return 1_000_000.0
+
+    def _cumulative_flow(
+        frame: pd.DataFrame,
+        *,
+        flow_column: str,
+        basis: str,
+        horizon_years: Optional[int],
+    ) -> Tuple[pd.Series, pd.Series]:
+        years = pd.to_numeric(frame.get("Year"), errors="coerce").fillna(start_year).astype(int)
+        flows = pd.to_numeric(frame.get(flow_column), errors="coerce").fillna(0.0).astype(float)
+        if basis == VALUE_BASIS_PV and horizon_years:
+            limit_year = int(start_year) + int(horizon_years) - 1
+            flows = flows.where(years <= limit_year, 0.0)
+        multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), basis)
+        adjusted = flows.to_numpy(dtype=float) * multipliers
+        cumulative = pd.Series(np.cumsum(adjusted), index=frame.index, dtype=float)
+        return years, cumulative
+
     axis_samples: List[np.ndarray] = []
 
     series_opt = label_opt = None
 
     if opt_df is not None and not opt_df.empty:
-        spend_values = pd.to_numeric(opt_df["CumSpend"], errors="coerce").fillna(0.0) * 1_000_000.0
-        axis_samples.append(spend_values.to_numpy())
+        cost_years, cost_cum = _cumulative_flow(
+            opt_df,
+            flow_column="Spend",
+            basis=cost_basis,
+            horizon_years=pv_horizon_years if cost_basis == VALUE_BASIS_PV else None,
+        )
+        spend_scale = _scale_to_dollars(pd.to_numeric(opt_df.get("Spend"), errors="coerce").fillna(0.0))
+        spend_values = cost_cum * spend_scale
+        axis_samples.append(spend_values.to_numpy(dtype=float))
 
         fig.add_trace(
 
             go.Bar(
 
-                x=opt_df["Year"],
+                x=cost_years,
 
                 y=spend_values,
 
-                name=f"{primary_label} cumulative spend",
+                name=f"{primary_label} cumulative {_basis_descriptor(cost_basis)} spend",
 
                 marker_color=BRIGHT_PRIMARY_COLOR,
 
@@ -4993,31 +8136,49 @@ def efficiency_chart(
 
                 customdata=spend_values / 1_000_000_000.0,
 
-                hovertemplate=f"<b>{primary_label} cumulative spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
+                hovertemplate=f"<b>{primary_label} cumulative {_basis_descriptor(cost_basis)} spend</b><br>FY %{{x}}: %{{customdata:,.1f}}b<extra></extra>",
 
             )
 
         )
 
-        series_opt, label_opt = _benefit_series_and_label(opt_df, opt_selection, prefix=primary_label)
-        if isinstance(series_opt, pd.Series):
-            series_opt = pd.to_numeric(series_opt, errors="coerce").fillna(0.0) * 1_000_000.0
-            axis_samples.append(series_opt.to_numpy())
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in opt_df.columns else "BenefitFlow"
+        benefit_years_opt, benefit_cum_opt = _cumulative_flow(
+            opt_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        benefit_scale = _scale_to_dollars(
+            pd.to_numeric(opt_df.get(benefit_flow_col), errors="coerce").fillna(0.0)
+        )
+        series_opt = benefit_cum_opt * benefit_scale
+        label_opt = f"{primary_label} cumulative {_basis_descriptor(benefit_basis)} benefit"
+        axis_samples.append(series_opt.to_numpy(dtype=float))
 
     series_cmp = label_cmp = None
 
     if cmp_df is not None and not cmp_df.empty:
 
-        series_cmp, label_cmp = _benefit_series_and_label(cmp_df, cmp_selection, prefix=comparison_label)
-        if isinstance(series_cmp, pd.Series):
-            series_cmp = pd.to_numeric(series_cmp, errors="coerce").fillna(0.0) * 1_000_000.0
-            axis_samples.append(series_cmp.to_numpy())
+        benefit_flow_col = "BenefitFlowTotal" if "BenefitFlowTotal" in cmp_df.columns else "BenefitFlow"
+        benefit_years_cmp, benefit_cum_cmp = _cumulative_flow(
+            cmp_df,
+            flow_column=benefit_flow_col,
+            basis=benefit_basis,
+            horizon_years=pv_horizon_years if benefit_basis == VALUE_BASIS_PV else None,
+        )
+        benefit_scale = _scale_to_dollars(
+            pd.to_numeric(cmp_df.get(benefit_flow_col), errors="coerce").fillna(0.0)
+        )
+        series_cmp = benefit_cum_cmp * benefit_scale
+        label_cmp = f"{comparison_label} cumulative {_basis_descriptor(benefit_basis)} benefit"
+        axis_samples.append(series_cmp.to_numpy(dtype=float))
 
         fig.add_trace(
 
             go.Scatter(
 
-                x=cmp_df["Year"],
+                x=benefit_years_cmp,
 
                 y=series_cmp,
 
@@ -5053,7 +8214,7 @@ def efficiency_chart(
 
             go.Scatter(
 
-                x=opt_df["Year"],
+                x=benefit_years_opt,
 
                 y=series_opt,
 
@@ -5105,6 +8266,931 @@ def efficiency_chart(
         )
 
     return fig
+
+
+def _bcr_start_year(opt_df: Optional[pd.DataFrame], cmp_df: Optional[pd.DataFrame]) -> int:
+    for frame in (opt_df, cmp_df):
+        if frame is None or frame.empty:
+            continue
+        years_raw = pd.to_numeric(frame.get("Year"), errors="coerce").dropna()
+        if not years_raw.empty:
+            return int(years_raw.min())
+    return 2025
+
+
+def _bcr_series_from_frame(
+    frame: Optional[pd.DataFrame],
+    *,
+    start_year: int,
+    pv_horizon_years: Optional[int],
+) -> Optional[pd.Series]:
+    if frame is None or frame.empty:
+        return None
+    years = pd.to_numeric(frame.get("Year"), errors="coerce")
+    valid_mask = years.notna()
+    if not valid_mask.any():
+        return None
+    years = years[valid_mask].astype(int)
+    spend = pd.to_numeric(frame.get("Spend"), errors="coerce").fillna(0.0)
+    spend = spend[valid_mask].astype(float)
+    benefit_col = "BenefitFlowTotal" if "BenefitFlowTotal" in frame.columns else "BenefitFlow"
+    benefits = pd.to_numeric(frame.get(benefit_col), errors="coerce").fillna(0.0)
+    benefits = benefits[valid_mask].astype(float)
+    if pv_horizon_years:
+        limit_year = int(start_year) + int(pv_horizon_years) - 1
+        in_window = years <= limit_year
+        spend = spend.where(in_window, 0.0)
+        benefits = benefits.where(in_window, 0.0)
+    multipliers = value_basis_multiplier(int(start_year), years.to_numpy(dtype=int), VALUE_BASIS_PV)
+    spend_pv = spend.to_numpy(dtype=float) * multipliers
+    benefit_pv = benefits.to_numpy(dtype=float) * multipliers
+    cum_spend = np.cumsum(spend_pv)
+    cum_benefit = np.cumsum(benefit_pv)
+    bcr = np.divide(
+        cum_benefit,
+        cum_spend,
+        out=np.full_like(cum_benefit, np.nan, dtype=float),
+        where=cum_spend != 0,
+    )
+    return pd.Series(bcr, index=years.to_numpy(dtype=int))
+
+
+def bcr_time_series_chart(
+    opt_df: Optional[pd.DataFrame],
+    cmp_df: Optional[pd.DataFrame],
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[go.Figure]:
+    if (opt_df is None or opt_df.empty) and (cmp_df is None or cmp_df.empty):
+        return None
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
+    start_year = _bcr_start_year(opt_df, cmp_df)
+    try:
+        pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+    except (TypeError, ValueError):
+        pv_horizon_years = 60
+
+    series_opt = _bcr_series_from_frame(opt_df, start_year=start_year, pv_horizon_years=pv_horizon_years)
+    series_cmp = _bcr_series_from_frame(cmp_df, start_year=start_year, pv_horizon_years=pv_horizon_years)
+    if series_opt is None and series_cmp is None:
+        return None
+
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+
+    opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
+    cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
+
+    opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
+    cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
+
+    def _efficiency_sentence(diff_pct: Optional[float]) -> str:
+        if diff_pct is None or not np.isfinite(diff_pct):
+            return "Efficiency comparison unavailable"
+        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            diff_pct = 0.0
+            direction = "more"
+            arrow = ""
+        else:
+            direction = "more" if diff_pct >= 0 else "less"
+            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        return (
+            f"{primary_label} is {arrow} {abs(diff_pct):.1f}% {direction} "
+            f"efficient than {comparison_label}"
+        )
+
+    efficiency_messages: List[str] = []
+    if opt_aligned is not None and cmp_aligned is not None:
+        for opt_val, cmp_val in zip(opt_values, cmp_values):
+            if cmp_val and np.isfinite(opt_val) and np.isfinite(cmp_val):
+                diff_pct = ((opt_val / cmp_val) - 1.0) * 100.0
+            else:
+                diff_pct = None
+            efficiency_messages.append(_efficiency_sentence(diff_pct))
+    else:
+        efficiency_messages = [_efficiency_sentence(None) for _ in range(len(years_index))]
+
+    fig = go.Figure()
+    if opt_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=opt_values,
+                name=primary_label,
+                mode="lines",
+                line=dict(color=PRIMARY_COLOR, width=2.8),
+                customdata=efficiency_messages,
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata}</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    if cmp_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=cmp_values,
+                name=comparison_label,
+                mode="lines",
+                line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
+                customdata=efficiency_messages,
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<br><span style='display:inline-block;padding-top:8px;'>%{customdata}</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="BCR - Portfolio Weighted Average",
+        xaxis_title=None,
+        yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(),
+    )
+
+    return fig
+
+
+def _spend_weighted_bcr_series(
+    data: DashboardData,
+    selection: ScenarioSelection,
+) -> Optional[pd.Series]:
+    if data is None or selection is None or not getattr(selection, "code", None):
+        return None
+    spend_matrix = getattr(data, "spend_matrix", None)
+    if not isinstance(spend_matrix, pd.DataFrame) or spend_matrix.empty:
+        return None
+    subset = spend_matrix[spend_matrix["Code"] == selection.code].copy()
+    if subset.empty:
+        return None
+    years = [int(y) for y in getattr(data, "years", []) if y is not None]
+    year_cols = [int(year) for year in years if int(year) in subset.columns]
+    if not year_cols:
+        return None
+
+    cost_table = _scenario_project_cost_table(data, selection.code, years)
+    benefit_table = _scenario_project_benefit_table(data, selection.code, years)
+    base_year = int(getattr(data, "start_fy", 2025) or 2025)
+    new_bcr = _project_new_bcr_from_tables(
+        cost_table,
+        benefit_table,
+        base_year=base_year,
+    )
+    if new_bcr is None or new_bcr.empty:
+        return None
+
+    subset = subset[["Project"] + year_cols].copy()
+    subset["Project"] = subset["Project"].astype(str)
+    subset["ProjectKey"] = subset["Project"].map(_normalise_project_key)
+    merged = subset.merge(new_bcr, on="ProjectKey", how="left")
+    bcr_values = pd.to_numeric(merged.get("BCR (New)"), errors="coerce")
+    if bcr_values.isna().all():
+        return None
+
+    spend_matrix_vals = (
+        merged[year_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
+    bcr_array = bcr_values.to_numpy(dtype=float)
+
+    series_values: List[float] = []
+    for col_idx in range(spend_matrix_vals.shape[1]):
+        spend_vals = spend_matrix_vals[:, col_idx]
+        mask = np.isfinite(bcr_array) & (spend_vals > 1e-9)
+        if not mask.any():
+            series_values.append(np.nan)
+            continue
+        total_spend = float(spend_vals[mask].sum())
+        if total_spend <= 0:
+            series_values.append(np.nan)
+            continue
+        weighted = float((spend_vals[mask] * bcr_array[mask]).sum() / total_spend)
+        series_values.append(weighted)
+
+    return pd.Series(series_values, index=np.asarray(year_cols, dtype=int), dtype=float)
+
+
+def _spend_weighted_bcr_time_series_chart(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[go.Figure]:
+    if data is None:
+        return None
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+
+    series_opt = _spend_weighted_bcr_series(data, opt_selection)
+    series_cmp = _spend_weighted_bcr_series(data, cmp_selection)
+    if series_opt is None and series_cmp is None:
+        return None
+
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+
+    opt_aligned = series_opt.reindex(years_index) if series_opt is not None else None
+    cmp_aligned = series_cmp.reindex(years_index) if series_cmp is not None else None
+
+    opt_values = opt_aligned.to_numpy(dtype=float) if opt_aligned is not None else np.array([])
+    cmp_values = cmp_aligned.to_numpy(dtype=float) if cmp_aligned is not None else np.array([])
+
+    fig = go.Figure()
+    if opt_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=opt_values,
+                name=primary_label,
+                mode="lines",
+                line=dict(color=PRIMARY_COLOR, width=2.8),
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    if cmp_aligned is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=years_index,
+                y=cmp_values,
+                name=comparison_label,
+                mode="lines",
+                line=dict(color=CAPACITY_HEAT_RED, width=2.2, dash="dash"),
+                hovertemplate=(
+                    "<span style='color:#64748B;'>FY %{x}</span>"
+                    "<br><span style='display:inline-block;padding-top:4px;font-weight:400;font-size:1.02rem;'>"
+                    "%{y:.2f}x</span>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="BCR - Spend-weighted project average",
+        xaxis_title=None,
+        yaxis=dict(title=None, tickformat=".2f", rangemode="tozero"),
+        template=plotly_template(),
+        hoverlabel=dict(namelength=-1),
+        legend=legend_bottom(),
+    )
+    def _last_valid_year(series: Optional[pd.Series]) -> Optional[int]:
+        if series is None or series.empty:
+            return None
+        values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+        valid_mask = np.isfinite(values)
+        if not valid_mask.any():
+            return None
+        nonzero_mask = valid_mask & (np.abs(values) > 1e-9)
+        years = pd.Index(series.index).astype(int)
+        if nonzero_mask.any():
+            return int(years[nonzero_mask].max())
+        return int(years[valid_mask].max())
+
+    min_year = int(years_index.min()) if len(years_index) else None
+    max_candidates = [
+        year for year in (_last_valid_year(opt_aligned), _last_valid_year(cmp_aligned)) if year is not None
+    ]
+    max_year = max(max_candidates) if max_candidates else (int(years_index.max()) if len(years_index) else None)
+    if min_year is not None and max_year is not None and max_year >= min_year:
+        fig.update_xaxes(range=[min_year - 0.4, max_year + 0.4])
+    return fig
+
+
+def prepare_spend_weighted_bcr_export(
+    data: DashboardData,
+    opt_selection: ScenarioSelection,
+    cmp_selection: ScenarioSelection,
+) -> Optional[pd.DataFrame]:
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    series_opt = _spend_weighted_bcr_series(data, opt_selection)
+    series_cmp = _spend_weighted_bcr_series(data, cmp_selection)
+    if series_opt is None and series_cmp is None:
+        return None
+    years_index = pd.Index([], dtype=int)
+    for series in (series_opt, series_cmp):
+        if series is not None:
+            years_index = years_index.union(series.index)
+    years_index = years_index.sort_values()
+    export = pd.DataFrame({"Financial year": years_index.astype(int)})
+    if series_opt is not None:
+        export[f"{primary_label} spend-weighted BCR (New)"] = series_opt.reindex(years_index).to_numpy(dtype=float)
+    if series_cmp is not None:
+        export[f"{comparison_label} spend-weighted BCR (New)"] = series_cmp.reindex(years_index).to_numpy(dtype=float)
+    if export.shape[1] <= 1:
+        return None
+    return export
+
+COST_BENEFIT_STACK_COST_OPTIONS = (
+    "Activity Class",
+    "Region",
+    "GPS Request Tier",
+)
+
+CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS = (
+    "Total",
+    "Activity Class",
+    "Region",
+    "GPS Request Tier",
+)
+
+COST_BENEFIT_STACK_BENEFIT_OPTIONS = (
+    "Strategic Dimension",
+    "Region",
+    "Activity Class",
+)
+
+
+def _sample_stack_palette(name: str, n: int, *, start: float, end: float) -> List[str]:
+    if n <= 0:
+        return []
+    if n == 1:
+        positions = [(start + end) / 2.0]
+    else:
+        positions = np.linspace(start, end, n).tolist()
+    return plc.sample_colorscale(name, positions, colortype="rgb")
+
+
+def _discounted_table_totals(
+    table: pd.DataFrame,
+    years: List[int],
+    *,
+    start_year: int,
+    value_basis: str,
+) -> pd.Series:
+    if table.empty or "Project" not in table.columns:
+        return pd.Series(dtype=float)
+    safe_years = [int(y) for y in years if y in table.columns]
+    if not safe_years:
+        return pd.Series(dtype=float)
+    values = table[safe_years].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    multipliers = value_basis_multiplier(int(start_year), np.asarray(safe_years, dtype=int), value_basis)
+    totals = (values * multipliers).sum(axis=1)
+    return pd.Series(totals, index=table["Project"].astype(str).to_numpy())
+
+
+def _group_totals_by_mapping(
+    project_totals: pd.Series,
+    mapping: pd.DataFrame,
+    *,
+    group_col: str,
+    preferred_order: Optional[List[str]] = None,
+) -> pd.Series:
+    if project_totals.empty:
+        return pd.Series(dtype=float)
+    working = pd.DataFrame({"Project": project_totals.index, "Value": project_totals.to_numpy(dtype=float)})
+    working = working[working["Value"].abs() > 1e-9]
+    if working.empty:
+        return pd.Series(dtype=float)
+    working["ProjectKey"] = working["Project"].map(_normalise_project_key)
+    merged = working.merge(mapping[["ProjectKey", group_col]], on="ProjectKey", how="left")
+    merged[group_col] = merged[group_col].fillna("Unknown").astype(str)
+    if group_col == "GPSTier":
+        merged[group_col] = merged[group_col].map(_canonicalise_gps_tier)
+    grouped = merged.groupby(group_col, dropna=False)["Value"].sum().sort_values(ascending=False)
+    grouped = grouped[grouped.abs() > 1e-9]
+    if preferred_order:
+        lookup = {str(label).strip().lower(): label for label in grouped.index}
+        ordered: List[str] = []
+        for label in preferred_order:
+            key = str(label).strip().lower()
+            match = lookup.get(key)
+            if match is not None and match not in ordered:
+                ordered.append(match)
+        extras = [label for label in grouped.index if label not in ordered]
+        grouped = grouped.reindex(ordered + extras)
+    return grouped
+
+
+def _compute_cost_benefit_stack_series(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    pv_horizon_years: Optional[int],
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    cost_value_basis: str,
+    benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
+) -> Optional[Tuple[pd.Series, pd.Series, Optional[str], int]]:
+    if not selection or not selection.code:
+        return None
+
+    compare_code = getattr(compare_selection, "code", None) if compare_selection is not None else None
+    if compare_code == selection.code:
+        compare_code = None
+
+    start_year = int(getattr(data, "start_fy", 0) or 0)
+    model_years = int(getattr(data, "model_years", 0) or 0) or 60
+    years_full = [
+        int(y)
+        for y in getattr(data, "years", [])
+        if y is not None and start_year <= int(y) <= (start_year + model_years - 1)
+    ]
+    try:
+        pv_horizon_years_int = int(pv_horizon_years) if pv_horizon_years is not None else model_years
+    except (TypeError, ValueError):
+        pv_horizon_years_int = model_years
+    if pv_horizon_years_int <= 0:
+        pv_horizon_years_int = model_years
+    pv_end_year = start_year + pv_horizon_years_int - 1
+    years_pv = [year for year in years_full if year <= pv_end_year]
+    cost_years = years_pv if cost_value_basis == VALUE_BASIS_PV else years_full
+    benefit_years = years_pv if benefit_value_basis == VALUE_BASIS_PV else years_full
+
+    mapping = load_project_attribute_mapping()
+
+    def _benefit_scale_to_dollars(selection_value: ScenarioSelection, series: pd.Series) -> float:
+        if series is None or series.empty:
+            return 1.0
+        pv_total_raw: Optional[float] = None
+        raw = _raw_result_for_code(data, getattr(selection_value, "code", None))
+        if isinstance(raw, dict):
+            pv_total_raw = raw.get("benefit_pv_total")
+            if pv_total_raw is None:
+                pv_total_raw = raw.get("pv_total")
+        candidates: List[float] = []
+        for candidate in (pv_total_raw, series.sum()):
+            if candidate is None:
+                continue
+            try:
+                candidates.append(abs(float(candidate)))
+            except (TypeError, ValueError):
+                continue
+        magnitude = max(candidates) if candidates else 0.0
+        if magnitude <= 0:
+            return 1.0
+        return 1_000_000.0 if magnitude < 10_000_000.0 else 1.0
+
+    cost_group_col = "ActivityClass"
+    cost_order: Optional[List[str]] = None
+    if cost_breakdown == "Region":
+        cost_group_col = "Region"
+    elif cost_breakdown == "GPS Request Tier":
+        cost_group_col = "GPSTier"
+        cost_order = ["Must do", "Should do", "Could do", "Unknown"]
+
+    def _cost_series_for(code: str) -> pd.Series:
+        cost_table = _scenario_project_cost_table(data, code, cost_years)
+        if cost_table is None:
+            cost_table = pd.DataFrame()
+        cost_project_totals = _discounted_table_totals(
+            cost_table,
+            cost_years,
+            start_year=start_year,
+            value_basis=cost_value_basis,
+        )
+        series = _group_totals_by_mapping(
+            cost_project_totals,
+            mapping,
+            group_col=cost_group_col,
+            preferred_order=cost_order,
+        )
+        return series.astype(float)
+
+    def _benefit_series_for(selection_value: ScenarioSelection) -> pd.Series:
+        if benefit_breakdown == "Strategic Dimension":
+            pv_map = pv_by_dimension(
+                data,
+                selection_value,
+                horizon_years=pv_horizon_years_int if benefit_value_basis == VALUE_BASIS_PV else None,
+                value_basis=benefit_value_basis,
+            ) or {}
+            series = pd.Series(pv_map, dtype=float)
+            series.index = series.index.astype(str)
+            series = series[series.index.str.strip().str.lower() != "total"]
+            series = series[series.abs() > 1e-9]
+            return series.astype(float)
+
+        benefit_group_col = "Region" if benefit_breakdown == "Region" else "ActivityClass"
+        benefit_table = _scenario_project_benefit_table(data, selection_value.code, benefit_years)
+        if benefit_table is None:
+            benefit_table = pd.DataFrame()
+        benefit_project_totals = _discounted_table_totals(
+            benefit_table,
+            benefit_years,
+            start_year=start_year,
+            value_basis=benefit_value_basis,
+        )
+        series = _group_totals_by_mapping(
+            benefit_project_totals,
+            mapping,
+            group_col=benefit_group_col,
+        )
+        return series.astype(float)
+
+    cost_series = _cost_series_for(selection.code)
+    benefit_series = _benefit_series_for(selection)
+    benefit_series = benefit_series * _benefit_scale_to_dollars(selection, benefit_series)
+
+    if compare_code and compare_selection is not None and compare_selection.code:
+        cost_series_cmp = _cost_series_for(compare_selection.code)
+        benefit_series_cmp = _benefit_series_for(compare_selection)
+        benefit_series_cmp = benefit_series_cmp * _benefit_scale_to_dollars(compare_selection, benefit_series_cmp)
+
+        cost_index = cost_series.index.union(cost_series_cmp.index)
+        benefit_index = benefit_series.index.union(benefit_series_cmp.index)
+        cost_series = cost_series.reindex(cost_index, fill_value=0.0) - cost_series_cmp.reindex(
+            cost_index, fill_value=0.0
+        )
+        benefit_series = benefit_series.reindex(benefit_index, fill_value=0.0) - benefit_series_cmp.reindex(
+            benefit_index, fill_value=0.0
+        )
+        cost_series = cost_series[cost_series.abs() > 1e-9]
+        benefit_series = benefit_series[benefit_series.abs() > 1e-9]
+
+        if not cost_series.empty:
+            cost_series = cost_series.reindex(cost_series.abs().sort_values(ascending=False).index)
+        if not benefit_series.empty:
+            benefit_series = benefit_series.reindex(benefit_series.abs().sort_values(ascending=False).index)
+    else:
+        if not cost_series.empty:
+            cost_series = cost_series.sort_values(ascending=False)
+        if not benefit_series.empty:
+            benefit_series = benefit_series.sort_values(ascending=False)
+
+    return cost_series, benefit_series, compare_code, pv_horizon_years_int
+
+
+def cost_benefit_stack_chart(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    selection_label: str,
+    pv_horizon_years: Optional[int],
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    cost_value_basis: str,
+    benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
+) -> Optional[Tuple[go.Figure, List[Tuple[str, str]], List[Tuple[str, str]]]]:
+    series_result = _compute_cost_benefit_stack_series(
+        data,
+        selection,
+        pv_horizon_years=pv_horizon_years,
+        cost_breakdown=cost_breakdown,
+        benefit_breakdown=benefit_breakdown,
+        cost_value_basis=cost_value_basis,
+        benefit_value_basis=benefit_value_basis,
+        compare_selection=compare_selection,
+    )
+    if series_result is None:
+        return None
+
+    cost_series, benefit_series, compare_code, pv_horizon_years_int = series_result
+
+    cost_total_dollars = float(cost_series.sum() * 1_000_000.0) if not cost_series.empty else 0.0
+    benefit_total_dollars = float(benefit_series.sum()) if not benefit_series.empty else 0.0
+    cost_abs_total_dollars = float(cost_series.abs().sum() * 1_000_000.0) if not cost_series.empty else 0.0
+    benefit_abs_total_dollars = float(benefit_series.abs().sum()) if not benefit_series.empty else 0.0
+    cost_positive_dollars = 0.0
+    cost_negative_dollars = 0.0
+    benefit_positive_dollars = 0.0
+    benefit_negative_dollars = 0.0
+    if compare_code:
+        if not cost_series.empty:
+            cost_positive_dollars = float(cost_series[cost_series > 0].sum() * 1_000_000.0)
+            cost_negative_dollars = float(cost_series[cost_series < 0].sum() * 1_000_000.0)
+        if not benefit_series.empty:
+            benefit_positive_dollars = float(benefit_series[benefit_series > 0].sum())
+            benefit_negative_dollars = float(benefit_series[benefit_series < 0].sum())
+    axis_samples = []
+    if not cost_series.empty:
+        axis_samples.extend((cost_series.astype(float).to_numpy(dtype=float) * 1_000_000.0).tolist())
+    if not benefit_series.empty:
+        axis_samples.extend((benefit_series.astype(float).to_numpy(dtype=float)).tolist())
+    axis_samples.extend([cost_total_dollars, benefit_total_dollars])
+    if compare_code:
+        axis_samples.extend(
+            [
+                cost_positive_dollars,
+                cost_negative_dollars,
+                benefit_positive_dollars,
+                benefit_negative_dollars,
+            ]
+        )
+    axis_samples = [val for val in axis_samples if np.isfinite(val)]
+    if not axis_samples or max(abs(val) for val in axis_samples) <= 1e-6:
+        return None
+
+    def _segment_text(
+        value_dollars: float,
+        *,
+        total_dollars: float,
+        abs_total_dollars: float,
+    ) -> str:
+        try:
+            value_dollars = float(value_dollars)
+        except (TypeError, ValueError):
+            return ""
+        if not math.isfinite(value_dollars):
+            return ""
+
+        def _format_billions(value_billions: float) -> str:
+            value_billions = abs(float(value_billions))
+            if value_billions >= 10:
+                return f"{value_billions:.0f}"
+            text = f"{value_billions:.1f}"
+            return text.rstrip("0").rstrip(".")
+
+        if compare_code:
+            denom = float(abs_total_dollars) if abs_total_dollars else 0.0
+            if denom <= 0:
+                return ""
+            share = abs(value_dollars) / denom
+            if share < 0.08:
+                return ""
+            abs_billions = abs(value_dollars) / 1_000_000_000.0
+            if abs_billions < 0.5:
+                return ""
+            sign = "+" if value_dollars > 0 else "-"
+            return f"{sign}${_format_billions(abs_billions)}b"
+
+        if total_dollars <= 0 or value_dollars <= 0:
+            return ""
+        share = value_dollars / total_dollars if total_dollars else 0.0
+        if share < 0.08:
+            return ""
+        billions = value_dollars / 1_000_000_000.0
+        return f"${billions:.0f}b" if billions >= 1.0 else ""
+
+    fig = go.Figure()
+    gap_color = "#111111" if is_dark_mode() else "#FFFFFF"
+    segment_outline = dict(color=gap_color, width=2)
+
+    x_cost = "Costs \u0394" if compare_code else "Costs"
+    x_benefit = "Benefits \u0394" if compare_code else "Benefits"
+    hover_cost_prefix = "Costs \u0394" if compare_code else "Costs"
+    hover_benefit_prefix = "Benefits \u0394" if compare_code else "Benefits"
+
+    cost_labels = cost_series.index.astype(str).tolist()
+    cost_colors = list(reversed(_sample_stack_palette("Blues", len(cost_labels), start=0.55, end=0.95)))
+    cost_legend_items = [(str(label), str(color)) for label, color in zip(cost_labels, cost_colors)]
+    for label, color in zip(cost_labels, cost_colors):
+        value_m = float(cost_series.get(label, 0.0))
+        value_dollars = value_m * 1_000_000.0
+        fig.add_trace(
+            go.Bar(
+                x=[x_cost],
+                y=[value_dollars],
+                name=str(label),
+                marker=dict(color=color, line=segment_outline),
+                text=[
+                    _segment_text(
+                        value_dollars,
+                        total_dollars=cost_total_dollars,
+                        abs_total_dollars=cost_abs_total_dollars,
+                    )
+                ],
+                textposition="inside",
+                insidetextfont=dict(color="white", size=12),
+                constraintext="inside",
+                customdata=[format_large_amount(value_dollars)],
+                hovertemplate=f"<b>{hover_cost_prefix}: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+            )
+        )
+
+    benefit_labels = benefit_series.index.astype(str).tolist()
+    benefit_colors = list(reversed(_sample_stack_palette("YlGn", len(benefit_labels), start=0.15, end=0.65)))
+    benefit_legend_items = [(str(label), str(color)) for label, color in zip(benefit_labels, benefit_colors)]
+    for label, color in zip(benefit_labels, benefit_colors):
+        value_dollars = float(benefit_series.get(label, 0.0))
+        fig.add_trace(
+            go.Bar(
+                x=[x_benefit],
+                y=[value_dollars],
+                name=str(label),
+                marker=dict(color=color, line=segment_outline),
+                text=[
+                    _segment_text(
+                        value_dollars,
+                        total_dollars=benefit_total_dollars,
+                        abs_total_dollars=benefit_abs_total_dollars,
+                    )
+                ],
+                textposition="inside",
+                insidetextfont=dict(color="#111111", size=12),
+                constraintext="inside",
+                customdata=[format_large_amount(value_dollars)],
+                hovertemplate=f"<b>{hover_benefit_prefix}: {html.escape(label)}</b><br>%{{customdata}}<extra></extra>",
+            )
+        )
+
+    title_horizon = (
+        f" {pv_horizon_years_int}Y"
+        if (cost_value_basis == VALUE_BASIS_PV or benefit_value_basis == VALUE_BASIS_PV)
+        else ""
+    )
+    title_prefix = "Costs vs benefits delta" if compare_code else "Costs vs benefits stack"
+    fig.update_layout(
+        title=f"{title_prefix}{title_horizon} - {selection_label}",
+        template=plotly_template(),
+        barmode="relative" if compare_code else "stack",
+        bargap=0.28,
+        barcornerradius=6,
+        uniformtext=dict(minsize=10, mode="hide"),
+        hoverlabel=dict(namelength=-1),
+        showlegend=False,
+        margin=dict(l=70, r=20, t=56, b=54, autoexpand=False),
+        height=480,
+    )
+    if any(val < -1e-9 for val in axis_samples):
+        fig.add_hline(y=0, line=dict(color="#111111", width=2))
+
+    ticks_vals, ticks_text, _ = compute_cash_axis_ticks(
+        axis_samples,
+        force_unit="b",
+    )
+    fig.update_yaxes(
+        title=None,
+        tickmode="array",
+        tickvals=ticks_vals,
+        ticktext=ticks_text,
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="rgba(0,0,0,0.08)",
+    )
+    fig.update_xaxes(title=None, showgrid=False)
+    return fig, cost_legend_items, benefit_legend_items
+
+
+def prepare_cost_benefit_stack_export(
+    data: DashboardData,
+    selection: ScenarioSelection,
+    *,
+    selection_label: str,
+    pv_horizon_years: Optional[int],
+    cost_breakdown: str,
+    benefit_breakdown: str,
+    cost_value_basis: str,
+    benefit_value_basis: str,
+    compare_selection: Optional[ScenarioSelection] = None,
+) -> Optional[pd.DataFrame]:
+    series_result = _compute_cost_benefit_stack_series(
+        data,
+        selection,
+        pv_horizon_years=pv_horizon_years,
+        cost_breakdown=cost_breakdown,
+        benefit_breakdown=benefit_breakdown,
+        cost_value_basis=cost_value_basis,
+        benefit_value_basis=benefit_value_basis,
+        compare_selection=compare_selection,
+    )
+    if series_result is None:
+        return None
+
+    cost_series, benefit_series, compare_code, _ = series_result
+    if cost_series.empty and benefit_series.empty:
+        return None
+
+    rows: List[Dict[str, Any]] = []
+    cost_label = "Costs Δ" if compare_code else "Costs"
+    benefit_label = "Benefits Δ" if compare_code else "Benefits"
+    for label, value in cost_series.items():
+        rows.append(
+            {
+                "Selection": selection_label,
+                "Series": cost_label,
+                "Breakdown": cost_breakdown,
+                "Category": str(label),
+                "Value ($)": float(value) * 1_000_000.0,
+            }
+        )
+    for label, value in benefit_series.items():
+        rows.append(
+            {
+                "Selection": selection_label,
+                "Series": benefit_label,
+                "Breakdown": benefit_breakdown,
+                "Category": str(label),
+                "Value ($)": float(value),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_cost_benefit_stack_legend(
+    cost_items: List[Tuple[str, str]],
+    benefit_items: List[Tuple[str, str]],
+    *,
+    columns_per_section: int = 2,
+) -> None:
+    if not cost_items and not benefit_items:
+        return
+
+    divider = "rgba(255, 255, 255, 0.22)" if is_dark_mode() else "rgba(15, 23, 42, 0.14)"
+
+    def _split(items: List[Tuple[str, str]]) -> List[List[Tuple[str, str]]]:
+        if columns_per_section <= 1 or len(items) <= 1:
+            return [items]
+        cols = max(1, int(columns_per_section))
+        per_col = int(math.ceil(len(items) / cols))
+        return [items[i * per_col : (i + 1) * per_col] for i in range(cols)]
+
+    def _item_html(label: str, color: str) -> str:
+        safe_label = html.escape(str(label))
+        safe_color = html.escape(str(color))
+        return (
+            f'<div class="copt-stack-legend-item" title="{safe_label}">'
+            f'<span class="copt-stack-legend-swatch" style="background:{safe_color};"></span>'
+            f'<span class="copt-stack-legend-label">{safe_label}</span>'
+            f"</div>"
+        )
+
+    def _section_html(title: str, items: List[Tuple[str, str]]) -> str:
+        if not items:
+            return ""
+        cols = _split(items)
+        cols_html = "".join(
+            f'<div class="copt-stack-legend-col">{"".join(_item_html(label, color) for label, color in col)}</div>'
+            for col in cols
+            if col
+        )
+        safe_title = html.escape(title)
+        return (
+            '<div class="copt-stack-legend-section">'
+            f'<div class="copt-stack-legend-title">{safe_title}</div>'
+            f'<div class="copt-stack-legend-columns">{cols_html}</div>'
+            "</div>"
+        )
+
+    html_block = f"""
+<style>
+.copt-stack-legend-container {{
+  display: flex;
+  gap: 18px;
+  margin-top: 10px;
+}}
+.copt-stack-legend-section {{
+  flex: 1 1 0;
+  min-width: 0;
+}}
+.copt-stack-legend-section + .copt-stack-legend-section {{
+  border-left: 1px solid {divider};
+  padding-left: 18px;
+}}
+.copt-stack-legend-title {{
+  font-weight: 600;
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+}}
+.copt-stack-legend-columns {{
+  display: flex;
+  gap: 18px;
+}}
+.copt-stack-legend-col {{
+  flex: 1 1 0;
+  min-width: 0;
+}}
+.copt-stack-legend-item {{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0;
+  min-width: 0;
+}}
+.copt-stack-legend-swatch {{
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 10px;
+}}
+.copt-stack-legend-label {{
+  font-size: 0.74rem;
+  line-height: 1.25;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}}
+</style>
+<div class="copt-stack-legend-container">
+  {_section_html("Costs", cost_items)}
+  {_section_html("Benefits", benefit_items)}
+</div>
+"""
+    st.markdown(html_block, unsafe_allow_html=True)
 
 def dimension_timeseries(data: DashboardData, selection: ScenarioSelection) -> Optional[pd.DataFrame]:
 
@@ -6277,19 +10363,11 @@ def _kpi_card_html(
     return "\n".join(parts)
 
 
-def render_programme_kpis(
-    stats_opt: dict | None,
-    stats_cmp: dict | None,
-    *,
-    opt_selection: Optional[ScenarioSelection],
-    cmp_selection: Optional[ScenarioSelection],
-    npv_label: str,
+def render_solver_gap_kpis(
+    opt_selection: Optional["ScenarioSelection"],
+    cmp_selection: Optional["ScenarioSelection"],
 ) -> None:
-    """Render the overview KPI card grid."""
     import streamlit as st
-
-    def _fmt(value: float | None) -> str:
-        return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
 
     def _fmt_gap(value: float | None) -> str:
         try:
@@ -6302,40 +10380,218 @@ def render_programme_kpis(
 
     primary_label = scenario_primary_label()
     comparison_label = scenario_comparison_label()
-    pair_label = scenario_pair_label()
     opt_meta = opt_selection.metadata if opt_selection else {}
     cmp_meta = cmp_selection.metadata if cmp_selection else {}
     opt_gap = opt_meta.get("Gap") if isinstance(opt_meta, dict) else None
     cmp_gap = cmp_meta.get("Gap") if isinstance(cmp_meta, dict) else None
 
-    opt_spend = float(stats_opt.get("total_spend")) if stats_opt and stats_opt.get("total_spend") is not None else None
-    cmp_spend = float(stats_cmp.get("total_spend")) if stats_cmp and stats_cmp.get("total_spend") is not None else None
-    opt_pv = float(stats_opt.get("total_pv")) if stats_opt and stats_opt.get("total_pv") is not None else None
-    cmp_pv = float(stats_cmp.get("total_pv")) if stats_cmp and stats_cmp.get("total_pv") is not None else None
+    grid_token = uuid4().hex[:8]
+    anim_name = f"kpiSweep_{grid_token}"
+    style_block = textwrap.dedent(
+        f"""
+        <style>
+        @keyframes {anim_name} {{
+            0% {{ transform: translateY(-3px) scaleX(0); }}
+            100% {{ transform: translateY(-3px) scaleX(1); }}
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card::after {{
+            animation: {anim_name} 0.275s ease-out forwards;
+        }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(1)::after {{ animation-delay: 0ms; }}
+        [data-kpi-grid-id="{grid_token}"] .kpi-card:nth-of-type(2)::after {{ animation-delay: 0ms; }}
+        </style>
+        """
+    )
+    cards = [
+        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
+        _kpi_card_html(
+            f"{primary_label} solver relative gap",
+            _fmt_gap(opt_gap),
+        ),
+        _kpi_card_html(
+            f"{comparison_label} solver relative gap",
+            _fmt_gap(cmp_gap),
+        ),
+        "</div>",
+    ]
+    st.markdown(style_block + "".join(cards), unsafe_allow_html=True)
 
+
+def render_programme_kpis(
+    opt_series: pd.DataFrame | None,
+    cmp_series: pd.DataFrame | None,
+    *,
+    data: DashboardData,
+    opt_selection: Optional[ScenarioSelection],
+    cmp_selection: Optional[ScenarioSelection],
+) -> None:
+    """Render the overview KPI card grid."""
+    import streamlit as st
+
+    def _fmt(value: float | None) -> str:
+        return format_currency(value) if (value is not None and np.isfinite(value)) else "-"
+
+    def _fmt_ratio(value: float | None) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if not np.isfinite(numeric):
+            return "-"
+        return f"{numeric:.2f}"
+
+    def _fmt_abs(value: float | None) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if not np.isfinite(numeric):
+            return "-"
+        return format_currency(abs(numeric))
+
+    primary_label = scenario_primary_label()
+    comparison_label = scenario_comparison_label()
+    pair_label = scenario_pair_label()
+
+    benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+    cost_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+    pv_horizon_years = None
+    if benefit_basis == VALUE_BASIS_PV or cost_basis == VALUE_BASIS_PV:
+        try:
+            pv_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+        except (TypeError, ValueError):
+            pv_horizon_years = 60
+
+    def _basis_label(kind: str, basis: str) -> str:
+        basis_norm = (basis or "").strip().lower()
+        if kind == "benefit":
+            if basis_norm.startswith("pv"):
+                return "NPV benefits"
+            if basis_norm.startswith("nom"):
+                return "Benefits (nominal)"
+            return "Benefits ($2025)"
+        if basis_norm.startswith("pv"):
+            return "NPV expenditure"
+        if basis_norm.startswith("nom"):
+            return "Expenditure (nominal)"
+        return "Expenditure ($2025)"
+
+    def _total_from_series(series: pd.DataFrame | None, column: str, basis: str) -> float | None:
+        if series is None or series.empty:
+            return None
+        if "Year" not in series.columns:
+            return None
+        values = pd.to_numeric(series.get(column), errors="coerce").fillna(0.0)
+        years = pd.to_numeric(series.get("Year"), errors="coerce").fillna(data.start_fy).astype(int)
+        mask = years.notna()
+        if not mask.any():
+            return None
+        values = values.loc[mask].astype(float)
+        years = years.loc[mask].astype(int)
+        if basis == VALUE_BASIS_PV and pv_horizon_years:
+            limit_year = int(data.start_fy) + int(pv_horizon_years) - 1
+            horizon_mask = years <= limit_year
+            values = values.loc[horizon_mask]
+            years = years.loc[horizon_mask]
+        multipliers = value_basis_multiplier(int(data.start_fy), years.to_numpy(dtype=int), basis)
+        return float((values.to_numpy(dtype=float) * multipliers).sum())
+
+    benefit_col = "BenefitFlowTotal" if opt_series is not None and "BenefitFlowTotal" in opt_series.columns else "BenefitFlow"
+    opt_benefit = _total_from_series(opt_series, benefit_col, benefit_basis)
+    cmp_benefit = _total_from_series(cmp_series, benefit_col, benefit_basis)
+    delta_benefit = (opt_benefit - cmp_benefit) if (opt_benefit is not None and cmp_benefit is not None) else None
+
+    opt_spend = _total_from_series(opt_series, "Spend", cost_basis)
+    cmp_spend = _total_from_series(cmp_series, "Spend", cost_basis)
     delta_spend = (opt_spend - cmp_spend) if (opt_spend is not None and cmp_spend is not None) else None
-    delta_pv = (opt_pv - cmp_pv) if (opt_pv is not None and cmp_pv is not None) else None
 
-    if delta_pv is None:
-        pv_chip_text, pv_chip_state = None, "neutral"
-    else:
-        sign = "&#9650;" if delta_pv >= 0 else "&#9660;"
-        pv_chip_state = "up" if delta_pv >= 0 else "down"
-        pv_chip_text = f"{sign} {_fmt(delta_pv)} vs {comparison_label}"
+    def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+        if numerator is None or denominator is None:
+            return None
+        try:
+            denom_val = float(denominator)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(denom_val) or math.isclose(denom_val, 0.0, abs_tol=1e-9):
+            return None
+        try:
+            num_val = float(numerator)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(num_val):
+            return None
+        return num_val / denom_val
 
-    if pv_chip_text:
+    bcr_opt = _ratio(opt_benefit, opt_spend)
+    bcr_cmp = _ratio(cmp_benefit, cmp_spend)
+
+    benefit_label = _basis_label("benefit", benefit_basis)
+    cost_label = _basis_label("cost", cost_basis)
+    benefit_prefix = f"{pv_horizon_years}-year " if (benefit_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
+    cost_prefix = f"{pv_horizon_years}-year " if (cost_basis == VALUE_BASIS_PV and pv_horizon_years) else ""
+
+    if delta_benefit is None or not np.isfinite(delta_benefit):
         delta_pv_card = _kpi_card_html(
-            f"Delta total NPV benefit ({npv_label})",
+            f"Delta Total {benefit_prefix}{benefit_label}",
+            _fmt(delta_benefit),
+            subtitle=pair_label,
+        )
+    else:
+        if math.isclose(delta_benefit, 0.0, abs_tol=1e-6):
+            pv_chip_state = "muted"
+            pv_chip_text = f"{_fmt_abs(delta_benefit)} vs {comparison_label}"
+        else:
+            sign = "&#9650;" if delta_benefit > 0 else "&#9660;"
+            pv_chip_state = "up" if delta_benefit > 0 else "down"
+            pv_chip_text = f"{sign} {_fmt_abs(delta_benefit)} vs {comparison_label}"
+        delta_pv_card = _kpi_card_html(
+            f"Delta Total {benefit_prefix}{benefit_label}",
             None,
             body_html=f'<div class="kpi-delta lead {pv_chip_state}">{pv_chip_text}</div>',
         )
-    else:
-        delta_pv_card = _kpi_card_html(
-            f"Delta total NPV benefit ({npv_label})",
-            _fmt(delta_pv),
+
+    if delta_spend is None or not np.isfinite(delta_spend):
+        cost_delta_card = _kpi_card_html(
+            f"Delta Total {cost_prefix}{cost_label}",
+            _fmt(delta_spend),
             subtitle=pair_label,
-            delta_text=pv_chip_text,
-            delta_state=pv_chip_state,
+        )
+    else:
+        if math.isclose(delta_spend, 0.0, abs_tol=1e-6):
+            cost_chip_text = f"{_fmt_abs(delta_spend)} vs {comparison_label}"
+            cost_chip_state = "muted"
+        else:
+            more_spend = delta_spend > 0
+            cost_arrow = "&#9650;" if more_spend else "&#9660;"
+            cost_chip_state = "down" if more_spend else "up"
+            cost_chip_text = f"{cost_arrow} {_fmt_abs(delta_spend)} vs {comparison_label}"
+        cost_delta_card = _kpi_card_html(
+            f"Delta Total {cost_prefix}{cost_label}",
+            None,
+            body_html=f'<div class="kpi-delta lead {cost_chip_state}">{cost_chip_text}</div>',
+        )
+
+    efficiency_body: str
+    if bcr_opt is None or bcr_cmp is None or not np.isfinite(bcr_opt) or not np.isfinite(bcr_cmp):
+        efficiency_body = '<div class="kpi-sub">Efficiency comparison unavailable</div>'
+    else:
+        diff_pct = ((bcr_opt / bcr_cmp) - 1.0) * 100.0 if bcr_cmp else 0.0
+        if math.isclose(diff_pct, 0.0, abs_tol=1e-6):
+            diff_pct = 0.0
+            direction = "more"
+            bubble_state = "muted"
+            arrow = ""
+        else:
+            direction = "more" if diff_pct >= 0 else "less"
+            bubble_state = "up" if diff_pct >= 0 else "down"
+            arrow = "&#9650;" if diff_pct >= 0 else "&#9660;"
+        efficiency_body = (
+            '<div class="kpi-inline">'
+            f'<span class="kpi-text">{html.escape(primary_label)} is</span>'
+            f'<span class="kpi-delta {bubble_state}">{arrow} {abs(diff_pct):.1f}%</span>'
+            f'<span class="kpi-text"><strong>{direction}</strong> efficient than</span>'
+            f'<span class="kpi-text">{html.escape(comparison_label)}</span>'
+            "</div>"
         )
 
     grid_token = uuid4().hex[:8]
@@ -6363,31 +10619,30 @@ def render_programme_kpis(
 
     cards = [
         f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}">',
-        _kpi_card_html(f"{primary_label} - total spend", _fmt(opt_spend)),
-        _kpi_card_html(f"{comparison_label} - total spend", _fmt(cmp_spend)),
+        _kpi_card_html(f"Total {cost_prefix}{cost_label} - {primary_label}", _fmt(opt_spend)),
+        _kpi_card_html(f"Total {cost_prefix}{cost_label} - {comparison_label}", _fmt(cmp_spend)),
+        cost_delta_card,
         _kpi_card_html(
-            "Delta - total spend",
-            _fmt(delta_spend),
-            subtitle=pair_label,
+            f"Total {benefit_prefix}{benefit_label} - {primary_label}",
+            _fmt(opt_benefit),
         ),
         _kpi_card_html(
-            f"{primary_label} total NPV benefit ({npv_label})",
-            _fmt(opt_pv),
-        ),
-        _kpi_card_html(
-            f"{comparison_label} total NPV benefit ({npv_label})",
-            _fmt(cmp_pv),
+            f"Total {benefit_prefix}{benefit_label} - {comparison_label}",
+            _fmt(cmp_benefit),
         ),
         delta_pv_card,
-        '</div>',
-        f'<div class="kpi-grid" data-kpi-grid-id="{grid_token}_gap">',
         _kpi_card_html(
-            f"{primary_label} solver relative gap",
-            _fmt_gap(opt_gap),
+            f"BCR - Portfolio Weighted Average - {primary_label}",
+            _fmt_ratio(bcr_opt),
         ),
         _kpi_card_html(
-            f"{comparison_label} solver relative gap",
-            _fmt_gap(cmp_gap),
+            f"BCR - Portfolio Weighted Average - {comparison_label}",
+            _fmt_ratio(bcr_cmp),
+        ),
+        _kpi_card_html(
+            "Efficiency",
+            None,
+            body_html=efficiency_body,
         ),
         '</div>',
     ]
@@ -6558,6 +10813,7 @@ def build_region_map_figure(
     fill_opacity: float,
     name_field: str,
 ) -> go.Figure:
+    config = REGION_METRIC_CONFIG.get(metric_key, {})
     map_df = map_df.copy()
     map_df["_metric_value"] = pd.to_numeric(map_df.get("_metric_value"), errors="coerce")
     map_df["_has_data"] = map_df["_metric_value"].notna()
@@ -6774,7 +11030,7 @@ def render_region_map(
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False, "doubleClick": "reset"})
     with table_col:
         summary = build_region_summary_table(df_year, metric_key, year=int(year))
-        st.markdown(f"**Top regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
+        st.markdown(f"**Regions ({REGION_METRIC_CONFIG[metric_key]['label']})**")
         st.markdown("<div class='pbi-table region-summary-table'>", unsafe_allow_html=True)
         st.dataframe(summary, hide_index=True, width="stretch", height=420)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -6784,7 +11040,7 @@ def render_region_map(
 
 def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) -> pd.DataFrame:
     """
-    Build the top-10 region summary table backing the small map-side table and the
+    Build the region summary table backing the map-side table and the
     server-rendered dataframe. Keeps labels consistent with the rest of the app
     and pre-formats numeric values. Styling (font/colours) is done by CSS.
     """
@@ -6906,8 +11162,8 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     present_keys = [key for key in columns if key in table.columns]
     result = table[present_keys].rename(columns=columns).reset_index(drop=True)
 
-    # Top-10 is enough for the map-side table; the full table is available via export
-    return result.head(10)
+    # Return the full set of regions (16 official regions for the NZRC layer).
+    return result
 
 
 
@@ -7855,7 +12111,7 @@ def render_overview_tab(
     )
 
     npv_card_html = _kpi_card_html(
-        f"Optimiser NPV ({npv_label})",
+        f"Optimiser {npv_label}",
         value=f'<span id="{component_id}-npv-value">--</span>',
         delta_text="Dartboard delivery plan",
         delta_state="neutral",
@@ -8552,8 +12808,289 @@ def render_cash_flow_tab(
     export_tables: Dict[str, pd.DataFrame] = {}
 
     st.markdown('<div class="pbi-section-title">Efficiency & cash flow</div>', unsafe_allow_html=True)
+    opt_code = getattr(opt_selection, "code", None) if opt_selection is not None else None
+    cmp_code = getattr(comp_selection, "code", None) if comp_selection is not None else None
+    show_stack_chart = bool(opt_code or cmp_code)
+    control_row_spacer_px = 74
+    eff_cols = st.columns([2, 3])
+    with eff_cols[0]:
+        if show_stack_chart:
+            st.markdown(f'<div style="height:{control_row_spacer_px}px;"></div>', unsafe_allow_html=True)
+        bcr_view_key = "cashflow_bcr_view"
+        bcr_view_options = [
+            "Spend-weighted project BCR",
+            "Portfolio PV BCR (cumulative)",
+        ]
+        if st.session_state.get(bcr_view_key) not in bcr_view_options:
+            st.session_state[bcr_view_key] = bcr_view_options[0]
+        selected_bcr_view = st.radio(
+            "BCR view",
+            bcr_view_options,
+            horizontal=True,
+            key=bcr_view_key,
+        )
+
+        spend_bcr_export = prepare_spend_weighted_bcr_export(data, opt_selection, comp_selection)
+        pv_bcr_export = prepare_bcr_time_series_export(
+            data,
+            opt_series,
+            cmp_series,
+            opt_selection,
+            comp_selection,
+        )
+
+        if selected_bcr_view == bcr_view_options[0]:
+            bcr_fig = _spend_weighted_bcr_time_series_chart(data, opt_selection, comp_selection)
+            bcr_export = spend_bcr_export
+            bcr_export_label = "BCR - Spend-weighted (New)"
+        else:
+            bcr_fig = bcr_time_series_chart(opt_series, cmp_series, opt_selection, comp_selection)
+            bcr_export = pv_bcr_export
+            bcr_export_label = "BCR - Portfolio Weighted Average"
+
+        if bcr_fig is not None:
+            bcr_fig.update_layout(
+                height=420,
+                margin=dict(l=60, r=20, t=56, b=80, autoexpand=False),
+            )
+            st.plotly_chart(
+                bcr_fig,
+                use_container_width=True,
+                key="overview_bcr_time_series_chart",
+            )
+            if bcr_export is not None:
+                export_tables[bcr_export_label] = bcr_export
+            if spend_bcr_export is not None:
+                export_tables["BCR - Spend-weighted (New)"] = spend_bcr_export
+            if pv_bcr_export is not None:
+                export_tables["BCR - Portfolio Weighted Average"] = pv_bcr_export
+        else:
+            st.info("Select scenarios to view the BCR time series.")
+
+    with eff_cols[1]:
+        if show_stack_chart:
+            stack_view_options: List[str] = []
+            stack_view_payload: Dict[
+                str, Tuple[ScenarioSelection, Optional[ScenarioSelection], str]
+            ] = {}
+            opt_label_clean = (opt_label or "").strip() or str(opt_code or scenario_primary_label())
+            cmp_label_clean = (cmp_label or "").strip() or str(cmp_code or scenario_comparison_label())
+            if opt_code:
+                stack_view_options.append(opt_label_clean)
+                stack_view_payload[opt_label_clean] = (opt_selection, None, opt_label_clean)
+            if cmp_code:
+                stack_view_options.append(cmp_label_clean)
+                stack_view_payload[cmp_label_clean] = (comp_selection, None, cmp_label_clean)
+            if opt_code and cmp_code:
+                delta_label = f"NPV [{opt_label_clean}] - NPV [{cmp_label_clean}]"
+                stack_view_options.append(delta_label)
+                stack_view_payload[delta_label] = (opt_selection, comp_selection, delta_label)
+
+            if not stack_view_options:
+                st.info("Select a scenario to view costs vs benefits.")
+            else:
+                view_key = "npv_stack_view_select"
+                if st.session_state.get(view_key) not in stack_view_options:
+                    st.session_state[view_key] = stack_view_options[0]
+
+                control_cols = st.columns(3)
+                with control_cols[0]:
+                    stack_view = st.selectbox(
+                        "NPV stack view:",
+                        stack_view_options,
+                        key=view_key,
+                    )
+                with control_cols[1]:
+                    cost_breakdown = st.selectbox(
+                        "Breakdown costs by:",
+                        list(COST_BENEFIT_STACK_COST_OPTIONS),
+                        index=0,
+                        key="cost_benefit_stack_cost_breakdown_select",
+                    )
+                with control_cols[2]:
+                    benefit_breakdown = st.selectbox(
+                        "Breakdown benefits by:",
+                        list(COST_BENEFIT_STACK_BENEFIT_OPTIONS),
+                        index=0,
+                        key="cost_benefit_stack_benefit_breakdown_select",
+                    )
+
+                selection, compare_selection, selection_label = stack_view_payload.get(
+                    stack_view,
+                    (opt_selection if opt_code else comp_selection, None, stack_view),
+                )
+
+                benefit_value_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+                cost_value_basis = _resolve_value_basis("npv_cost_value_basis", "npv_apply_cost_discount")
+                if benefit_value_basis != cost_value_basis:
+                    mismatch_signature = f"{cost_value_basis}||{benefit_value_basis}"
+                    dismiss_key = "basis_mismatch_warning_dismissed"
+                    if st.session_state.get(dismiss_key) != mismatch_signature:
+                        warn_cols = st.columns([0.965, 0.035])
+                        with warn_cols[0]:
+                            st.warning(
+                                f"Costs are shown in `{cost_value_basis}` but benefits are shown in `{benefit_value_basis}`. "
+                                "Align the value bases for an apples-to-apples comparison."
+                            )
+                        with warn_cols[1]:
+                            if st.button("✕", key="basis_mismatch_warning_close", help="Dismiss this message"):
+                                st.session_state[dismiss_key] = mismatch_signature
+                                st.rerun()
+                else:
+                    st.session_state.pop("basis_mismatch_warning_dismissed", None)
+                pv_horizon_years = (
+                    int(st.session_state.get("npv_horizon_selection", 60))
+                    if (benefit_value_basis == VALUE_BASIS_PV or cost_value_basis == VALUE_BASIS_PV)
+                    else None
+                )
+
+                stack_result = cost_benefit_stack_chart(
+                    data,
+                    selection,
+                    selection_label=selection_label or str(getattr(selection, "code", "")),
+                    pv_horizon_years=pv_horizon_years,
+                    cost_breakdown=cost_breakdown,
+                    benefit_breakdown=benefit_breakdown,
+                    cost_value_basis=cost_value_basis,
+                    benefit_value_basis=benefit_value_basis,
+                    compare_selection=compare_selection,
+                )
+                stack_export = prepare_cost_benefit_stack_export(
+                    data,
+                    selection,
+                    selection_label=selection_label or str(getattr(selection, "code", "")),
+                    pv_horizon_years=pv_horizon_years,
+                    cost_breakdown=cost_breakdown,
+                    benefit_breakdown=benefit_breakdown,
+                    cost_value_basis=cost_value_basis,
+                    benefit_value_basis=benefit_value_basis,
+                    compare_selection=compare_selection,
+                )
+                if stack_export is not None and not stack_export.empty:
+                    export_label_text = selection_label or str(getattr(selection, "code", ""))
+                    export_label = (
+                        f"Costs vs benefits delta - {export_label_text}"
+                        if compare_selection is not None and getattr(compare_selection, "code", None)
+                        else f"Costs vs benefits stack - {export_label_text}"
+                    )
+                    export_tables[export_label] = stack_export
+                if stack_result is not None:
+                    stack_fig, cost_legend_items, benefit_legend_items = stack_result
+                    st.plotly_chart(
+                        stack_fig,
+                        use_container_width=True,
+                        key="overview_cost_benefit_stack_chart",
+                    )
+                    render_cost_benefit_stack_legend(
+                        cost_legend_items,
+                        benefit_legend_items,
+                        columns_per_section=3,
+                    )
+                else:
+                    if compare_selection is not None and getattr(compare_selection, "code", None):
+                        st.info("No differences found for this breakdown (delta is zero or data missing).")
+                    else:
+                        st.info("Costs vs benefits breakdown unavailable for this selection.")
+        else:
+            st.info("Select a scenario to view costs vs benefits.")
+    st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
+    breakdown_options = list(CASH_FLOW_PROFILE_BREAKDOWN_OPTIONS)
+    breakdown_default_index = (
+        breakdown_options.index("GPS Request Tier") if "GPS Request Tier" in breakdown_options else 0
+    )
+    breakdown_key = "cash_flow_profile_spend_breakdown"
+    if breakdown_key in st.session_state and st.session_state[breakdown_key] not in breakdown_options:
+        del st.session_state[breakdown_key]
+    if breakdown_key in st.session_state:
+        spend_breakdown = st.selectbox(
+            "Breakdown annual spend by:",
+            breakdown_options,
+            key=breakdown_key,
+        )
+    else:
+        spend_breakdown = st.selectbox(
+            "Breakdown annual spend by:",
+            breakdown_options,
+            index=breakdown_default_index,
+            key=breakdown_key,
+        )
+    cash_axis_range = _effective_year_range(
+        [opt_series, cmp_series],
+        value_column="Spend",
+    )
+    cash_cols = st.columns(2)
+    profile_label = "cash flow profile"
+    with cash_cols[0]:
+        if opt_series is not None:
+            opt_fig = cash_chart(
+                opt_series,
+                f"Cash flow - {opt_label}",
+                color=PRIMARY_COLOR,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=opt_selection,
+                comparison_selection=comp_selection,
+                x_axis_year_range=cash_axis_range,
+            )
+            st.plotly_chart(
+                opt_fig,
+                use_container_width=True,
+                key="overview_cash_flow_opt_chart",
+            )
+            export = prepare_cash_export(
+                opt_series,
+                label_prefix=opt_label,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=opt_selection,
+            )
+            if export is not None:
+                export_name = f"Cash flow - {opt_label}"
+                export_tables[export_name] = export
+        elif opt_selection.code:
+            st.warning(f"Cash flow data unavailable for the {opt_label} selection.")
+        else:
+            st.info(f"Select {opt_label} to view the {profile_label}.")
+
+    with cash_cols[1]:
+        if cmp_series is not None:
+            cmp_fig = cash_chart(
+                cmp_series,
+                f"Cash flow - {cmp_label}",
+                color=PRIMARY_COLOR,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=comp_selection,
+                comparison_selection=opt_selection,
+                x_axis_year_range=cash_axis_range,
+            )
+            st.plotly_chart(
+                cmp_fig,
+                use_container_width=True,
+                key="overview_cash_flow_cmp_chart",
+            )
+            export = prepare_cash_export(
+                cmp_series,
+                label_prefix=cmp_label,
+                spend_breakdown=spend_breakdown,
+                data=data,
+                selection=comp_selection,
+            )
+            if export is not None:
+                export_name = f"Cash flow - {cmp_label}"
+                export_tables[export_name] = export
+        elif comp_selection.code:
+            st.warning(f"Cash flow data unavailable for the {cmp_label} selection.")
+        else:
+            st.info(f"Select {cmp_label} to view the {profile_label}.")
+
+    st.markdown('<div class="pbi-section-title">Cumulative spend vs benefit</div>', unsafe_allow_html=True)
     eff_fig = efficiency_chart(opt_series, cmp_series, opt_selection, comp_selection)
     if eff_fig is not None:
+        eff_fig.update_layout(
+            height=460,
+            margin=dict(l=70, r=20, t=56, b=100, autoexpand=False),
+        )
         st.plotly_chart(
             eff_fig,
             use_container_width=True,
@@ -8568,101 +13105,598 @@ def render_cash_flow_tab(
         )
         if efficiency_export is not None:
             export_tables["Cumulative spend vs benefit"] = efficiency_export
-    st.markdown('<div class="pbi-section-title">Cash flow profile</div>', unsafe_allow_html=True)
-    show_cumulative_cash = st.checkbox(
-        "Show cumulative revenue vs cost",
-        value=st.session_state.get("show_overview_cumulative_cash", False),
-        key="show_overview_cumulative_cash",
-    )
-    cash_axis_range = None
-    if not show_cumulative_cash:
-        cash_axis_range = _effective_year_range(
-            [opt_series, cmp_series],
-            value_column="Spend",
-        )
-    cash_cols = st.columns(2)
-    profile_label = "cumulative profile" if show_cumulative_cash else "cash flow profile"
-    with cash_cols[0]:
-        if opt_series is not None:
-            if show_cumulative_cash:
-                opt_fig = cumulative_revenue_vs_cost_chart(
-                    opt_series,
-                    opt_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {opt_label}",
-                )
-            else:
-                opt_fig = cash_chart(
-                    opt_series,
-                    f"Cash flow - {opt_label}",
-                    color=PRIMARY_COLOR,
-                    data=data,
-                    selection=opt_selection,
-                    comparison_selection=comp_selection,
-                    x_axis_year_range=cash_axis_range,
-                )
-            st.plotly_chart(
-                opt_fig,
-                use_container_width=True,
-                key="overview_cash_flow_opt_chart",
-            )
-            export = (
-                prepare_cumulative_cash_export(opt_series, opt_selection, label_prefix=opt_label)
-                if show_cumulative_cash
-                else prepare_cash_export(opt_series, label_prefix=opt_label)
-            )
-            if export is not None:
-                export_name = (
-                    f"Cumulative revenue vs cost - {opt_label}"
-                    if show_cumulative_cash
-                    else f"Cash flow - {opt_label}"
-                )
-                export_tables[export_name] = export
-        elif opt_selection.code:
-            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
-            st.warning(f"{issue_label} unavailable for the {opt_label} selection.")
-        else:
-            st.info(f"Select {opt_label} to view the {profile_label}.")
+    else:
+        st.info("Select scenarios to view cumulative spend vs benefit.")
 
-    with cash_cols[1]:
-        if cmp_series is not None:
-            if show_cumulative_cash:
-                cmp_fig = cumulative_revenue_vs_cost_chart(
-                    cmp_series,
-                    comp_selection,
-                    title=f"Cumulative revenue vs cumulative cost - {cmp_label}",
+    return export_tables
+
+
+def render_analysis_tab(
+    data: DashboardData,
+    opt_selection,
+    comp_selection,
+    opt_series,
+    cmp_series,
+    *,
+    opt_label: str,
+    cmp_label: str,
+) -> Dict[str, pd.DataFrame]:
+    export_tables: Dict[str, pd.DataFrame] = {}
+
+    st.markdown('<div class="pbi-section-title">Analysis</div>', unsafe_allow_html=True)
+    page_key = "analysis_page_view"
+    page_value = st.session_state.get(page_key, 1)
+    if page_value not in (1, 2):
+        page_value = 1
+        st.session_state[page_key] = page_value
+    nav_cols = st.columns([1, 1, 1])
+    with nav_cols[0]:
+        if page_value == 2:
+            if st.button("<- Previous page", key="analysis_prev_page"):
+                st.session_state[page_key] = 1
+                st.rerun()
+    with nav_cols[1]:
+        st.markdown(
+            f"<div style='text-align:center;color:#64748B;font-size:0.85rem;font-weight:600;'>"
+            f"Page {page_value} of 2</div>",
+            unsafe_allow_html=True,
+        )
+    with nav_cols[2]:
+        if page_value == 1:
+            if st.button("Next page ->", key="analysis_next_page"):
+                st.session_state[page_key] = 2
+                st.rerun()
+
+    opt_code = getattr(opt_selection, "code", None) if opt_selection is not None else None
+    cmp_code = getattr(comp_selection, "code", None) if comp_selection is not None else None
+    if not (opt_code or cmp_code):
+        st.info("Select scenarios to view the analysis.")
+        return export_tables
+
+    years = [int(y) for y in getattr(data, "years", []) if y is not None]
+    if not years:
+        st.info("No annual data available for the analysis view.")
+        return export_tables
+
+    breakdown_options = [
+        "Region",
+        "GPS Request Tier",
+        "Activity Class",
+        "Strategic Dimension",
+    ]
+    breakdown_key = "analysis_breakdown"
+    if st.session_state.get(breakdown_key) not in breakdown_options:
+        st.session_state[breakdown_key] = "Region"
+    breakdown_choice = st.radio(
+        "Breakdown by",
+        breakdown_options,
+        horizontal=True,
+        key=breakdown_key,
+    )
+    breakdown_choice_norm = str(breakdown_choice).strip().lower()
+    breakdown_label = str(breakdown_choice or "Activity Class").strip()
+    group_col: Optional[str] = None
+    if breakdown_choice_norm == "activity class":
+        group_col = "ActivityClass"
+    elif breakdown_choice_norm == "gps request tier":
+        group_col = "GPSTier"
+    elif breakdown_choice_norm == "region":
+        group_col = "Region"
+    elif breakdown_choice_norm == "strategic dimension":
+        group_col = "StrategicDimension"
+
+    limit = 5
+    if breakdown_choice_norm == "region":
+        limit = 0
+
+    if group_col == "StrategicDimension":
+        spend_opt = (
+            _annual_cost_breakdown_by_dimension_weights(
+                data,
+                opt_selection,
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        spend_cmp = (
+            _annual_cost_breakdown_by_dimension_weights(
+                data,
+                comp_selection,
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+        benefit_opt = dimension_timeseries(data, opt_selection) if opt_code else None
+        benefit_cmp = dimension_timeseries(data, comp_selection) if cmp_code else None
+    else:
+        spend_opt = (
+            _annual_spend_breakdown_by_attribute(
+                data,
+                opt_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        spend_cmp = (
+            _annual_spend_breakdown_by_attribute(
+                data,
+                comp_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+        benefit_opt = (
+            _annual_benefit_breakdown_by_attribute(
+                data,
+                opt_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if opt_code
+            else None
+        )
+        benefit_cmp = (
+            _annual_benefit_breakdown_by_attribute(
+                data,
+                comp_selection,
+                group_col=group_col or "ActivityClass",
+                years=years,
+            )
+            if cmp_code
+            else None
+        )
+
+    opt_label_text = (opt_label or "").strip() or scenario_primary_label()
+    cmp_label_text = (cmp_label or "").strip() or scenario_comparison_label()
+
+    if page_value == 1:
+        group_totals_opt = _analysis_group_totals(spend_opt)
+        group_totals_cmp = _analysis_group_totals(spend_cmp)
+        group_options, _ = _analysis_group_order_and_share(group_totals_opt, group_totals_cmp)
+
+        dist_fig = _distribution_cost_chart(
+            spend_opt,
+            spend_cmp,
+            breakdown_label=breakdown_label,
+            opt_label=opt_label_text,
+            cmp_label=cmp_label_text,
+        )
+
+        inspector_cols = st.columns([1.25, 1.0], gap="large")
+        with inspector_cols[0]:
+            if group_options:
+                st.markdown("**Group inspector**")
+                st.caption(f"Select a {breakdown_label} to inspect annual and cumulative deltas.")
+                group_key = f"analysis_delta_group_{(group_col or 'group').lower()}"
+                current_group = st.session_state.get(group_key)
+                if current_group not in group_options:
+                    current_group = group_options[0]
+                    st.session_state[group_key] = current_group
+                selected_group = st.selectbox(
+                    f"{breakdown_label} focus",
+                    group_options,
+                    index=group_options.index(current_group),
+                    key=group_key,
+                )
+                delta_fig = _analysis_delta_bar_line_chart(
+                    spend_opt,
+                    spend_cmp,
+                    years=years,
+                    group_label=selected_group,
+                    breakdown_label=breakdown_label,
+                    opt_label=opt_label_text,
+                    cmp_label=cmp_label_text,
+                )
+                if delta_fig is not None:
+                    st.plotly_chart(
+                        delta_fig,
+                        use_container_width=True,
+                        key="analysis_delta_group_chart",
+                    )
+                else:
+                    st.info("No delta data available for the selected group.")
+            else:
+                st.info("No group data available for the selected breakdown.")
+        with inspector_cols[1]:
+            if dist_fig is not None:
+                st.plotly_chart(
+                    dist_fig,
+                    use_container_width=True,
+                    key="analysis_cost_distribution_chart",
                 )
             else:
-                cmp_fig = cash_chart(
-                    cmp_series,
-                    f"Cash flow - {cmp_label}",
-                    color=PRIMARY_COLOR,
-                    data=data,
-                    selection=comp_selection,
-                    comparison_selection=opt_selection,
-                    x_axis_year_range=cash_axis_range,
-                )
-            st.plotly_chart(
-                cmp_fig,
-                use_container_width=True,
-                key="overview_cash_flow_cmp_chart",
+                st.info("No distribution data available for the selected breakdown.")
+
+        help_text = (
+            "Timing center = sum(Year x Spend) / sum(Spend) using annual spend.\n"
+            "Dots show each scenario's timing center for the category.\n"
+            f"Line label is the shift in years ({opt_label_text} minus {cmp_label_text})."
+        )
+        help_attr = html.escape(help_text).replace("\n", "&#10;")
+        st.markdown(
+            f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
+            unsafe_allow_html=True,
+        )
+        order_totals_opt = group_totals_opt
+        order_totals_cmp = group_totals_cmp
+        combined_order = order_totals_opt.add(order_totals_cmp, fill_value=0.0)
+        combined_order = combined_order[combined_order.abs() > 1e-9]
+        category_order = combined_order.sort_values(ascending=False).index.astype(str).tolist()
+        if "Unknown" in category_order:
+            category_order = [val for val in category_order if val != "Unknown"] + ["Unknown"]
+        importance_summary = _timing_shift_summary(spend_opt, spend_cmp)
+        rank_fig = (
+            _importance_rank_chart(
+                importance_summary,
+                breakdown_label=breakdown_label,
+                opt_label=opt_label_text,
+                cmp_label=cmp_label_text,
+                category_order=category_order or None,
             )
-            export = (
-                prepare_cumulative_cash_export(cmp_series, comp_selection, label_prefix=cmp_label)
-                if show_cumulative_cash
-                else prepare_cash_export(cmp_series, label_prefix=cmp_label)
+            if importance_summary is not None
+            else None
+        )
+        top_cols = st.columns([2.3, 1.2])
+        with top_cols[0]:
+            paddle_fig = _timing_paddle_chart(
+                spend_opt,
+                spend_cmp,
+                breakdown_label=breakdown_label,
+                opt_label=opt_label_text,
+                cmp_label=cmp_label_text,
             )
-            if export is not None:
-                export_name = (
-                    f"Cumulative revenue vs cost - {cmp_label}"
-                    if show_cumulative_cash
-                    else f"Cash flow - {cmp_label}"
+            paddle_height = None
+            if paddle_fig is not None:
+                paddle_height = paddle_fig.layout.height
+                st.plotly_chart(
+                    paddle_fig,
+                    use_container_width=True,
+                    key="analysis_timing_paddle_chart",
                 )
-                export_tables[export_name] = export
-        elif comp_selection.code:
-            issue_label = "Cumulative series" if show_cumulative_cash else "Cash flow data"
-            st.warning(f"{issue_label} unavailable for the {cmp_label} selection.")
+            else:
+                st.info("No timing data available for the selected breakdown.")
+        with top_cols[1]:
+            if rank_fig is not None:
+                if paddle_height:
+                    rank_fig.update_layout(height=paddle_height)
+                st.plotly_chart(
+                    rank_fig,
+                    use_container_width=True,
+                    key="analysis_importance_rank_chart",
+                )
+            else:
+                st.info("No rank view data available for the selected breakdown.")
+
+        caption_text = (
+            f"{breakdown_label} view. Heatmaps show within-group density (each row sums to 100%). "
+            f"Differential is {opt_label_text} minus {cmp_label_text}."
+        )
+        diff_options = {
+            "Δ$ (absolute magnitude)": "absolute",
+            "Δ / group total (relative difference)": "relative",
+        }
+        diff_key = "analysis_density_diff_mode"
+        if st.session_state.get(diff_key) not in diff_options:
+            st.session_state[diff_key] = list(diff_options.keys())[0]
+        header_cols = st.columns([2.6, 1.6])
+        with header_cols[0]:
+            st.markdown(
+                "<div style='padding:0.35rem 0 0.35rem 0;'>"
+                "<div style='font-weight:700;color:#0F172A;'>"
+                "Spend density & scenario differential explorer"
+                "</div>"
+                f"<div style='color:#64748B;font-size:0.85rem;margin-top:0.2rem;'>"
+                f"{html.escape(caption_text)}"
+                "</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with header_cols[1]:
+            st.markdown("**Differential view**")
+            diff_choice = st.radio(
+                "Differential view",
+                list(diff_options.keys()),
+                horizontal=True,
+                key=diff_key,
+                label_visibility="collapsed",
+            )
+        diff_mode = diff_options.get(diff_choice, "relative")
+        density_figs = _analysis_spend_density_charts(
+            spend_opt,
+            spend_cmp,
+            years=years,
+            breakdown_label=breakdown_label,
+            opt_label=opt_label_text,
+            cmp_label=cmp_label_text,
+            diff_mode=diff_mode,
+        )
+        if density_figs is not None:
+            dens_cols = st.columns(3)
+            with dens_cols[0]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+                st.plotly_chart(
+                    density_figs[0],
+                    use_container_width=True,
+                    key="analysis_density_opt",
+                )
+            with dens_cols[1]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+                st.plotly_chart(
+                    density_figs[1],
+                    use_container_width=True,
+                    key="analysis_density_cmp",
+                )
+            with dens_cols[2]:
+                st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+                st.plotly_chart(
+                    density_figs[2],
+                    use_container_width=True,
+                    key="analysis_density_diff",
+                )
         else:
-            st.info(f"Select {cmp_label} to view the {profile_label}.")
+            st.info("No spend density data available for the selected breakdown.")
+
+        if SHOW_ANALYSIS_CORRELATION:
+            corr_options = {
+                "Compositional (CLR / Aitchison)": "clr",
+                "Absolute annual spend": "absolute",
+                "Year-over-year change": "yoy",
+                "Single-group spend share": "group_share",
+            }
+            corr_group_options = ["Activity", "Tier", "Region", "Dimension"]
+            corr_scenario_key = "analysis_corr_scenario"
+            corr_scenario_options: Dict[str, Dict[str, Any]] = {}
+            if opt_code:
+                corr_scenario_options[f"{opt_label_text} (X)"] = {
+                    "kind": "single",
+                    "selection": opt_selection,
+                    "label": f"{opt_label_text} (X)",
+                }
+            if cmp_code:
+                corr_scenario_options[f"{cmp_label_text} (Y)"] = {
+                    "kind": "single",
+                    "selection": comp_selection,
+                    "label": f"{cmp_label_text} (Y)",
+                }
+            if opt_code and cmp_code:
+                corr_scenario_options[f"Delta ({opt_label_text} - {cmp_label_text})"] = {
+                    "kind": "delta",
+                    "label": f"Delta ({opt_label_text} - {cmp_label_text})",
+                }
+            corr_scenario_labels = list(corr_scenario_options.keys())
+            if st.session_state.get(corr_scenario_key) not in corr_scenario_options:
+                st.session_state[corr_scenario_key] = corr_scenario_labels[0]
+            corr_controls = st.columns([0.78, 0.22], gap="small")
+            corr_mode = "absolute"
+            corr_change_basis = "spend"
+            corr_zscore = False
+            corr_group = None
+            corr_scenario_choice = st.session_state.get(corr_scenario_key, corr_scenario_labels[0])
+            with corr_controls[0]:
+                corr_choice_default = st.session_state.get("analysis_corr_mode")
+                if corr_choice_default not in corr_options:
+                    corr_choice_default = list(corr_options.keys())[0]
+                corr_mode_preview = corr_options[corr_choice_default]
+                if corr_mode_preview in {"clr", "group_share"}:
+                    corr_select_cols = st.columns(3)
+                    with corr_select_cols[0]:
+                        corr_choice = st.selectbox(
+                            "Correlation view",
+                            list(corr_options.keys()),
+                            key="analysis_corr_mode",
+                        )
+                        corr_mode = corr_options[corr_choice]
+                    with corr_select_cols[1]:
+                        corr_group = st.selectbox(
+                            "Group",
+                            corr_group_options,
+                            key="analysis_corr_group",
+                        )
+                    with corr_select_cols[2]:
+                        corr_scenario_choice = st.selectbox(
+                            "Scenario",
+                            corr_scenario_labels,
+                            key=corr_scenario_key,
+                        )
+                else:
+                    corr_select_cols = st.columns(2)
+                    with corr_select_cols[0]:
+                        corr_choice = st.selectbox(
+                            "Correlation view",
+                            list(corr_options.keys()),
+                            key="analysis_corr_mode",
+                        )
+                        corr_mode = corr_options[corr_choice]
+                    with corr_select_cols[1]:
+                        corr_scenario_choice = st.selectbox(
+                            "Scenario",
+                            corr_scenario_labels,
+                            key=corr_scenario_key,
+                        )
+                if corr_mode == "absolute":
+                    corr_zscore = st.checkbox(
+                        "Z-score per category",
+                        value=False,
+                        key="analysis_corr_zscore",
+                    )
+                elif corr_mode == "yoy":
+                    basis_label = st.selectbox(
+                        "Change basis",
+                        ["Spend", "Spend share"],
+                        key="analysis_corr_change_basis",
+                    )
+                    corr_change_basis = "share" if basis_label == "Spend share" else "spend"
+                if corr_mode in {"clr", "group_share"} and corr_group is None:
+                    corr_group = st.selectbox(
+                        "Group",
+                        corr_group_options,
+                        key="analysis_corr_group",
+                    )
+                if corr_mode not in {"clr", "group_share"}:
+                    corr_group = None
+            corr_scenario = corr_scenario_options.get(corr_scenario_choice, {})
+            corr_scenario_kind = corr_scenario.get("kind", "single")
+            corr_scenario_label = corr_scenario.get("label", corr_scenario_choice)
+            help_text = _analysis_correlation_help_text(
+                corr_mode,
+                change_basis=corr_change_basis,
+                zscore=corr_zscore,
+                group_filter=corr_group,
+            )
+            if corr_scenario_kind == "delta":
+                help_text = (
+                    f"{help_text}\nDelta equals correlation({opt_label_text} (X)) minus "
+                    f"correlation({cmp_label_text} (Y))."
+                )
+            help_attr = html.escape(help_text).replace("\n", "&#10;")
+            with corr_controls[1]:
+                st.markdown(
+                    f"<div class='pbi-help-wrap'><span class='pbi-help-icon' title='{help_attr}'>?</span></div>",
+                    unsafe_allow_html=True,
+                )
+            if corr_scenario_kind == "delta":
+                corr_fig = _analysis_correlation_matrix_delta_chart(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    years,
+                    mode=corr_mode,
+                    change_basis=corr_change_basis,
+                    zscore=corr_zscore,
+                    group_filter=corr_group,
+                    label_x=f"{opt_label_text} (X)",
+                    label_y=f"{cmp_label_text} (Y)",
+                )
+            else:
+                corr_selection = corr_scenario.get("selection")
+                if corr_selection is None:
+                    corr_selection = opt_selection if opt_code else comp_selection
+                corr_fig = _analysis_correlation_matrix_chart(
+                    data,
+                    corr_selection,
+                    years,
+                    mode=corr_mode,
+                    change_basis=corr_change_basis,
+                    zscore=corr_zscore,
+                    group_filter=corr_group,
+                    title_suffix=corr_scenario_label,
+                )
+            if corr_fig is not None:
+                st.plotly_chart(
+                    corr_fig,
+                    use_container_width=True,
+                    key="analysis_correlation_matrix_chart",
+                )
+            else:
+                st.info("No correlation data available for the selected scenarios.")
+        return export_tables
+
+    if group_col == "StrategicDimension":
+        activity_classes = _analysis_dimension_labels(
+            data,
+            spend_opt,
+            spend_cmp,
+            benefit_opt,
+            benefit_cmp,
+            limit=limit,
+        )
+    else:
+        activity_classes = _analysis_activity_classes(
+            spend_opt,
+            spend_cmp,
+            benefit_opt,
+            benefit_cmp,
+            limit=limit,
+        )
+    if not activity_classes:
+        st.info("No breakdown data available for the analysis view.")
+        return export_tables
+
+    cost_max_year = _analysis_max_year_for_classes(activity_classes, spend_opt, spend_cmp, years)
+    benefit_max_year = _analysis_max_year_for_classes(activity_classes, benefit_opt, benefit_cmp, years)
+    cost_x_max = cost_max_year if cost_max_year is not None else max(years)
+    benefit_x_max = benefit_max_year if benefit_max_year is not None else max(years)
+    cost_y_max = _analysis_max_value_for_classes(activity_classes, spend_opt, spend_cmp, years)
+    benefit_y_max = _analysis_max_value_for_classes(activity_classes, benefit_opt, benefit_cmp, years)
+
+    legend_items = []
+    if opt_code:
+        legend_items.append(
+            f"<span style='display:flex;gap:0.35rem;align-items:center;color:{PRIMARY_COLOR};'>"
+            "<span style='width:8px;height:8px;border-radius:999px;background:"
+            f"{PRIMARY_COLOR};display:inline-block;'></span>{html.escape(opt_label_text)}</span>"
+        )
+    if cmp_code:
+        legend_items.append(
+            f"<span style='display:flex;gap:0.35rem;align-items:center;color:{CAPACITY_HEAT_RED};'>"
+            "<span style='width:8px;height:8px;border-radius:999px;background:"
+            f"{CAPACITY_HEAT_RED};display:inline-block;'></span>{html.escape(cmp_label_text)}</span>"
+        )
+    legend_html = (
+        "<div style='display:flex;gap:1rem;align-items:center;margin:0.3rem 0 0.8rem;'>"
+        "<span style='font-weight:600;color:#0F172A;'>Scenario comparison (real $):</span>"
+        + "".join(legend_items)
+        + "</div>"
+    )
+    st.markdown(legend_html, unsafe_allow_html=True)
+
+    header_cols = st.columns(2)
+    with header_cols[0]:
+        st.markdown(f"**Spend by {breakdown_label}**")
+    with header_cols[1]:
+        st.markdown(f"**Benefits by {breakdown_label}**")
+
+    for idx, activity in enumerate(activity_classes):
+        show_xaxis = idx == len(activity_classes) - 1
+        row_cols = st.columns(2)
+        with row_cols[0]:
+            series_opt = _analysis_series_for_class(spend_opt, activity, years)
+            series_cmp = _analysis_series_for_class(spend_cmp, activity, years)
+            cost_fig = _analysis_sparkline_chart(
+                activity,
+                years,
+                series_opt,
+                series_cmp,
+                opt_label=opt_label_text if opt_code else "",
+                cmp_label=cmp_label_text if cmp_code else "",
+                color_opt=PRIMARY_COLOR,
+                color_cmp=CAPACITY_HEAT_RED,
+                x_max=cost_x_max,
+                y_max=cost_y_max,
+                show_xaxis=show_xaxis,
+            )
+            st.plotly_chart(
+                cost_fig,
+                use_container_width=True,
+                key=f"analysis_spend_{idx}",
+            )
+        with row_cols[1]:
+            series_opt = _analysis_series_for_class(benefit_opt, activity, years)
+            series_cmp = _analysis_series_for_class(benefit_cmp, activity, years)
+            benefit_fig = _analysis_sparkline_chart(
+                activity,
+                years,
+                series_opt,
+                series_cmp,
+                opt_label=opt_label_text if opt_code else "",
+                cmp_label=cmp_label_text if cmp_code else "",
+                color_opt=PRIMARY_COLOR,
+                color_cmp=CAPACITY_HEAT_RED,
+                x_max=benefit_x_max,
+                y_max=benefit_y_max,
+                show_xaxis=show_xaxis,
+            )
+            st.plotly_chart(
+                benefit_fig,
+                use_container_width=True,
+                key=f"analysis_benefit_{idx}",
+            )
 
     return export_tables
 
@@ -8678,19 +13712,17 @@ def render_benefits_tab(
     cmp_label: str,
 ) -> Dict[str, pd.DataFrame]:
     export_tables: Dict[str, pd.DataFrame] = {}
-    st.markdown('<div class="pbi-section-title">Net present value breakdown</div>', unsafe_allow_html=True)
-    npv_horizon_options = [60, 50, 35]
-    selected_npv_horizon = int(
-        st.radio(
-            "NPV horizon (years)",
-            npv_horizon_options,
-            index=npv_horizon_options.index(
-                st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
-            ),
-            horizontal=True,
-            key="npv_horizon_selection",
-        )
-    )
+    apply_discount = bool(st.session_state.get("npv_apply_discount", False))
+    headline = "Net present value breakdown" if apply_discount else "Benefit breakdown ($2025)"
+    st.markdown(f'<div class="pbi-section-title">{headline}</div>', unsafe_allow_html=True)
+    npv_horizon_options = [60, 50, 40]
+    selected_npv_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+    try:
+        selected_npv_horizon = int(selected_npv_horizon)
+    except (TypeError, ValueError):
+        selected_npv_horizon = npv_horizon_options[0]
+    if selected_npv_horizon not in npv_horizon_options:
+        selected_npv_horizon = npv_horizon_options[0]
     pv_opt_horizon = (
         pv_by_dimension(data, opt_selection, horizon_years=selected_npv_horizon)
         if opt_selection and opt_selection.code
@@ -8721,7 +13753,7 @@ def render_benefits_tab(
             pv_cmp=pv_cmp_horizon,
         )
         if waterfall_export is not None:
-            export_tables["NPV Waterfall"] = waterfall_export
+            export_tables["NPV Waterfall" if apply_discount else "Benefits Waterfall ($2025)"] = waterfall_export
     with pv_col2:
         bridge_fig = benefit_bridge_chart(
             data, opt_selection, comp_selection, horizon_years=selected_npv_horizon
@@ -8741,7 +13773,7 @@ def render_benefits_tab(
             pv_cmp=pv_cmp_horizon,
         )
         if bridge_export is not None:
-            export_tables["NPV Bridge"] = bridge_export
+            export_tables["NPV Bridge" if apply_discount else "Benefits Bridge ($2025)"] = bridge_export
     radar_fig = benefit_radar_chart(
         data,
         opt_selection,
@@ -9108,6 +14140,8 @@ def render_scenarios_tab(
     st.markdown('<div class="pbi-section-title">Scenario workspace</div>', unsafe_allow_html=True)
     st.write("Use this workspace to create scenario folders and run new optimisation batches.")
     st.write(f"Preset scenarios live in {preset_root} | Saved scenarios live in {saved_root}")
+    st.markdown('<div class="pbi-section-title">Solver gap summary</div>', unsafe_allow_html=True)
+    render_solver_gap_kpis(opt_selection, comp_selection)
     table_placeholder = st.empty()
 
     def render_folder_table(folders: List[scenario_utils.ScenarioFolder]) -> None:
@@ -9464,24 +14498,41 @@ def main() -> None:
     preset_root, saved_root = scenario_utils.ensure_scenario_roots(settings)
     scenario_folders = scenario_utils.list_scenario_folders(settings)
 
-    cache_options = [
-        {
-            "label": "Configured cache (settings.yaml)",
-            "path": settings.cache_dir(),
-            "folder": None,
-        }
-    ]
+    scenario_folders = sorted(
+        scenario_folders,
+        key=lambda folder: 0
+        if str(getattr(folder, "kind", "")).strip().lower() == "preset"
+        and str(getattr(folder, "name", "")).strip().upper() == "GPS27"
+        else 1,
+    )
+
+    configured_cache = {
+        "label": "Configured cache (settings.yaml)",
+        "path": settings.cache_dir(),
+        "folder": None,
+    }
+
+    gps27_option = None
+    folder_options = []
     for folder in scenario_folders:
-        label = f"{folder.kind.title()} / {folder.name}"
+        label = f"{str(folder.kind).title()} / {folder.name}"
         if folder.is_default:
             label += " (default)"
-        cache_options.append(
-            {
-                "label": label,
-                "path": folder.path,
-                "folder": folder,
-            }
-        )
+        option = {
+            "label": label,
+            "path": folder.path,
+            "folder": folder,
+        }
+        if str(getattr(folder, "kind", "")).strip().lower() == "preset" and str(getattr(folder, "name", "")).strip().upper() == "GPS27":
+            gps27_option = option
+        else:
+            folder_options.append(option)
+
+    cache_options = []
+    if gps27_option is not None:
+        cache_options.append(gps27_option)
+    cache_options.append(configured_cache)
+    cache_options.extend(folder_options)
     # ---- Scenario cache (single instance) ----
     labels = [opt["label"] for opt in cache_options]
     default_index = 0
@@ -9519,6 +14570,17 @@ def main() -> None:
     st.sidebar.write(f"Dashboard output folder: {settings.dashboard_output_dir()}")
     if st.sidebar.button("Reload cache data"):
         load_dashboard_data.clear()
+        load_project_attribute_mapping.clear()
+        load_project_bcr_mapping.clear()
+        load_project_new_bcr_mapping.clear()
+        try:
+            load_region_mapping.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            fetch_region_geojson.cache_clear()
+        except AttributeError:
+            pass
         st.rerun()
     # ---- end Scenario cache ----
 
@@ -9538,35 +14600,24 @@ def main() -> None:
         with scenario_cols[0]:
             st.subheader(f"{SCENARIO_PRIMARY_NAME} Profile")
             opt_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-            opt_default_index = (
-                opt_profiles.index(DEFAULT_PROFILE_LABEL)
-                if DEFAULT_PROFILE_LABEL in opt_profiles
-                else 0
-            )
+            opt_default_index = _preferred_option_index(opt_profiles, "objective best")
+            if st.session_state.get("opt_profile_select") not in opt_profiles:
+                st.session_state["opt_profile_select"] = opt_profiles[opt_default_index]
             selected_opt_profile = st.selectbox(
                 f"{SCENARIO_PRIMARY_NAME} profile",
                 opt_profiles,
-                index=opt_default_index,
                 key="opt_profile_select",
                 label_visibility="collapsed",
             )
         with scenario_cols[1]:
             st.subheader(f"{SCENARIO_COMPARISON_NAME} Profile")
             cmp_profiles = profile_options(data) or [DEFAULT_PROFILE_LABEL]
-            cmp_default_index = next(
-                (i for i, label in enumerate(cmp_profiles) if label.lower() == "ncor"),
-                None,
-            )
-            if cmp_default_index is None:
-                cmp_default_index = (
-                    cmp_profiles.index(DEFAULT_PROFILE_LABEL)
-                    if DEFAULT_PROFILE_LABEL in cmp_profiles
-                    else 0
-            )
+            cmp_default_index = _preferred_option_index(cmp_profiles, "217 start")
+            if st.session_state.get("cmp_profile_select") not in cmp_profiles:
+                st.session_state["cmp_profile_select"] = cmp_profiles[cmp_default_index]
             selected_cmp_profile = st.selectbox(
                 f"{SCENARIO_COMPARISON_NAME} profile",
                 cmp_profiles,
-                index=cmp_default_index,
                 key="cmp_profile_select",
                 label_visibility="collapsed",
             )
@@ -9601,6 +14652,71 @@ def main() -> None:
                 profile_name=selected_cmp_profile,
                 show_benefit_controls=False,
             )
+
+        st.divider()
+        basis_cols = st.columns(2)
+        with basis_cols[0]:
+            default_cost_basis = _resolve_value_basis(
+                "npv_cost_value_basis",
+                "npv_apply_cost_discount",
+                default=VALUE_BASIS_PV,
+            )
+            cost_basis = st.selectbox(
+                "Costs value basis",
+                list(VALUE_BASIS_OPTIONS),
+                index=list(VALUE_BASIS_OPTIONS).index(default_cost_basis),
+                key="npv_cost_value_basis",
+                help=(
+                    "Choose how costs are expressed in KPI cards and breakdown charts.\n\n"
+                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
+                ),
+            )
+        with basis_cols[1]:
+            default_benefit_basis = _resolve_value_basis(
+                "npv_benefit_value_basis",
+                "npv_apply_discount",
+                default=VALUE_BASIS_PV,
+            )
+            benefit_basis = st.selectbox(
+                "Benefits value basis",
+                list(VALUE_BASIS_OPTIONS),
+                index=list(VALUE_BASIS_OPTIONS).index(default_benefit_basis),
+                key="npv_benefit_value_basis",
+                help=(
+                    "Choose how benefits are expressed in KPI cards and breakdown charts.\n\n"
+                    f"PV: discounted using NZTA MBCM rates ({mbcm_discount_label()})."
+                ),
+            )
+
+        pv_controls_enabled = benefit_basis == VALUE_BASIS_PV or cost_basis == VALUE_BASIS_PV
+        npv_horizon_options = [60, 50, 40]
+        if pv_controls_enabled:
+            default_horizon = st.session_state.get("npv_horizon_selection", npv_horizon_options[0])
+            try:
+                default_horizon = int(default_horizon)
+            except (TypeError, ValueError):
+                default_horizon = npv_horizon_options[0]
+            if default_horizon not in npv_horizon_options:
+                default_horizon = npv_horizon_options[0]
+                st.session_state["npv_horizon_selection"] = default_horizon
+            st.selectbox(
+                "PV horizon (years)",
+                npv_horizon_options,
+                index=npv_horizon_options.index(default_horizon),
+                key="npv_horizon_selection",
+            )
+        else:
+            st.selectbox(
+                "PV horizon (years)",
+                ["N/A"],
+                index=0,
+                disabled=True,
+                key="npv_horizon_selection_na",
+            )
+
+        # Maintain legacy toggle keys for existing charts that expect boolean switches.
+        st.session_state["npv_apply_discount"] = benefit_basis == VALUE_BASIS_PV
+        st.session_state["npv_apply_cost_discount"] = cost_basis == VALUE_BASIS_PV
 
     opt_series = build_timeseries(data, opt_selection)
     cmp_series = build_timeseries(data, comp_selection)
@@ -9637,7 +14753,6 @@ def main() -> None:
         cmp_label = raw_cmp_label
 
     set_scenario_display_labels(opt_label, cmp_label)
-
     nav_previews: Dict[str, List[Dict[str, Any]]] | None = None
     if ENABLE_PREVIEW_NAVIGATION:
         nav_previews = collect_navigation_previews(
@@ -9652,64 +14767,47 @@ def main() -> None:
             cache_signature=cache_sig,
         )
 
-    st.session_state.setdefault("active_tab", NAV_TABS[0])
+    if st.session_state.get("active_tab") not in NAV_TABS:
+        fallback_tab = st.session_state.get("pbi_nav")
+        st.session_state["active_tab"] = fallback_tab if fallback_tab in NAV_TABS else NAV_TABS[0]
     nav_col, content_col = st.columns((2.2, 7.8), gap="large")
 
     with nav_col:
         active_tab = render_powerbi_navigation(
             st.session_state["active_tab"],
-            key="pbi_nav",
+            key="active_tab",
             orientation="vertical",
             previews=nav_previews,
         )
 
-    st.session_state["active_tab"] = active_tab
+    if ENABLE_PREVIEW_NAVIGATION:
+        st.session_state["active_tab"] = active_tab
 
     with content_col:
-        summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
-        npv_summary_label = npv_context_label(
-            data,
-            opt_selection,
-            comp_selection,
-            horizon_override=summary_horizon_years,
-        )
-
-        def _scenario_stats(series: pd.DataFrame | None) -> dict | None:
-            if series is None:
-                return None
-            full_stats = scenario_metrics(series, start_year=data.start_fy)
-            horizon_stats = scenario_metrics(
-                series,
-                start_year=data.start_fy,
-                horizon_years=summary_horizon_years,
-            )
-            if not full_stats:
-                return horizon_stats
-            merged_stats = dict(full_stats)
-            if horizon_stats:
-                pv_value = horizon_stats.get("total_pv")
-                if pv_value is not None:
-                    merged_stats["total_pv"] = pv_value
-                benefit_value = horizon_stats.get("total_benefit")
-                if benefit_value is not None:
-                    merged_stats["total_benefit_horizon"] = benefit_value
-            return merged_stats
-
-        stats_opt = _scenario_stats(opt_series)
-        stats_cmp = _scenario_stats(cmp_series)
+        benefit_basis = _resolve_value_basis("npv_benefit_value_basis", "npv_apply_discount")
+        if benefit_basis == VALUE_BASIS_PV:
+            try:
+                summary_horizon_years = int(st.session_state.get("npv_horizon_selection", 60))
+            except (TypeError, ValueError):
+                summary_horizon_years = 60
+            npv_summary_label = format_npv_context(summary_horizon_years, apply_discount=True)
+        elif benefit_basis == VALUE_BASIS_NOMINAL:
+            npv_summary_label = "Benefits (nominal)"
+        else:
+            npv_summary_label = "Benefits ($2025)"
 
         with st.expander("Programme summary", expanded=False):
             render_programme_kpis(
-                stats_opt,
-                stats_cmp,
+                opt_series,
+                cmp_series,
+                data=data,
                 opt_selection=opt_selection,
                 cmp_selection=comp_selection,
-                npv_label=npv_summary_label,
             )
 
         download_tables: Dict[str, pd.DataFrame] = {}
 
-        if active_tab == "Overview":
+        if active_tab == "Demo":
             download_tables.update(
                 render_overview_tab(
                     data,
@@ -9725,6 +14823,18 @@ def main() -> None:
         elif active_tab == "Cash Flow":
             download_tables.update(
                 render_cash_flow_tab(
+                    data,
+                    opt_selection,
+                    comp_selection,
+                    opt_series,
+                    cmp_series,
+                    opt_label=opt_label,
+                    cmp_label=cmp_label,
+                )
+            )
+        elif active_tab == "Analysis":
+            download_tables.update(
+                render_analysis_tab(
                     data,
                     opt_selection,
                     comp_selection,
@@ -9794,12 +14904,10 @@ def main() -> None:
                 download_tables=download_tables,
             )
 
-        if download_tables and active_tab != "Overview":
-            render_export_download(download_tables)
+        if download_tables and active_tab != "Demo":
+            render_export_download(download_tables, active_tab=active_tab)
 
 
 
 if __name__ == "__main__":
     main()
-
-

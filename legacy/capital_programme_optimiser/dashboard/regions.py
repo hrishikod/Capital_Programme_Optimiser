@@ -130,6 +130,58 @@ OFFICIAL_REGION_ASCII: Dict[str, str] = {
     key: _ascii_region_name(value) for key, value in OFFICIAL_REGION_NAMES.items()
 }
 
+AREA_OUTSIDE_REGION = "Area Outside Region"
+UNMAPPED_REGION_LABEL = "Unmapped"
+DISPLAY_REGION_TITLES: Tuple[str, ...] = tuple(
+    name for name in OFFICIAL_REGION_TITLES if name != AREA_OUTSIDE_REGION
+)
+DISPLAY_REGION_SET = set(DISPLAY_REGION_TITLES)
+
+# Region stats (year ended Mar 2024).
+REGION_BASELINES_2024: Dict[str, Dict[str, float]] = {
+    "Marlborough Region": {"gdp_per_capita": 84296.0, "population": 52300.0},
+    "Southland Region": {"gdp_per_capita": 83620.0, "population": 106100.0},
+    "Taranaki Region": {"gdp_per_capita": 85362.0, "population": 130800.0},
+    "West Coast Region": {"gdp_per_capita": 75057.0, "population": 34800.0},
+}
+
+# Allocation weights to distribute National projects across regions.
+NATIONAL_PROJECT_REGION_WEIGHTS: Dict[str, float] = {
+    "Auckland Region": 0.336854922,
+    "Bay of Plenty Region": 0.066535544,
+    "Canterbury Region": 0.130073991,
+    "Gisborne Region": 0.009984078,
+    "Hawke's Bay Region": 0.034728856,
+    "Manawatū-Whanganui Region": 0.04932097,
+    "Nelson Region": 0.010339983,
+    "Northland Region": 0.038362836,
+    "Otago Region": 0.048178327,
+    "Tasman Region": 0.011239112,
+    "Waikato Region": 0.100440199,
+    "Wellington Region": 0.103137585,
+    "Marlborough Region": 0.009796759,
+    "Southland Region": 0.019874497,
+    "Taranaki Region": 0.024501264,
+    "West Coast Region": 0.006518685,
+}
+
+_NATIONAL_WEIGHT_TOTAL = float(sum(NATIONAL_PROJECT_REGION_WEIGHTS.values()))
+if _NATIONAL_WEIGHT_TOTAL > 0:
+    NATIONAL_PROJECT_REGION_WEIGHTS = {
+        region: float(weight) / _NATIONAL_WEIGHT_TOTAL
+        for region, weight in NATIONAL_PROJECT_REGION_WEIGHTS.items()
+    }
+
+
+def _is_national_region_label(value: Any) -> bool:
+    text = str(value).strip().lower() if value is not None else ""
+    return text == "national"
+
+
+def _is_unmapped_region_label(value: Any) -> bool:
+    text = str(value).strip().lower() if value is not None else ""
+    return text == UNMAPPED_REGION_LABEL.lower()
+
 # --- NEW: detect English tails in bilingual/council labels ---
 _ENGLISH_REGION_RE = re.compile(
     r"([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s'\-]*\bRegion)\b"
@@ -726,8 +778,113 @@ def _harmonise_join_keys(mapping: pd.DataFrame) -> pd.DataFrame:
 # Metrics
 # -----------------------------
 
+def _baseline_2024(region_name: str) -> Dict[str, float]:
+    return dict(REGION_BASELINES_2024.get(str(region_name).strip(), {}))
+
+
+def _ensure_display_region_info(region_info: pd.DataFrame) -> pd.DataFrame:
+    if region_info is None:
+        return pd.DataFrame(columns=["region", "join_key", "join_key_norm", "gdp_per_capita", "population"])
+    region_info = region_info.copy()
+    region_info["region"] = region_info["region"].map(_canonical_join_key)
+    region_info["join_key"] = region_info["join_key"].map(_canonical_join_key)
+
+    if "join_key_norm" not in region_info.columns:
+        region_info["join_key_norm"] = region_info["join_key"].map(_normalise_region_label)
+
+    region_info = region_info[~region_info["region"].map(_is_national_region_label)].copy()
+    region_info = region_info[region_info["region"].isin(DISPLAY_REGION_SET)].copy()
+
+    region_info["population"] = pd.to_numeric(region_info["population"], errors="coerce")
+    region_info["gdp_per_capita"] = pd.to_numeric(region_info["gdp_per_capita"], errors="coerce")
+
+    for region_name, baseline in REGION_BASELINES_2024.items():
+        mask = region_info["region"] == region_name
+        if not mask.any():
+            continue
+        baseline_pop = float(baseline.get("population", np.nan))
+        baseline_gdp = float(baseline.get("gdp_per_capita", np.nan))
+        if np.isfinite(baseline_pop):
+            region_info.loc[mask, "population"] = region_info.loc[mask, "population"].where(
+                region_info.loc[mask, "population"].notna() & (region_info.loc[mask, "population"] > 0),
+                baseline_pop,
+            )
+        if np.isfinite(baseline_gdp):
+            region_info.loc[mask, "gdp_per_capita"] = region_info.loc[mask, "gdp_per_capita"].where(
+                region_info.loc[mask, "gdp_per_capita"].notna() & (region_info.loc[mask, "gdp_per_capita"] > 0),
+                baseline_gdp,
+            )
+
+    existing = set(region_info["region"].dropna().astype(str).tolist())
+    missing = [name for name in DISPLAY_REGION_TITLES if name not in existing]
+    if missing:
+        filler = []
+        for name in missing:
+            baseline = _baseline_2024(name)
+            filler.append(
+                {
+                    "region": name,
+                    "join_key": name,
+                    "join_key_norm": _normalise_region_label(name),
+                    "gdp_per_capita": baseline.get("gdp_per_capita", np.nan),
+                    "population": baseline.get("population", np.nan),
+                }
+            )
+        region_info = pd.concat([region_info, pd.DataFrame(filler)], ignore_index=True)
+
+    region_info["join_key_norm"] = region_info["join_key"].map(_normalise_region_label)
+    return region_info
+
+
+def _distribute_national_rows(
+    df: pd.DataFrame,
+    *,
+    region_col: str,
+    value_col: str,
+    weights: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    weights_map = dict(weights or NATIONAL_PROJECT_REGION_WEIGHTS)
+    weights_map = {k: float(v) for k, v in weights_map.items() if k in DISPLAY_REGION_SET and float(v) > 0}
+    weight_total = float(sum(weights_map.values()))
+    if weight_total <= 0:
+        return df
+    if abs(weight_total - 1.0) > 1e-8:
+        weights_map = {k: v / weight_total for k, v in weights_map.items()}
+
+    mask = df[region_col].map(_is_national_region_label) | df[region_col].map(_is_unmapped_region_label)
+    if not mask.any():
+        return df
+
+    base = df.loc[~mask].copy()
+    nat = df.loc[mask].copy()
+
+    nat[value_col] = pd.to_numeric(nat[value_col], errors="coerce").fillna(0.0)
+    nat = nat[nat[value_col] != 0.0].copy()
+    if nat.empty:
+        return base
+
+    nat["_weight_key"] = 1
+    weight_df = pd.DataFrame(
+        {
+            "_target_region": list(weights_map.keys()),
+            "_weight": list(weights_map.values()),
+            "_weight_key": 1,
+        }
+    )
+    expanded = nat.merge(weight_df, on="_weight_key", how="inner").drop(columns=["_weight_key"])
+    expanded[region_col] = expanded["_target_region"]
+    expanded[value_col] = expanded[value_col] * expanded["_weight"]
+    expanded.drop(columns=["_weight", "_target_region"], inplace=True)
+
+    return pd.concat([base, expanded], ignore_index=True)
+
+
 def region_baselines(mapping: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]:
     catalog = mapping[["region", "join_key", "population", "gdp_per_capita"]].drop_duplicates(subset=["join_key"]).copy()
+    catalog["join_key_norm"] = catalog["join_key"].map(_normalise_region_label)
+    catalog = _ensure_display_region_info(catalog)
     catalog["population"] = pd.to_numeric(catalog["population"], errors="coerce").fillna(0.0)
     catalog["gdp_per_capita"] = pd.to_numeric(catalog["gdp_per_capita"], errors="coerce").fillna(0.0)
 
@@ -930,11 +1087,12 @@ def _benefit_region_from_raw_result(
 
     mapping_norm = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = long.merge(mapping_norm, on="project_norm", how="left")
-    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+    benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
+    benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
 
     region_list = list(regions)
-    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
-        region_list.append("Unmapped")
+    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+        region_list.append(UNMAPPED_REGION_LABEL)
 
     benefit_region = benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
     full_index = pd.MultiIndex.from_product([sorted(valid_years), region_list], names=["Year", "region"])
@@ -1038,10 +1196,11 @@ def _compute_region_benefit_metrics(
         mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
     region_lookup = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = benefit_proj.merge(region_lookup, on="project_norm", how="left")
-    benefit_proj["region"] = benefit_proj["region"].fillna("Unmapped")
+    benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
+    benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
     region_list = list(regions)
-    if "Unmapped" in benefit_proj["region"].values and "Unmapped" not in region_list:
-        region_list.append("Unmapped")
+    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+        region_list.append(UNMAPPED_REGION_LABEL)
     benefit_region = (
         benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
     )
@@ -1085,31 +1244,9 @@ def compute_region_metrics(
         mapping_df["project_norm"] = _normalise_project(mapping_df["project"])
 
     region_info = _prepare_region_info(mapping_df)
-    
-    geojson = fetch_region_geojson()
-    geo_regions = sorted({
-        _canonical_region_name(
-            (feature.get("properties") or {}).get("REGC2025_V1_00_NAME")
-            or (feature.get("properties") or {}).get("REGC_name")
-        )
-        for feature in (geojson.get("features", []) if geojson else [])
-    })
-    geo_regions = [name for name in geo_regions if name]
-    existing_regions = set(region_info["region"].tolist())
-    all_region_names = sorted(existing_regions.union(geo_regions))
-    missing_regions = [name for name in all_region_names if name not in existing_regions]
-    if missing_regions:
-        filler = pd.DataFrame(
-            {
-                "region": missing_regions,
-                "join_key": missing_regions,
-                "join_key_norm": [_normalise_region_label(name) for name in missing_regions],
-                "gdp_per_capita": np.nan,
-                "population": np.nan,
-            }
-        )
-        region_info = pd.concat([region_info, filler], ignore_index=True)
-    
+
+    region_info = _ensure_display_region_info(region_info)
+
     pop_total = region_info["population"].sum(skipna=True)
     gdp_total = (region_info["gdp_per_capita"] * region_info["population"]).sum(skipna=True)
     
@@ -1144,16 +1281,19 @@ def compute_region_metrics(
         suffixes=("", "_map"),
     )
 
-    merged["region"] = merged["region"].fillna("Unmapped")
-    merged.loc[merged["region"] == "Unmapped", ["join_key", "join_key_norm"]] = ""
-    merged.loc[merged["region"] == "Unmapped", ["population", "gdp_per_capita"]] = np.nan
+    merged["region"] = merged["region"].fillna(UNMAPPED_REGION_LABEL)
+    merged["region"] = merged["region"].replace({"": UNMAPPED_REGION_LABEL})
+    merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["join_key", "join_key_norm"]] = ""
+    merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["population", "gdp_per_capita"]] = np.nan
+
+    merged = _distribute_national_rows(merged, region_col="region", value_col="Spend_M")
 
     region_spend = merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
 
-    if (merged["region"] == "Unmapped").any() and "Unmapped" not in region_info["region"].values:
+    if (merged["region"] == UNMAPPED_REGION_LABEL).any() and UNMAPPED_REGION_LABEL not in region_info["region"].values:
         extra = pd.DataFrame(
             {
-                "region": ["Unmapped"],
+                "region": [UNMAPPED_REGION_LABEL],
                 "join_key": [""],
                 "join_key_norm": [""],
                 "gdp_per_capita": [0.0],
