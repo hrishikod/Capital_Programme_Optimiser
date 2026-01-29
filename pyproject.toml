@@ -10,6 +10,12 @@ dependencies = [
     "ortools",
     "openpyxl",
     "matplotlib",
+    "plotly>=5.17",
+    "PyYAML>=6.0",
+    "requests>=2.32",
+    "streamlit>=1.27",
+    "streamlit-option-menu>=0.3.6",
+    "XlsxWriter>=3.1",
     "mlflow",
     "ruff>=0.14.9",
 ]
