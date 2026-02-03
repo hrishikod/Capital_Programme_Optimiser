@@ -2,36 +2,61 @@
 
 from __future__ import annotations
 
-import io
-import math
-import re
-import sys
-import json
 import copy
-import pickle
-import textwrap
 import html
+import inspect
+import io
+import json
+import math
+import pickle
+import re
 import shutil
+import sys
 import tempfile
+import textwrap
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from datetime import datetime
-
+from functools import lru_cache
 from pathlib import Path
-
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
 import numpy as np
-import requests
-
 import pandas as pd
-
-import plotly.graph_objects as go
 import plotly.colors as plc
+import plotly.graph_objects as go
 import plotly.io as pio
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_option_menu import option_menu
 
-if not hasattr(pd.Index, 'clip'):
+from capital_programme_optimiser.config import Settings, load_settings
+from capital_programme_optimiser.dashboard.constants import (
+    SCENARIO_COMPARISON_NAME,
+    SCENARIO_PAIR_NAME,
+    SCENARIO_PRIMARY_NAME,
+)
+from capital_programme_optimiser.dashboard.data import (
+    DashboardData,
+    _canonicalise_dimension_label,
+    dim_short,
+    extract_project_runs,
+    find_scenario_code,
+    load_results,
+    prepare_dashboard_data,
+    scenario_metadata,
+)
+from capital_programme_optimiser.dashboard.regions import (
+    _canonical_join_key,
+    compute_region_metrics,
+    fetch_region_geojson,
+    get_geojson_name_field,
+    load_region_mapping,
+    region_baselines,
+)
+
+if not hasattr(pd.Index, "clip"):
 
     def _index_clip(self, lower=None, upper=None):
 
@@ -49,12 +74,6 @@ if not hasattr(pd.Index, 'clip'):
 
     pd.Index.clip = _index_clip
 
-
-
-import streamlit as st
-import streamlit.components.v1 as components
-from streamlit_option_menu import option_menu
-import inspect
 
 PREVIEW_COMPONENT_PATH = (Path(__file__).parent / "components" / "preview_nav").resolve()
 _preview_navigation_component = components.declare_component(
@@ -85,36 +104,8 @@ for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
 
         sys.path.insert(0, s)
 
-from capital_programme_optimiser.config import Settings, load_settings
-
-from capital_programme_optimiser.dashboard.regions import (
-    compute_region_metrics,
-    fetch_region_geojson,
-    get_geojson_name_field,
-    load_region_mapping,
-    region_baselines,
-    _canonical_join_key,
-)
-
-from capital_programme_optimiser.dashboard.data import (
-    DashboardData,
-    _canonicalise_dimension_label,
-    dim_short,
-    extract_project_runs,
-    find_scenario_code,
-    load_results,
-    prepare_dashboard_data,
-    scenario_metadata,
-)
-
 _FIND_SCENARIO_SUPPORTS_DIM = "objective_dim" in inspect.signature(find_scenario_code).parameters
 _FIND_SCENARIO_SUPPORTS_BENEFIT_LEVEL = "benefit_level" in inspect.signature(find_scenario_code).parameters
-
-from capital_programme_optimiser.dashboard.constants import (
-    SCENARIO_PRIMARY_NAME,
-    SCENARIO_COMPARISON_NAME,
-    SCENARIO_PAIR_NAME,
-)
 
 CURRENT_SCENARIO_LABELS: Dict[str, str] = {
     "primary": SCENARIO_PRIMARY_NAME,
@@ -156,6 +147,7 @@ def _slugify_label(label: str) -> str:
 
 from capital_programme_optimiser.frontend import scenarios as scenario_utils
 from capital_programme_optimiser.optimisation import solver_core
+from capital_programme_optimiser.tools import parquet_export
 
 POWERBI_BLUE = "#19456B"
 POWERBI_GREEN = "#AFBD22"
@@ -14226,6 +14218,25 @@ def render_scenarios_tab(
         else:
             st.warning("Please provide a scenario name before creating a folder.")
 
+
+    st.markdown('<div class="pbi-section-title">Export GPS27 parquet</div>', unsafe_allow_html=True)
+    gps27_dir = preset_root / "GPS27"
+    parquet_path = gps27_dir / "gps27_scenarios.parquet"
+    st.write("Build a single parquet file for Power BI from all GPS27 scenario pickles.")
+    st.caption(f"Source: {gps27_dir} | Output: {parquet_path}")
+    if st.button("Run parquet build", key="gps27_parquet_build"):
+        if not gps27_dir.exists():
+            st.error(f"GPS27 folder not found: {gps27_dir}")
+        else:
+            with st.spinner("Building parquet from GPS27 scenarios..."):
+                try:
+                    summary = parquet_export.build_gps27_parquet(gps27_dir, parquet_path)
+                except Exception as exc:
+                    st.error(f"Parquet build failed: {exc}")
+                else:
+                    st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
+                    if summary.row_counts:
+                        st.write("Row counts:", summary.row_counts)
 
     st.markdown('<div class="pbi-section-title">Run optimiser</div>', unsafe_allow_html=True)
     if not scenario_folders:
