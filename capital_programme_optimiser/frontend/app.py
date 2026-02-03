@@ -10,8 +10,7 @@ LEGACY_APP = ROOT / "legacy" / "capital_programme_optimiser" / "frontend" / "app
 
 if not LEGACY_APP.exists():
     raise FileNotFoundError(
-        f"Legacy Streamlit entrypoint not found at {LEGACY_APP}. "
-        "Update the shim or fix the repository layout."
+        f"Legacy Streamlit entrypoint not found at {LEGACY_APP}. Update the shim or fix the repository layout."
     )
 
 legacy_root = ROOT / "legacy"
