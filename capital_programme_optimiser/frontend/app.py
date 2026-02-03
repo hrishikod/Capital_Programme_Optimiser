@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import runpy
 import sys
+from pathlib import Path
 
 # Shim for Streamlit Cloud: forward the old entrypoint to the new location.
 ROOT = Path(__file__).resolve().parents[2]
