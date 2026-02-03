@@ -156,6 +156,7 @@ def _slugify_label(label: str) -> str:
 
 from capital_programme_optimiser.frontend import scenarios as scenario_utils
 from capital_programme_optimiser.optimisation import solver_core
+from capital_programme_optimiser.tools import parquet_export
 
 POWERBI_BLUE = "#19456B"
 POWERBI_GREEN = "#AFBD22"
@@ -14226,6 +14227,25 @@ def render_scenarios_tab(
         else:
             st.warning("Please provide a scenario name before creating a folder.")
 
+
+    st.markdown('<div class="pbi-section-title">Export GPS27 parquet</div>', unsafe_allow_html=True)
+    gps27_dir = preset_root / "GPS27"
+    parquet_path = gps27_dir / "gps27_scenarios.parquet"
+    st.write("Build a single parquet file for Power BI from all GPS27 scenario pickles.")
+    st.caption(f"Source: {gps27_dir} | Output: {parquet_path}")
+    if st.button("Run parquet build", key="gps27_parquet_build"):
+        if not gps27_dir.exists():
+            st.error(f"GPS27 folder not found: {gps27_dir}")
+        else:
+            with st.spinner("Building parquet from GPS27 scenarios..."):
+                try:
+                    summary = parquet_export.build_gps27_parquet(gps27_dir, parquet_path)
+                except Exception as exc:
+                    st.error(f"Parquet build failed: {exc}")
+                else:
+                    st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
+                    if summary.row_counts:
+                        st.write("Row counts:", summary.row_counts)
 
     st.markdown('<div class="pbi-section-title">Run optimiser</div>', unsafe_allow_html=True)
     if not scenario_folders:
