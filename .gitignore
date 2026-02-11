@@ -1,5 +1,6 @@
 # Python envs
 .venv/
+venv/
 
 # Bytecode
 __pycache__/
@@ -8,3 +9,10 @@ __pycache__/
 # Streamlit state
 .streamlit/
 
+
+# Inputs and Outputs
+input/
+output/
+
+# MLFlow db
+mlflow.db
