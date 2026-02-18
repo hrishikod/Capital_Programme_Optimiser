@@ -196,7 +196,7 @@ def run_optimization(args):
     # Export LP
     lp_dir = resolved_output_dir / "lp"
     lp_dir.mkdir(exist_ok=True, parents=True)
-    lp_file = lp_dir / "model.lp"
+    lp_file = lp_dir / "model.txt"
     logging.info(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
     outputs["lp_file"] = str(lp_file)
