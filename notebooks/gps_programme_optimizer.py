@@ -181,9 +181,16 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         # result object doesn't have file paths, but run_optimization writes them to output/
         # We can find them or use the dataframes directly
 
-        output_dir = Path(outputs.get("output_dir") or args.output_dir)
-        if output_dir.exists():
-            mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
+        # Log output data artifacts (CSVs)
+        # Explicitly log only the CSVs to avoid duplicating logs and lp files
+        # which are subdirectories of output_dir but are logged to their own top-level artifact paths
+        schedule_file = outputs.get("schedule")
+        if schedule_file and os.path.exists(schedule_file):
+            mlflow.log_artifact(schedule_file, artifact_path="output_data")
+
+        cash_flow_file = outputs.get("cash_flow")
+        if cash_flow_file and os.path.exists(cash_flow_file):
+            mlflow.log_artifact(cash_flow_file, artifact_path="output_data")
 
         # Log exported model representation alongside other artifacts
         lp_file = outputs.get("lp_file")
