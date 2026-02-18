@@ -46,6 +46,24 @@ def run_optimization(args):
     outputs = {"output_dir": None, "schedule": None,
                "cash_flow": None, "log_file": None, "lp_file": None}
 
+    def _flush_file_handlers():
+        """Flush and close file handlers so downstream artifact logging sees the log file."""
+        root = logging.getLogger()
+        remaining_handlers = []
+        for handler in root.handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+            if isinstance(handler, logging.FileHandler):
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+            else:
+                remaining_handlers.append(handler)
+        root.handlers = remaining_handlers
+
     # Parse overflow tiers
     try:
         tiers_raw = args.overflow_tiers.split(",")
@@ -56,6 +74,7 @@ def run_optimization(args):
     except ValueError:
         logging.error(
             "Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        _flush_file_handlers()
         return None, outputs
 
     # Map dimension tricodes
@@ -143,6 +162,7 @@ def run_optimization(args):
         )
     except Exception as e:
         logging.error(f"Failed to load data: {e}")
+        _flush_file_handlers()
         return None, outputs
 
     logging.info(f"Loaded {len(data.variants)} variants.")
@@ -203,6 +223,7 @@ def run_optimization(args):
 
     if args.generate_only:
         logging.info("Model generated. Skipping solve step.")
+        _flush_file_handlers()
         return None, outputs
 
     logging.info("Solving...")
@@ -237,9 +258,11 @@ def run_optimization(args):
         outputs["schedule"] = str(schedule_file)
         outputs["cash_flow"] = str(cash_flow_file)
         logging.info(f"\nResults saved to {out_dir}")
+        _flush_file_handlers()
         return result, outputs
     else:
         logging.info("No solution found.")
+        _flush_file_handlers()
         return result, outputs
 
 
