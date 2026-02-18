@@ -1,7 +1,3 @@
-from optimizer import CapitalProgrammeOptimizer as Optimizer
-from financials import calculate_pv_coefficients
-from data_loader import DataLoader
-from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 import argparse
 import logging
 import os
@@ -10,6 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 import mlflow
+
+from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
+from data_loader import DataLoader
+from financials import calculate_pv_coefficients
+from optimizer import CapitalProgrammeOptimizer as Optimizer
 
 # Determine paths robustly (handles Databricks environments)
 try:
