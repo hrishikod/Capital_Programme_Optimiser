@@ -83,6 +83,8 @@ dbutils.widgets.text("model_tag", "", "Model Tag (Optional)")
 # COMMAND ----------
 
 # Parse arguments from widgets
+
+
 class Args:
     pass
 
@@ -182,6 +184,11 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         output_dir = Path(outputs.get("output_dir") or args.output_dir)
         if output_dir.exists():
             mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
+
+        # Log exported model representation alongside other artifacts
+        lp_file = outputs.get("lp_file")
+        if lp_file and os.path.exists(lp_file):
+            mlflow.log_artifact(lp_file, artifact_path="model")
 
         # Also log the log file
         log_file = outputs.get("log_file") or getattr(result, "log_file", None)

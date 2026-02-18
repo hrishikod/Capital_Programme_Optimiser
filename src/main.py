@@ -81,6 +81,7 @@ def run_optimization(args):
         resolved_output_dir = Path(args.output_dir)
     else:
         resolved_output_dir = project_root / args.output_dir
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
     outputs["output_dir"] = str(resolved_output_dir)
 
     # Use CSVs from input folder (or args)
@@ -101,7 +102,7 @@ def run_optimization(args):
         logging.error(f"Error: Benefits file not found at {benefits_file}")
 
     # Setup Logging
-    log_dir = project_root / "output" / "logs"
+    log_dir = resolved_output_dir / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"run_{timestamp}.log"
@@ -193,7 +194,7 @@ def run_optimization(args):
     optimizer.set_pv_coefficients(pv_map)
 
     # Export LP
-    lp_dir = project_root / "output" / "lp"
+    lp_dir = resolved_output_dir / "lp"
     lp_dir.mkdir(exist_ok=True, parents=True)
     lp_file = lp_dir / "model.lp"
     logging.info(f"Exporting model to {lp_file}...")
