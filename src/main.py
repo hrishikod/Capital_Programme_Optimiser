@@ -1,3 +1,7 @@
+from optimizer import CapitalProgrammeOptimizer as Optimizer
+from financials import calculate_pv_coefficients
+from data_loader import DataLoader
+from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
 import argparse
 import logging
 import os
@@ -29,18 +33,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # Switching to cp-sat optimizer
-from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
-from data_loader import DataLoader
-from financials import calculate_pv_coefficients
-from optimizer import CapitalProgrammeOptimizer as Optimizer
 
 
 @mlflow.trace(name="run_optimization", span_type="flow")
 def run_optimization(args):
     """
     Main optimization logic, separated for easier calling from notebooks/MLflow.
-    Returns the result object (or None if failed/generate-only).
+    Returns a tuple of (result, outputs) where outputs is a dict of written file paths.
     """
+
+    outputs = {"output_dir": None, "schedule": None,
+               "cash_flow": None, "log_file": None, "lp_file": None}
 
     # Parse overflow tiers
     try:
@@ -50,8 +53,9 @@ def run_optimization(args):
             thresh, pen = t.split(":")
             piecewise_cap_tiers.append((float(thresh), float(pen)))
     except ValueError:
-        logging.error("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
-        return None
+        logging.error(
+            "Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        return None, outputs
 
     # Map dimension tricodes
     dim_map = {
@@ -71,6 +75,12 @@ def run_optimization(args):
     # Find cost and benefits csv files
 
     project_root = PROJECT_ROOT
+
+    if os.path.isabs(args.output_dir):
+        resolved_output_dir = Path(args.output_dir)
+    else:
+        resolved_output_dir = project_root / args.output_dir
+    outputs["output_dir"] = str(resolved_output_dir)
 
     # Use CSVs from input folder (or args)
     if os.path.isabs(args.costs_path):
@@ -105,7 +115,8 @@ def run_optimization(args):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
+        handlers=[logging.FileHandler(
+            log_file), logging.StreamHandler(sys.stdout)],
     )
 
     # Suppress noisy py4j logs in Databricks
@@ -114,6 +125,7 @@ def run_optimization(args):
     logging.info(f"Logging initialized. Writing to {log_file}")
     logging.info(f"Using costs file: {costs_file}")
     logging.info(f"Using benefits file: {benefits_file}")
+    outputs["log_file"] = str(log_file)
 
     start_fy = args.start_year
     years = args.horizon
@@ -129,7 +141,7 @@ def run_optimization(args):
         )
     except Exception as e:
         logging.error(f"Failed to load data: {e}")
-        return None
+        return None, outputs
 
     logging.info(f"Loaded {len(data.variants)} variants.")
 
@@ -185,10 +197,11 @@ def run_optimization(args):
     lp_file = lp_dir / "model.lp"
     logging.info(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
+    outputs["lp_file"] = str(lp_file)
 
     if args.generate_only:
         logging.info("Model generated. Skipping solve step.")
-        return None
+        return None, outputs
 
     logging.info("Solving...")
     result = optimizer.solve()
@@ -209,40 +222,49 @@ def run_optimization(args):
         logging.info("\nSchedule (Top 20):")
         # For dataframe printing, we might want to keep print or log as string
         logging.info("\n" + result.schedule.head(20).to_string())
-        logging.info(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
+        logging.info(
+            f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
 
         # Save results
-        if os.path.isabs(args.output_dir):
-            out_dir = Path(args.output_dir)
-        else:
-            out_dir = project_root / args.output_dir
-
+        out_dir = resolved_output_dir
         out_dir.mkdir(exist_ok=True, parents=True)  # Ensure parents exist
-        result.schedule.to_csv(out_dir / "schedule.csv", index=False)
-        result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
+        schedule_file = out_dir / "schedule.csv"
+        cash_flow_file = out_dir / "cash_flow.csv"
+        result.schedule.to_csv(schedule_file, index=False)
+        result.cash_flow.to_csv(cash_flow_file, index=False)
+        outputs["schedule"] = str(schedule_file)
+        outputs["cash_flow"] = str(cash_flow_file)
         logging.info(f"\nResults saved to {out_dir}")
-        return result
+        return result, outputs
     else:
         logging.info("No solution found.")
-        return result
+        return result, outputs
 
 
 def main():
     parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
-    parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
-    parser.add_argument("--relax", action="store_true", help="Generate LP relaxation (continuous variables).")
-    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
-    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
+    parser.add_argument("--generate-only", action="store_true",
+                        help="Generate LP file only, do not solve.")
+    parser.add_argument("--relax", action="store_true",
+                        help="Generate LP relaxation (continuous variables).")
+    parser.add_argument("--funding-level", type=float, default=1500.0,
+                        help="Annual funding envelope (default: 1500.0)")
+    parser.add_argument("--dimension", type=str, default="Total",
+                        help="Dimension to optimize (default: Total)")
     parser.add_argument(
         "--overflow-tiers",
         type=str,
         default="0.12:1000,0.15:4000,0.20:12000",
         help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)",
     )
-    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
-    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
-    parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
-    parser.add_argument("--workers", type=int, default=0, help="Number of search workers (default: 0 = all available)")
+    parser.add_argument("--start-year", type=int, default=2026,
+                        help="Start financial year (default: 2026)")
+    parser.add_argument("--horizon", type=int, default=60,
+                        help="Planning horizon in years (default: 60)")
+    parser.add_argument("--time-limit", type=float, default=300.0,
+                        help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Number of search workers (default: 0 = all available)")
     parser.add_argument(
         "--optimizer",
         type=str,
@@ -259,7 +281,8 @@ def main():
         default="input/benefits.csv",
         help="Path to benefits CSV file (default: input/benefits.csv)",
     )
-    parser.add_argument("--output-dir", type=str, default="output", help="Directory for output files (default: output)")
+    parser.add_argument("--output-dir", type=str, default="output",
+                        help="Directory for output files (default: output)")
 
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
     args, _ = parser.parse_known_args()

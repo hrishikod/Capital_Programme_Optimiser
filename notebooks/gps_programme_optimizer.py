@@ -10,6 +10,7 @@
 
 # COMMAND ----------
 
+from main import run_optimization
 import os
 import sys
 import time
@@ -38,7 +39,6 @@ if str(src_dir) not in sys.path:
 
 # Import the optimizer
 # Since src is in path, we import main directly
-from main import run_optimization
 
 # COMMAND ----------
 
@@ -55,13 +55,20 @@ valid_dimensions = [
 dbutils.widgets.dropdown("dimension", "Total", valid_dimensions, "Dimension")
 dbutils.widgets.text("start_year", "2026", "Start Year")
 dbutils.widgets.text("horizon", "60", "Horizon (Years)")
-dbutils.widgets.text("overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overflow Tiers")
-dbutils.widgets.dropdown("optimizer", "cp-sat", ["cp-sat", "optimizer"], "Optimizer Backend")
+dbutils.widgets.text(
+    "overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overflow Tiers")
+dbutils.widgets.dropdown("optimizer", "cp-sat",
+                         ["cp-sat", "optimizer"], "Optimizer Backend")
 dbutils.widgets.text("time_limit", "300.0", "Time Limit (s)")
 dbutils.widgets.text("workers", "0", "Num Workers")
 dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
-dbutils.widgets.text("benefits_path", "input/benefits.csv", "Benefits CSV Path")
-dbutils.widgets.text("output_dir", "output", "Output Directory")
+dbutils.widgets.text(
+    "benefits_path", "input/benefits.csv", "Benefits CSV Path")
+dbutils.widgets.text(
+    "output_dir",
+    "/dbfs/FileStore/capital_optimizer/output",
+    "Output Directory (DBFS mount)",
+)
 dbutils.widgets.text("model_tag", "", "Model Tag (Optional)")
 
 # COMMAND ----------
@@ -88,6 +95,12 @@ model_tag = dbutils.widgets.get("model_tag")
 args.generate_only = False
 args.relax = False
 
+# Ensure the DBFS-backed output directory exists on the local /dbfs mount
+output_dir_path = Path(args.output_dir)
+output_dir_path.mkdir(parents=True, exist_ok=True)
+# Normalize to string in case downstream expects a string path
+args.output_dir = str(output_dir_path)
+
 print(f"Running optimization with config: {vars(args)}")
 
 # COMMAND ----------
@@ -99,22 +112,24 @@ print(f"Running optimization with config: {vars(args)}")
 with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
-    
+
     # Log model tag if provided
     if model_tag:
         mlflow.set_tag("model_tag", model_tag)
 
     # Log input data files as artifacts
     for path_arg, name in [(args.costs_path, "costs"), (args.benefits_path, "benefits")]:
-        input_file = Path(path_arg) if os.path.isabs(path_arg) else project_root / path_arg
+        input_file = Path(path_arg) if os.path.isabs(
+            path_arg) else project_root / path_arg
         if input_file.exists():
             mlflow.log_artifact(str(input_file), artifact_path="input_data")
         else:
-            print(f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
+            print(
+                f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
 
     # Run Optimization
     start_time = time.perf_counter()
-    result = run_optimization(args)
+    result, outputs = run_optimization(args)
     end_time = time.perf_counter()
     elapsed = end_time - start_time
     mlflow.log_metric("optimization_time_seconds", elapsed)
@@ -137,13 +152,14 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         # result object doesn't have file paths, but run_optimization writes them to output/
         # We can find them or use the dataframes directly
 
-        output_dir = project_root / "output"
+        output_dir = Path(outputs.get("output_dir") or args.output_dir)
         if output_dir.exists():
             mlflow.log_artifacts(str(output_dir), artifact_path="output_data")
 
         # Also log the log file
-        if result.log_file and os.path.exists(result.log_file):
-            mlflow.log_artifact(result.log_file, artifact_path="logs")
+        log_file = outputs.get("log_file") or getattr(result, "log_file", None)
+        if log_file and os.path.exists(log_file):
+            mlflow.log_artifact(log_file, artifact_path="logs")
         else:
             # Fallback logic if log_file not populated (e.g. error) or missing
             log_dir = project_root / "logs"
