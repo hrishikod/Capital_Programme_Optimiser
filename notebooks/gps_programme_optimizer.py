@@ -5,12 +5,16 @@
 
 # COMMAND ----------
 
-# The model requires ortools to be installed
-# %pip install ortools
+# MAGIC %md
+# MAGIC ## Set up dependencies
 
 # COMMAND ----------
 
-from main import run_optimization
+# The model requires ortools to be installed
+%pip install ortools
+
+# COMMAND ----------
+
 import os
 import sys
 import time
@@ -39,6 +43,11 @@ if str(src_dir) not in sys.path:
 
 # Import the optimizer
 # Since src is in path, we import main directly
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Define parameters
 
 # COMMAND ----------
 
@@ -73,7 +82,6 @@ dbutils.widgets.text("model_tag", "", "Model Tag (Optional)")
 
 # COMMAND ----------
 
-
 # Parse arguments from widgets
 class Args:
     pass
@@ -102,6 +110,25 @@ output_dir_path.mkdir(parents=True, exist_ok=True)
 args.output_dir = str(output_dir_path)
 
 print(f"Running optimization with config: {vars(args)}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Run Optimisation
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Import Model
+
+# COMMAND ----------
+
+from main import run_optimization
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Trigger Model
 
 # COMMAND ----------
 
