@@ -15,6 +15,7 @@
 
 # COMMAND ----------
 
+import json
 import os
 import sys
 import time
@@ -141,6 +142,12 @@ from main import run_optimization
 with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
+
+    # Log input parameters as a JSON artifact
+    config_file = output_dir_path / "config.json"
+    with open(config_file, "w") as f:
+        json.dump(vars(args), f, indent=4)
+    mlflow.log_artifact(str(config_file), artifact_path="input_data")
 
     # Log model tag if provided
     if model_tag:
