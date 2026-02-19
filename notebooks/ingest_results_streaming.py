@@ -1,9 +1,28 @@
-# Databricks notebook source
 # MAGIC %md
 # MAGIC # Stream Optimization Results (Auto Loader)
 # MAGIC
-# MAGIC This notebook continuously monitors the MLflow experiment directory for new result files (`schedule.csv` and `cash_flow.csv`) and ingests them into Delta tables.
+# MAGIC This notebook continuously monitors the MLflow experiment directory for new result files (`schedule.csv`, `cash_flow.csv`, and `config.json`) and ingests them into Delta tables.
 # MAGIC It automatically extracts the `run_id` from the file path.
+# MAGIC
+# MAGIC ## How to Use
+# MAGIC
+# MAGIC 
+# MAGIC
+# MAGIC ### 1. Batch Mode (Recommended)
+# MAGIC Run this notebook manually or schedule it as a Databricks Job (e.g., hourly).
+# MAGIC It will process all **new** files that have arrived since the last run and then stop.
+# MAGIC - This is cost-effective as the cluster shuts down when finished.
+# MAGIC - `trigger(availableNow=True)` ensures it processes everything pending.
+# MAGIC
+# MAGIC ### 2. Continuous Mode (Live)
+# MAGIC If you need real-time updates:
+# MAGIC 1. Change `trigger(availableNow=True)` to `trigger(processingTime='1 minute')` in the code below.
+# MAGIC 2. Run the notebook and leave it running.
+# MAGIC - Requires a permanently running cluster/job.
+# MAGIC
+# MAGIC ## Parameters
+# MAGIC - `experiment_id`: The MLflow Experiment ID to monitor.
+# MAGIC - `checkpoint_dir`: Directory to store stream state (CRITICAL: Do not delete this or you will re-process files).
 
 # COMMAND ----------
 
@@ -26,13 +45,13 @@ logging.basicConfig(level=logging.INFO)
 
 # COMMAND ----------
 
-# Default Experiment ID
+# Default Experiment ID based on user's path (can be overridden)
 default_experiment_id = "101f7e40d5334a8f994da4404408481d"
 
 dbutils.widgets.text("experiment_id", default_experiment_id, "Experiment ID")
-dbutils.widgets.text("schedule_table", "optimiser_schedule", "Target Schedule Table")
-dbutils.widgets.text("cash_flow_table", "optimiser_cash_flow", "Target Cash Flow Table")
-dbutils.widgets.text("config_table", "optimiser_config", "Target Config Table")
+dbutils.widgets.text("schedule_table", "capital_programme_optimiser.schedule", "Target Schedule Table")
+dbutils.widgets.text("cash_flow_table", "capital_programme_optimiser.cash_flow", "Target Cash Flow Table")
+dbutils.widgets.text("config_table", "capital_programme_optimiser.config", "Target Config Table")
 dbutils.widgets.text("checkpoint_dir", "/dbfs/FileStore/capital_optimizer/checkpoints", "Checkpoint Directory")
 
 experiment_id = dbutils.widgets.get("experiment_id")
@@ -40,6 +59,9 @@ schedule_table = dbutils.widgets.get("schedule_table")
 cash_flow_table = dbutils.widgets.get("cash_flow_table")
 config_table = dbutils.widgets.get("config_table")
 checkpoint_dir = dbutils.widgets.get("checkpoint_dir")
+
+# Ensure schema exists
+spark.sql("CREATE SCHEMA IF NOT EXISTS capital_programme_optimiser")
 
 # MLflow Artifacts Root for the Experiment
 # Default DBFS location: dbfs:/databricks/mlflow-tracking/<experiment_id>
@@ -66,8 +88,6 @@ def stream_file_type(file_name, target_table, checkpoint_subdir, format="csv"):
     # Path Glob to find specific files deep in directory structure
     # CSV/Output: .../<run_id>/artifacts/output_data/<file_name>
     # JSON/Input: .../<run_id>/artifacts/input_data/<file_name>
-    # We use a broader recursive lookup and filter by filename, so specific parent folder matter less 
-    # but we can try to be specific if needed. For now, matching filename recursively is robust.
     
     # Checkpoint location for this specific stream
     ckpt_path = f"{checkpoint_dir}/{checkpoint_subdir}"
@@ -103,7 +123,9 @@ def stream_file_type(file_name, target_table, checkpoint_subdir, format="csv"):
              .outputMode("append")
              .option("checkpointLocation", ckpt_path)
              .option("mergeSchema", "true")
-             .trigger(availableNow=True) # Process all new data then stop (batch-like)
+			 
+			 # Process all new data then stop (batch-like)
+             .trigger(availableNow=True) 
              .table(target_table))
              
     return query
