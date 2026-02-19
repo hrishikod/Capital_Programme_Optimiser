@@ -1,29 +1,25 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Stream Optimization Results (Auto Loader)
+# MAGIC # Stream Optimization Results
 # MAGIC
 # MAGIC This notebook continuously monitors the MLflow experiment directory for new result files (`schedule.csv`, `cash_flow.csv`, and `config.json`) and ingests them into Delta tables.
 # MAGIC It automatically extracts the `run_id` from the file path.
 # MAGIC
 # MAGIC ## How to Use
-# MAGIC
-# MAGIC 
-# MAGIC
-# MAGIC ### 1. Batch Mode (Recommended)
-# MAGIC Run this notebook manually or schedule it as a Databricks Job (e.g., hourly).
+# MAGIC ### 1. Batch Mode
+# MAGIC This notebook manually or scheduled as a Databricks Job (e.g., hourly).
 # MAGIC It will process all **new** files that have arrived since the last run and then stop.
-# MAGIC - This is cost-effective as the cluster shuts down when finished.
 # MAGIC - `trigger(availableNow=True)` ensures it processes everything pending.
 # MAGIC
-# MAGIC ### 2. Continuous Mode (Live)
-# MAGIC If you need real-time updates:
-# MAGIC 1. Change `trigger(availableNow=True)` to `trigger(processingTime='1 minute')` in the code below.
+# MAGIC ### 2. Continuous Mode
+# MAGIC To get real-time updates:
+# MAGIC 1. Change `trigger(availableNow=True)` to `trigger(processingTime='1 minute')`
 # MAGIC 2. Run the notebook and leave it running.
 # MAGIC - Requires a permanently running cluster/job.
 # MAGIC
 # MAGIC ## Parameters
 # MAGIC - `experiment_id`: The MLflow Experiment ID to monitor.
-# MAGIC - `checkpoint_dir`: Directory to store stream state (CRITICAL: Do not delete this or you will re-process files).
+# MAGIC - `checkpoint_dir`: Directory to store stream state (IMPORTANT: Do not delete otherwise files will be re-processed).
 
 # COMMAND ----------
 
