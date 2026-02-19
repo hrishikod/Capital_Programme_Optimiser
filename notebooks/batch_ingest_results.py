@@ -78,11 +78,10 @@ def get_processed_run_ids(table_name):
         # Table doesn't exist yet
         return set()
 
-def ingest_file(run, file_path_suffix, target_table, format="csv"):
+def ingest_file(run_id, file_path_suffix, target_table, format="csv"):
     """
     Ingests a single file from a run artifact into a Delta table.
     """
-    run_id = run.info.run_id
     
     try:
         # Download locally because Spark cannot access MLflow artifacts directly in some modes
@@ -150,30 +149,18 @@ if not runs.empty:
     count = 0
     for index, row in runs.iterrows():
         run_id = row["run_id"]
-        artifact_uri = row["artifact_uri"]
-        
-        # Create a mock object to match helper signature
-        class MockRunInfo:
-            def __init__(self, r_id, a_uri):
-                self.run_id = r_id
-                self.artifact_uri = a_uri
-        class MockRun:
-            def __init__(self, info):
-                self.info = info
-                
-        run_obj = MockRun(MockRunInfo(run_id, artifact_uri))
         
         # Ingest Schedule
         if run_id not in processed_schedule:
-            ingest_file(run_obj, "output_data/schedule.csv", schedule_table, "csv")
+            ingest_file(run_id, "output_data/schedule.csv", schedule_table, "csv")
             
         # Ingest Cash Flow
         if run_id not in processed_cash:
-            ingest_file(run_obj, "output_data/cash_flow.csv", cash_flow_table, "csv")
+            ingest_file(run_id, "output_data/cash_flow.csv", cash_flow_table, "csv")
             
         # Ingest Config
         if run_id not in processed_config:
-            ingest_file(run_obj, "input_data/config.json", config_table, "json")
+            ingest_file(run_id, "input_data/config.json", config_table, "json")
             
         count += 1
         
