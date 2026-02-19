@@ -25,7 +25,10 @@ from pyspark.sql.utils import AnalysisException
 
 # Set up logging
 logger = logging.getLogger("BatchIngest")
-logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
+
+# Suppress py4j logging
+logging.getLogger("py4j").setLevel(logging.ERROR)
 
 # COMMAND ----------
 
