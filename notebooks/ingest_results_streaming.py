@@ -32,11 +32,13 @@ default_experiment_id = "101f7e40d5334a8f994da4404408481d"
 dbutils.widgets.text("experiment_id", default_experiment_id, "Experiment ID")
 dbutils.widgets.text("schedule_table", "optimiser_schedule", "Target Schedule Table")
 dbutils.widgets.text("cash_flow_table", "optimiser_cash_flow", "Target Cash Flow Table")
+dbutils.widgets.text("config_table", "optimiser_config", "Target Config Table")
 dbutils.widgets.text("checkpoint_dir", "/dbfs/FileStore/capital_optimizer/checkpoints", "Checkpoint Directory")
 
 experiment_id = dbutils.widgets.get("experiment_id")
 schedule_table = dbutils.widgets.get("schedule_table")
 cash_flow_table = dbutils.widgets.get("cash_flow_table")
+config_table = dbutils.widgets.get("config_table")
 checkpoint_dir = dbutils.widgets.get("checkpoint_dir")
 
 # MLflow Artifacts Root for the Experiment
@@ -46,6 +48,7 @@ source_path = f"dbfs:/databricks/mlflow-tracking/{experiment_id}"
 print(f"Monitoring Source: {source_path}")
 print(f"Target Schedule Table: {schedule_table}")
 print(f"Target Cash Flow Table: {cash_flow_table}")
+print(f"Target Config Table: {config_table}")
 print(f"Checkpoint Dir: {checkpoint_dir}")
 
 # COMMAND ----------
@@ -55,38 +58,43 @@ print(f"Checkpoint Dir: {checkpoint_dir}")
 
 # COMMAND ----------
 
-def stream_csv_type(file_name, target_table, checkpoint_subdir):
+def stream_file_type(file_name, target_table, checkpoint_subdir, format="csv"):
     """
-    Sets up a stream for a specific CSV file name (e.g., 'schedule.csv').
+    Sets up a stream for a specific file name (e.g., 'schedule.csv' or 'config.json').
     """
     
+    # Path Glob to find specific files deep in directory structure
+    # CSV/Output: .../<run_id>/artifacts/output_data/<file_name>
+    # JSON/Input: .../<run_id>/artifacts/input_data/<file_name>
+    # We use a broader recursive lookup and filter by filename, so specific parent folder matter less 
+    # but we can try to be specific if needed. For now, matching filename recursively is robust.
     
     # Checkpoint location for this specific stream
     ckpt_path = f"{checkpoint_dir}/{checkpoint_subdir}"
     
     logger.info(f"Starting stream for {file_name}...")
     
-    # ReadStream with Auto Loader (cloudFiles)
-    df_stream = (spark.readStream
+    reader = (spark.readStream
                  .format("cloudFiles")
-                 .option("cloudFiles.format", "csv")
+                 .option("cloudFiles.format", format)
                  .option("cloudFiles.schemaLocation", f"{ckpt_path}/schema")
-                 .option("cloudFiles.inferColumnTypes", "true")
-                 .option("header", "true")
+                 .option("cloudFiles.inferColumnTypes", "true"))
+    
+    if format == "csv":
+        reader = reader.option("header", "true")
+                 
+    df_stream = (reader
                  .option("pathGlobFilter", file_name)  # Filter for specific file
                  .option("recursiveFileLookup", "true") # Look recursively
                  .load(source_path))
 
     # Add Metadata
-    # Extract Run ID from path. 
-    # Assumes path like: .../<run_id>/artifacts/output_data/...
-    # Regex: Look for 32-char hex string (Run ID) followed by /artifacts
-    run_id_pattern = r".*/([a-f0-9]{32})/artifacts/.*"
-    
+    r_extract = regexp_extract(col("source_file"), r".*/([a-f0-9]{32})/artifacts/.*", 1)
+
     df_transformed = (df_stream
                       .withColumn("ingestion_timestamp", current_timestamp())
                       .withColumn("source_file", input_file_name())
-                      .withColumn("run_id", regexp_extract(col("source_file"), run_id_pattern, 1))
+                      .withColumn("run_id", r_extract)
                       )
 
     # WriteStream to Delta
@@ -108,13 +116,17 @@ def stream_csv_type(file_name, target_table, checkpoint_subdir):
 # COMMAND ----------
 
 # Stream 1: Schedule
-query_schedule = stream_csv_type("schedule.csv", schedule_table, "schedule")
+query_schedule = stream_file_type("schedule.csv", schedule_table, "schedule", "csv")
 
 # Stream 2: Cash Flow
-query_cash_flow = stream_csv_type("cash_flow.csv", cash_flow_table, "cash_flow")
+query_cash_flow = stream_file_type("cash_flow.csv", cash_flow_table, "cash_flow", "csv")
 
-# Wait for both to finish (since we used availableNow=True)
+# Stream 3: Config
+query_config = stream_file_type("config.json", config_table, "config", "json")
+
+# Wait for all to finish
 query_schedule.awaitTermination()
 query_cash_flow.awaitTermination()
+query_config.awaitTermination()
 
 print("Ingestion complete.")
