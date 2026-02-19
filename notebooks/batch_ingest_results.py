@@ -3,11 +3,13 @@
 # MAGIC # Batch Ingest Optimization Results
 # MAGIC
 # MAGIC This notebook queries MLflow for successful runs and ingests their results (`schedule.csv`, `cash_flow.csv`, `config.json`) into Delta tables.
-# MAGIC It is idempotent: it checks which `run_id`s are already in the tables and only processes new ones.
+# MAGIC It checks which `run_id`s are already in the tables and only processes new ones.
 # MAGIC
 # MAGIC ## How to Use
-# MAGIC - **Schedule this as a Job** (e.g., hourly).
-# MAGIC - It will find all new successful runs and add them to the tables.
+# MAGIC - **Schedule notebook as a Job** (e.g., hourly).
+# MAGIC
+# MAGIC ## Parameters
+# MAGIC - `experiment_id`: The MLflow Experiment ID to monitor.
 
 # COMMAND ----------
 
@@ -32,7 +34,7 @@ logging.basicConfig(level=logging.INFO)
 
 # COMMAND ----------
 
-# Default Experiment ID based on user's path (can be overridden)
+# Experiment ID
 default_experiment_id = "101f7e40d5334a8f994da4404408481d"
 
 dbutils.widgets.text("experiment_id", default_experiment_id, "Experiment ID")
@@ -71,7 +73,6 @@ def get_processed_run_ids(table_name):
             return set()
         
         # Collect run_ids distinct
-        # Use simple collect for small number of runs, or limit if huge
         rows = df.select("run_id").distinct().collect()
         return set(r.run_id for r in rows)
     except AnalysisException:
