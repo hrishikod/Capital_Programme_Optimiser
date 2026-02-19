@@ -1,3 +1,4 @@
+# Databricks notebook source
 # MAGIC %md
 # MAGIC # Stream Optimization Results (Auto Loader)
 # MAGIC
