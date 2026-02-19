@@ -83,18 +83,24 @@ def ingest_file(run, file_path_suffix, target_table, format="csv"):
     Ingests a single file from a run artifact into a Delta table.
     """
     run_id = run.info.run_id
-    artifact_uri = run.info.artifact_uri
-    full_path = f"{artifact_uri}/{file_path_suffix}"
     
     try:
+        # Download locally because Spark cannot access MLflow artifacts directly in some modes
+        local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=file_path_suffix)
+        
+        # Read with Spark from local path
+        # In Databricks, local file API files are at file://...
+        # But Spark needs file:// prefix explicitly for local IO
+        spark_path = f"file://{local_path}"
+        
         if format == "csv":
-            df = spark.read.option("header", "true").option("inferSchema", "true").csv(full_path)
+            df = spark.read.option("header", "true").option("inferSchema", "true").csv(spark_path)
         elif format == "json":
-            df = spark.read.option("multiLine", "true").json(full_path)
+            df = spark.read.option("multiLine", "true").json(spark_path)
             
         # Add Metadata
         df = df.withColumn("ingestion_timestamp", current_timestamp()) \
-               .withColumn("source_file", lit(full_path)) \
+               .withColumn("source_file", lit(file_path_suffix)) \
                .withColumn("run_id", lit(run_id))
         
         # Write to Delta (Append)
