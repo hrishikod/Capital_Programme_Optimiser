@@ -16,3 +16,9 @@ output/
 
 # MLFlow db
 mlflow.db
+
+# logs
+logs/
+
+# LP files
+linear-program-files/
