@@ -89,8 +89,6 @@ def ingest_file(run_id, file_path_suffix, target_table, format="csv"):
         local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=file_path_suffix)
         
         # Read with Spark from local path
-        # In Databricks, local file API files are at file://...
-        # But Spark needs file:// prefix explicitly for local IO
         spark_path = f"file://{local_path}"
         
         if format == "csv":
@@ -125,23 +123,17 @@ def ingest_file(run_id, file_path_suffix, target_table, format="csv"):
 
 # COMMAND ----------
 
-# 1. Get all successful runs from MLflow
+# Get all successful runs from MLflow
 runs = mlflow.search_runs(
     experiment_ids=[experiment_id],
     filter_string="attributes.status = 'FINISHED'",
     order_by=["start_time DESC"]
 )
 
-# Convert to list of dictionaries/objects for iteration if needed, 
-# but mlflow.search_runs returns a pandas DataFrame. 
-# We need the actual Run objects to get artifact_uri reliably, or we can construct it.
-# Update: mlflow.search_runs returns a pandas DF. The artifact_uri is a column.
 if not runs.empty:
     print(f"Found {len(runs)} finished runs.")
     
     # Get set of processed Run IDs for each table to avoid duplicates
-    # We'll use the 'schedule' table as the primary tracker, or check all.
-    # checking all is safer.
     processed_schedule = get_processed_run_ids(schedule_table)
     processed_cash = get_processed_run_ids(cash_flow_table)
     processed_config = get_processed_run_ids(config_table)
