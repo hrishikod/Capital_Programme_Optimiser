@@ -7,6 +7,11 @@ from pathlib import Path
 
 import mlflow
 
+from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
+from data_loader import DataLoader
+from financials import calculate_pv_coefficients
+from optimizer import CapitalProgrammeOptimizer as Optimizer
+
 # Determine paths robustly (handles Databricks environments)
 try:
     SCRIPT_PATH = Path(__file__).resolve()
@@ -29,18 +34,34 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # Switching to cp-sat optimizer
-from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
-from data_loader import DataLoader
-from financials import calculate_pv_coefficients
-from optimizer import CapitalProgrammeOptimizer as Optimizer
 
 
 @mlflow.trace(name="run_optimization", span_type="flow")
 def run_optimization(args):
     """
     Main optimization logic, separated for easier calling from notebooks/MLflow.
-    Returns the result object (or None if failed/generate-only).
+    Returns a tuple of (result, outputs) where outputs is a dict of written file paths.
     """
+
+    outputs = {"output_dir": None, "schedule": None, "cash_flow": None, "log_file": None, "lp_file": None}
+
+    def _flush_file_handlers():
+        """Flush and close file handlers so downstream artifact logging sees the log file."""
+        root = logging.getLogger()
+        remaining_handlers = []
+        for handler in root.handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+            if isinstance(handler, logging.FileHandler):
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+            else:
+                remaining_handlers.append(handler)
+        root.handlers = remaining_handlers
 
     # Parse overflow tiers
     try:
@@ -51,7 +72,8 @@ def run_optimization(args):
             piecewise_cap_tiers.append((float(thresh), float(pen)))
     except ValueError:
         logging.error("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
-        return None
+        _flush_file_handlers()
+        return None, outputs
 
     # Map dimension tricodes
     dim_map = {
@@ -72,6 +94,13 @@ def run_optimization(args):
 
     project_root = PROJECT_ROOT
 
+    if os.path.isabs(args.output_dir):
+        resolved_output_dir = Path(args.output_dir)
+    else:
+        resolved_output_dir = project_root / args.output_dir
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    outputs["output_dir"] = str(resolved_output_dir)
+
     # Use CSVs from input folder (or args)
     if os.path.isabs(args.costs_path):
         costs_file = Path(args.costs_path)
@@ -90,7 +119,7 @@ def run_optimization(args):
         logging.error(f"Error: Benefits file not found at {benefits_file}")
 
     # Setup Logging
-    log_dir = project_root / "output" / "logs"
+    log_dir = resolved_output_dir / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"run_{timestamp}.log"
@@ -114,6 +143,7 @@ def run_optimization(args):
     logging.info(f"Logging initialized. Writing to {log_file}")
     logging.info(f"Using costs file: {costs_file}")
     logging.info(f"Using benefits file: {benefits_file}")
+    outputs["log_file"] = str(log_file)
 
     start_fy = args.start_year
     years = args.horizon
@@ -129,7 +159,8 @@ def run_optimization(args):
         )
     except Exception as e:
         logging.error(f"Failed to load data: {e}")
-        return None
+        _flush_file_handlers()
+        return None, outputs
 
     logging.info(f"Loaded {len(data.variants)} variants.")
 
@@ -180,15 +211,17 @@ def run_optimization(args):
     optimizer.set_pv_coefficients(pv_map)
 
     # Export LP
-    lp_dir = project_root / "output" / "lp"
+    lp_dir = resolved_output_dir / "lp"
     lp_dir.mkdir(exist_ok=True, parents=True)
-    lp_file = lp_dir / "model.lp"
+    lp_file = lp_dir / "model.txt"
     logging.info(f"Exporting model to {lp_file}...")
     optimizer.export_model(str(lp_file))
+    outputs["lp_file"] = str(lp_file)
 
     if args.generate_only:
         logging.info("Model generated. Skipping solve step.")
-        return None
+        _flush_file_handlers()
+        return None, outputs
 
     logging.info("Solving...")
     result = optimizer.solve()
@@ -212,19 +245,21 @@ def run_optimization(args):
         logging.info(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
 
         # Save results
-        if os.path.isabs(args.output_dir):
-            out_dir = Path(args.output_dir)
-        else:
-            out_dir = project_root / args.output_dir
-
+        out_dir = resolved_output_dir
         out_dir.mkdir(exist_ok=True, parents=True)  # Ensure parents exist
-        result.schedule.to_csv(out_dir / "schedule.csv", index=False)
-        result.cash_flow.to_csv(out_dir / "cash_flow.csv", index=False)
+        schedule_file = out_dir / "schedule.csv"
+        cash_flow_file = out_dir / "cash_flow.csv"
+        result.schedule.to_csv(schedule_file, index=False)
+        result.cash_flow.to_csv(cash_flow_file, index=False)
+        outputs["schedule"] = str(schedule_file)
+        outputs["cash_flow"] = str(cash_flow_file)
         logging.info(f"\nResults saved to {out_dir}")
-        return result
+        _flush_file_handlers()
+        return result, outputs
     else:
         logging.info("No solution found.")
-        return result
+        _flush_file_handlers()
+        return result, outputs
 
 
 def main():
