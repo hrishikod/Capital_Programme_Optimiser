@@ -23,21 +23,29 @@ from mlflow.tracking import MlflowClient
 # COMMAND ----------
 
 dbutils.widgets.text("run_id", "", "Run ID (required)")
-dbutils.widgets.text("model_name", "capital-programme-optimizer", "Registered Model Name")
-dbutils.widgets.dropdown("target_stage", "Staging", ["None", "Staging", "Production", "Archived"], "Target Stage")
-dbutils.widgets.dropdown("archive_existing_versions", "false", ["false", "true"], "Archive existing in target stage")
-dbutils.widgets.text("version_description", "", "Version Description (optional)")
-dbutils.widgets.dropdown("preflight_load", "true", ["true", "false"], "Preflight model load check")
+dbutils.widgets.text(
+    "model_name", "capital-programme-optimizer", "Registered Model Name")
+dbutils.widgets.dropdown("target_stage", "Staging", [
+                         "None", "Staging", "Production", "Archived"], "Target Stage")
+dbutils.widgets.dropdown("archive_existing_versions", "false", [
+                         "false", "true"], "Archive existing in target stage")
+dbutils.widgets.text("version_description", "",
+                     "Version Description (optional)")
+dbutils.widgets.dropdown("preflight_load", "true", [
+                         "true", "false"], "Preflight model load check")
 
 RUN_ID = dbutils.widgets.get("run_id").strip()
 MODEL_NAME = dbutils.widgets.get("model_name").strip()
 TARGET_STAGE = dbutils.widgets.get("target_stage").strip()
-ARCHIVE_EXISTING = dbutils.widgets.get("archive_existing_versions").strip().lower() == "true"
+ARCHIVE_EXISTING = dbutils.widgets.get(
+    "archive_existing_versions").strip().lower() == "true"
 VERSION_DESCRIPTION = dbutils.widgets.get("version_description").strip()
-PREFLIGHT_LOAD = dbutils.widgets.get("preflight_load").strip().lower() == "true"
+PREFLIGHT_LOAD = dbutils.widgets.get(
+    "preflight_load").strip().lower() == "true"
 
 if not RUN_ID:
-    raise ValueError("run_id is required. Paste the run ID from gps_programme_optimizer output/MLflow run page.")
+    raise ValueError(
+        "run_id is required. Paste the run ID from gps_programme_optimizer output/MLflow run page.")
 
 if not MODEL_NAME:
     raise ValueError("model_name is required.")
@@ -85,10 +93,24 @@ if PREFLIGHT_LOAD:
         _ = mlflow.pyfunc.load_model(MODEL_URI)
         print("Preflight load passed.")
     except Exception as exc:
-        raise RuntimeError(
-            "Model artifact exists but failed to load with mlflow.pyfunc.load_model. "
-            "Check code dependencies and code_paths logged in the source run."
-        ) from exc
+        root_message = str(exc)
+        hints = [
+            "Model artifact exists but failed to load with mlflow.pyfunc.load_model.",
+            f"Root error: {type(exc).__name__}: {root_message}",
+        ]
+
+        if "No module named 'mlflow_model'" in root_message:
+            hints.append(
+                "This run was likely logged before the by-value packaging fix. "
+                "Re-run gps_programme_optimizer.py to create a new run, then register that new run ID."
+            )
+
+        if "ortools" in root_message.lower() or "uninstalled" in root_message.lower():
+            hints.append(
+                "Install dependencies from the model artifact environment, or run this notebook in an environment with ortools available."
+            )
+
+        raise RuntimeError(" ".join(hints)) from exc
 
 # COMMAND ----------
 
@@ -154,8 +176,10 @@ client.update_model_version(
     description=description,
 )
 
-client.set_model_version_tag(MODEL_NAME, version_number, "source_run_id", RUN_ID)
-client.set_model_version_tag(MODEL_NAME, version_number, "source_model_uri", MODEL_URI)
+client.set_model_version_tag(
+    MODEL_NAME, version_number, "source_run_id", RUN_ID)
+client.set_model_version_tag(
+    MODEL_NAME, version_number, "source_model_uri", MODEL_URI)
 
 if TARGET_STAGE != "None":
     client.transition_model_version_stage(
