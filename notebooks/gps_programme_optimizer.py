@@ -11,17 +11,20 @@
 # COMMAND ----------
 
 # The model requires ortools to be installed
+from mlflow_model import OptimizerPyFuncModel
+from main import run_optimization
+from mlflow.models.signature import infer_signature
+import pandas as pd
+import mlflow
+from pathlib import Path
+import time
+import sys
+import os
+import json
 %pip install ortools
 
 # COMMAND ----------
 
-import json
-import os
-import sys
-import time
-from pathlib import Path
-
-import mlflow
 
 # NOTE - Add src to path if not already there
 # We dynamically check where 'src' is located to be robust against CWD changes
@@ -126,7 +129,6 @@ print(f"Running optimization with config: {vars(args)}")
 
 # COMMAND ----------
 
-from main import run_optimization
 
 # COMMAND ----------
 
@@ -202,7 +204,52 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         # Log exported model representation alongside other artifacts
         lp_file = outputs.get("lp_file")
         if lp_file and os.path.exists(lp_file):
-            mlflow.log_artifact(lp_file, artifact_path="model")
+            mlflow.log_artifact(lp_file, artifact_path="solver_model")
+
+        # Log MLflow pyfunc model for registration/serving in Databricks
+        model_input_example = pd.DataFrame(
+            [
+                {
+                    "funding_level": args.funding_level,
+                    "dimension": args.dimension,
+                    "start_year": args.start_year,
+                    "horizon": args.horizon,
+                    "overflow_tiers": args.overflow_tiers,
+                    "optimizer": args.optimizer,
+                    "time_limit": args.time_limit,
+                    "workers": args.workers,
+                    "costs_path": args.costs_path,
+                    "benefits_path": args.benefits_path,
+                    "output_dir": args.output_dir,
+                    "generate_only": args.generate_only,
+                    "relax": args.relax,
+                }
+            ]
+        )
+        model_output_example = pd.DataFrame(
+            [
+                {
+                    "status": result.status,
+                    "objective_value": float(result.objective_value),
+                    "gap": float(result.gap),
+                    "total_spend": float(total_spend),
+                    "schedule_file": schedule_file,
+                    "cash_flow_file": cash_flow_file,
+                    "log_file": outputs.get("log_file") or getattr(result, "log_file", None),
+                }
+            ]
+        )
+        model_signature = infer_signature(
+            model_input_example, model_output_example)
+        optimizer_model = OptimizerPyFuncModel(base_args=vars(args))
+
+        mlflow.pyfunc.log_model(
+            artifact_path="model",
+            python_model=optimizer_model,
+            code_paths=[str(src_dir)],
+            signature=model_signature,
+            input_example=model_input_example,
+        )
 
         # Also log the log file
         log_file = outputs.get("log_file") or getattr(result, "log_file", None)
