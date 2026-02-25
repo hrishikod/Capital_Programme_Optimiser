@@ -86,6 +86,11 @@ dbutils.widgets.dropdown(
     "Run Mode",
 )
 dbutils.widgets.text(
+    "model_source_run_id",
+    "",
+    "Model-only Source Run ID (required for model_only)",
+)
+dbutils.widgets.text(
     "output_dir",
     "/dbfs/FileStore/capital_optimizer/output",
     "Output Directory (DBFS mount)",
@@ -113,6 +118,7 @@ args.workers = int(dbutils.widgets.get("workers"))
 args.costs_path = dbutils.widgets.get("costs_path")
 args.benefits_path = dbutils.widgets.get("benefits_path")
 run_mode = dbutils.widgets.get("run_mode")
+model_source_run_id = dbutils.widgets.get("model_source_run_id").strip()
 args.output_dir = dbutils.widgets.get("output_dir")
 model_tag = dbutils.widgets.get("model_tag")
 args.generate_only = False
@@ -126,6 +132,8 @@ args.output_dir = str(output_dir_path)
 
 print(f"Running optimization with config: {vars(args)}")
 print(f"Run mode: {run_mode}")
+if model_source_run_id:
+    print(f"Model source run ID: {model_source_run_id}")
 
 # COMMAND ----------
 
@@ -143,8 +151,64 @@ print(f"Run mode: {run_mode}")
 # experiment_name = "CapitalProgrammeOptimizer"
 # mlflow.set_experiment(experiment_name)
 
-with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
-    # Log parameters
+valid_modes = {"both", "optimize_only", "model_only"}
+if run_mode not in valid_modes:
+    raise ValueError(
+        f"Invalid run_mode '{run_mode}'. Expected one of {sorted(valid_modes)}")
+
+
+def _to_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+if run_mode == "model_only":
+    if not model_source_run_id:
+        raise ValueError(
+            "model_source_run_id is required when run_mode='model_only' to avoid parameter drift.")
+
+    source_run = mlflow.get_run(model_source_run_id)
+    source_params = source_run.data.params
+
+    required_params = {
+        "funding_level": float,
+        "dimension": str,
+        "start_year": int,
+        "horizon": int,
+        "overflow_tiers": str,
+        "optimizer": str,
+        "time_limit": float,
+        "workers": int,
+        "costs_path": str,
+        "benefits_path": str,
+        "output_dir": str,
+        "generate_only": _to_bool,
+        "relax": _to_bool,
+    }
+
+    missing = [key for key in required_params if key not in source_params]
+    if missing:
+        raise ValueError(
+            f"Source run {model_source_run_id} is missing required params for model packaging: {missing}")
+
+    for key, converter in required_params.items():
+        setattr(args, key, converter(source_params[key]))
+
+    output_dir_path = Path(args.output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    args.output_dir = str(output_dir_path)
+
+    print(
+        f"Using parameters from source run {model_source_run_id} for model_only packaging.")
+
+effective_run_name = f"{run_mode}_{args.dimension}_{args.funding_level}"
+
+with mlflow.start_run(run_name=effective_run_name):
+    if run_mode == "model_only":
+        mlflow.set_tag("model_source_run_id", model_source_run_id)
+
+    # Log parameters after any model_only source-run overrides
     mlflow.log_params(vars(args))
     mlflow.log_param("run_mode", run_mode)
 
@@ -167,11 +231,6 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         else:
             print(
                 f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
-
-    valid_modes = {"both", "optimize_only", "model_only"}
-    if run_mode not in valid_modes:
-        raise ValueError(
-            f"Invalid run_mode '{run_mode}'. Expected one of {sorted(valid_modes)}")
 
     result = None
     outputs = {}
@@ -202,13 +261,15 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
 
             cash_flow_file = outputs.get("cash_flow")
             if cash_flow_file and os.path.exists(cash_flow_file):
-                mlflow.log_artifact(cash_flow_file, artifact_path="output_data")
+                mlflow.log_artifact(
+                    cash_flow_file, artifact_path="output_data")
 
             lp_file = outputs.get("lp_file")
             if lp_file and os.path.exists(lp_file):
                 mlflow.log_artifact(lp_file, artifact_path="solver_model")
 
-            log_file = outputs.get("log_file") or getattr(result, "log_file", None)
+            log_file = outputs.get("log_file") or getattr(
+                result, "log_file", None)
             if log_file and os.path.exists(log_file):
                 mlflow.log_artifact(log_file, artifact_path="logs")
             else:
@@ -217,7 +278,8 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
                     logs = list(log_dir.glob("*.log"))
                     if logs:
                         latest_log = max(logs, key=os.path.getctime)
-                        mlflow.log_artifact(str(latest_log), artifact_path="logs")
+                        mlflow.log_artifact(
+                            str(latest_log), artifact_path="logs")
         else:
             print("Optimization failed or no solution found.")
             mlflow.log_param("status", "FAILED")
@@ -245,13 +307,15 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
 
         schedule_file = outputs.get("schedule")
         cash_flow_file = outputs.get("cash_flow")
-        log_file = outputs.get("log_file") or (getattr(result, "log_file", None) if result else None)
+        log_file = outputs.get("log_file") or (
+            getattr(result, "log_file", None) if result else None)
 
         if result:
             output_status = result.status
             output_objective = float(result.objective_value)
             output_gap = float(result.gap)
-            output_total_spend = float(total_spend) if total_spend is not None else None
+            output_total_spend = float(
+                total_spend) if total_spend is not None else None
         else:
             output_status = "NOT_RUN"
             output_objective = None
@@ -271,7 +335,8 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
                 }
             ]
         )
-        model_signature = infer_signature(model_input_example, model_output_example)
+        model_signature = infer_signature(
+            model_input_example, model_output_example)
         optimizer_model = OptimizerPyFuncModel(base_args=vars(args))
 
         mlflow.pyfunc.log_model(
