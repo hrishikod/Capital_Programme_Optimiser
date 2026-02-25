@@ -11,19 +11,19 @@
 # COMMAND ----------
 
 # The model requires ortools to be installed
-from mlflow_model import OptimizerPyFuncModel
-from main import run_optimization
-from mlflow.models.signature import infer_signature
-import pandas as pd
-import mlflow
-from pathlib import Path
-import time
-import sys
-import os
-import json
 %pip install ortools
 
 # COMMAND ----------
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import mlflow
+import pandas as pd
+from mlflow.models.signature import infer_signature
 
 
 # NOTE - Add src to path if not already there
@@ -45,6 +45,10 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+# Import the optimizer
+# Since src is in path, we import main directly
+from main import run_optimization
+from mlflow_model import OptimizerPyFuncModel
 
 # COMMAND ----------
 
