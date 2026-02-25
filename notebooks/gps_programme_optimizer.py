@@ -14,10 +14,12 @@
 %pip install ortools
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Load libraries and project modules
 
 # COMMAND ----------
+
 import json
 import os
 import sys
@@ -26,7 +28,6 @@ from pathlib import Path
 
 import cloudpickle
 import mlflow
-import mlflow_model as mlflow_model_module
 import pandas as pd
 from mlflow.models.signature import infer_signature
 
@@ -53,6 +54,7 @@ if str(src_dir) not in sys.path:
 # Import the optimizer
 # Since src is in path, we import main directly
 from main import run_optimization
+import mlflow_model as mlflow_model_module
 from mlflow_model import OptimizerPyFuncModel
 
 # COMMAND ----------
