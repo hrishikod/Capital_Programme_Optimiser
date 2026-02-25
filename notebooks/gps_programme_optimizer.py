@@ -14,7 +14,10 @@
 %pip install ortools
 
 # COMMAND ----------
+# MAGIC %md
+# MAGIC ## Load libraries and project modules
 
+# COMMAND ----------
 import json
 import os
 import sys
@@ -99,6 +102,11 @@ dbutils.widgets.text("model_tag", "", "Model Tag (Optional)")
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Parse widget values
+
+# COMMAND ----------
+
 # Parse arguments from widgets
 
 
@@ -138,7 +146,7 @@ if model_source_run_id:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Set model parameters for registering
+# MAGIC ## Resolve run mode and effective parameters
 
 # COMMAND ----------
 
@@ -199,12 +207,7 @@ effective_run_name = f"{run_mode}_{args.dimension}_{args.funding_level}"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Run Optimisation
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Trigger Model
+# MAGIC ## Execute workflow and log to MLflow
 
 # COMMAND ----------
 
@@ -212,6 +215,7 @@ effective_run_name = f"{run_mode}_{args.dimension}_{args.funding_level}"
 # experiment_name = "CapitalProgrammeOptimizer"
 # mlflow.set_experiment(experiment_name)
 with mlflow.start_run(run_name=effective_run_name):
+    # ---- Run metadata and shared artifact logging ----
     if run_mode == "model_only":
         mlflow.set_tag("model_source_run_id", model_source_run_id)
 
@@ -243,6 +247,7 @@ with mlflow.start_run(run_name=effective_run_name):
     outputs = {}
     total_spend = None
 
+    # ---- Optimisation branch (both / optimize_only) ----
     if run_mode in {"both", "optimize_only"}:
         start_time = time.perf_counter()
         result, outputs = run_optimization(args)
@@ -291,6 +296,7 @@ with mlflow.start_run(run_name=effective_run_name):
             print("Optimization failed or no solution found.")
             mlflow.log_param("status", "FAILED")
 
+    # ---- Model packaging branch (both / model_only) ----
     if run_mode in {"both", "model_only"}:
         model_input_example = pd.DataFrame(
             [
