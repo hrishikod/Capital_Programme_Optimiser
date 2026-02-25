@@ -45,8 +45,6 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-# Import the optimizer
-# Since src is in path, we import main directly
 
 # COMMAND ----------
 
@@ -121,14 +119,6 @@ print(f"Running optimization with config: {vars(args)}")
 
 # MAGIC %md
 # MAGIC ## Run Optimisation
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Import Model
-
-# COMMAND ----------
-
 
 # COMMAND ----------
 
