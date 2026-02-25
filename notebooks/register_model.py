@@ -52,10 +52,16 @@ if not MODEL_NAME:
 
 MODEL_URI = f"runs:/{RUN_ID}/model"
 
+# Use legacy Workspace Model Registry (non-Unity Catalog)
+mlflow.set_registry_uri("databricks")
+
 print(f"Run ID: {RUN_ID}")
 print(f"Model URI: {MODEL_URI}")
 print(f"Registered Model: {MODEL_NAME}")
 print(f"Target Stage: {TARGET_STAGE}")
+
+
+print("Registry URI: databricks (Will have to change for Unity Catalog)")
 
 # COMMAND ----------
 
