@@ -24,7 +24,9 @@ import sys
 import time
 from pathlib import Path
 
+import cloudpickle
 import mlflow
+import mlflow_model as mlflow_model_module
 import pandas as pd
 from mlflow.models.signature import infer_signature
 
@@ -350,6 +352,7 @@ with mlflow.start_run(run_name=effective_run_name):
         )
         model_signature = infer_signature(
             model_input_example, model_output_example)
+        cloudpickle.register_pickle_by_value(mlflow_model_module)
         optimizer_model = OptimizerPyFuncModel(base_args=vars(args))
 
         mlflow.pyfunc.log_model(
