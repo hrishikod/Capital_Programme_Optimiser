@@ -21,6 +21,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
+ROOT_CWD = Path.cwd()
+ROOT_FILE = Path(__file__).resolve().parents[2]
+ROOT_PARENT = ROOT_FILE.parent
+
+for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
+    s = str(root)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
 import numpy as np
 import pandas as pd
 import plotly.colors as plc
@@ -84,25 +93,11 @@ ENABLE_PREVIEW_NAVIGATION = False  # Toggle preview pane without removing suppor
 SHOW_REAL_BENEFIT_CHARTS = False  # Hide real benefit profile charts while keeping logic available.
 SHOW_ANALYSIS_CORRELATION = False  # Hide the analysis correlation block (controls + chart).
 
-ROOT_CWD = Path.cwd()
-
-ROOT_FILE = Path(__file__).resolve().parents[2]
-
-ROOT_PARENT = ROOT_FILE.parent
-
 INTERPOLATED_PROFILES_PATH = ROOT_FILE / "scenario_sets" / "interpolated_profiles_new.pkl"
 PCT_BAR_PATH = ROOT_FILE / "scenario_sets" / "Pct_bar.pkl"
 COST_BENEFIT_STREAMS_PATH = ROOT_FILE / "Cost_benefit_streams.xlsx"
 BCR_MAPPING_PATH = ROOT_FILE / "BCR_mapping.xlsx"
 INTERPOLATED_PROFILE_ANIMATION_SECONDS = 16.0
-
-for root in {ROOT_CWD, ROOT_FILE, ROOT_PARENT}:
-
-    s = str(root)
-
-    if s not in sys.path:
-
-        sys.path.insert(0, s)
 
 _FIND_SCENARIO_SUPPORTS_DIM = "objective_dim" in inspect.signature(find_scenario_code).parameters
 _FIND_SCENARIO_SUPPORTS_BENEFIT_LEVEL = "benefit_level" in inspect.signature(find_scenario_code).parameters
@@ -14233,6 +14228,27 @@ def render_scenarios_tab(
                     summary = parquet_export.build_gps27_parquet(gps27_dir, parquet_path)
                 except Exception as exc:
                     st.error(f"Parquet build failed: {exc}")
+                else:
+                    st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
+                    if summary.row_counts:
+                        st.write("Row counts:", summary.row_counts)
+
+    st.markdown('<div class="pbi-section-title">Export GPS27 economic + regions parquet</div>', unsafe_allow_html=True)
+    regions_parquet_path = gps27_dir / "gps27_regions_economic.parquet"
+    st.write("Build a tidy regional/economic parquet for Power BI (includes national/unmapped redistribution solved).")
+    st.caption(f"Source: {gps27_dir} | Output: {regions_parquet_path}")
+    if st.button("Run economic/regions parquet build", key="gps27_regions_parquet_build"):
+        if not gps27_dir.exists():
+            st.error(f"GPS27 folder not found: {gps27_dir}")
+        else:
+            with st.spinner("Building regional/economic parquet from GPS27 scenarios..."):
+                try:
+                    summary = parquet_export.build_gps27_regions_economic_parquet(
+                        gps27_dir,
+                        regions_parquet_path,
+                    )
+                except Exception as exc:
+                    st.error(f"Economic/regions parquet build failed: {exc}")
                 else:
                     st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
                     if summary.row_counts:
