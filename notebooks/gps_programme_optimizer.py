@@ -79,6 +79,12 @@ dbutils.widgets.text("workers", "0", "Num Workers")
 dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
 dbutils.widgets.text(
     "benefits_path", "input/benefits.csv", "Benefits CSV Path")
+dbutils.widgets.dropdown(
+    "run_mode",
+    "both",
+    ["both", "optimize_only", "model_only"],
+    "Run Mode",
+)
 dbutils.widgets.text(
     "output_dir",
     "/dbfs/FileStore/capital_optimizer/output",
@@ -106,6 +112,7 @@ args.time_limit = float(dbutils.widgets.get("time_limit"))
 args.workers = int(dbutils.widgets.get("workers"))
 args.costs_path = dbutils.widgets.get("costs_path")
 args.benefits_path = dbutils.widgets.get("benefits_path")
+run_mode = dbutils.widgets.get("run_mode")
 args.output_dir = dbutils.widgets.get("output_dir")
 model_tag = dbutils.widgets.get("model_tag")
 args.generate_only = False
@@ -118,6 +125,7 @@ output_dir_path.mkdir(parents=True, exist_ok=True)
 args.output_dir = str(output_dir_path)
 
 print(f"Running optimization with config: {vars(args)}")
+print(f"Run mode: {run_mode}")
 
 # COMMAND ----------
 
@@ -138,6 +146,7 @@ print(f"Running optimization with config: {vars(args)}")
 with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
     # Log parameters
     mlflow.log_params(vars(args))
+    mlflow.log_param("run_mode", run_mode)
 
     # Log input parameters as a JSON artifact
     config_file = output_dir_path / "config.json"
@@ -159,48 +168,61 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
             print(
                 f"Warning: {name.capitalize()} file not found at {input_file}, skipping artifact logging")
 
-    # Run Optimization
-    start_time = time.perf_counter()
-    result, outputs = run_optimization(args)
-    end_time = time.perf_counter()
-    elapsed = end_time - start_time
-    mlflow.log_metric("optimization_time_seconds", elapsed)
-    print(f"Optimization time: {elapsed:.2f} seconds")
+    valid_modes = {"both", "optimize_only", "model_only"}
+    if run_mode not in valid_modes:
+        raise ValueError(
+            f"Invalid run_mode '{run_mode}'. Expected one of {sorted(valid_modes)}")
 
-    if result:
-        # Log Metrics
-        mlflow.log_metric("objective_value", result.objective_value)
-        mlflow.log_metric("gap", result.gap)
+    result = None
+    outputs = {}
+    total_spend = None
 
-        if result.breakdown:
-            for k, v in result.breakdown.items():
-                mlflow.log_metric(k, v)
+    if run_mode in {"both", "optimize_only"}:
+        start_time = time.perf_counter()
+        result, outputs = run_optimization(args)
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
+        mlflow.log_metric("optimization_time_seconds", elapsed)
+        print(f"Optimization time: {elapsed:.2f} seconds")
 
-        # Calculate summary metrics from results
-        total_spend = result.spend_profile.iloc[0, :].sum()
-        mlflow.log_metric("total_spend", total_spend)
+        if result:
+            mlflow.log_metric("objective_value", result.objective_value)
+            mlflow.log_metric("gap", result.gap)
 
-        # Log output data artifacts (CSVs)
-        # result object doesn't have file paths, but run_optimization writes them to output/
-        # We can find them or use the dataframes directly
+            if result.breakdown:
+                for k, v in result.breakdown.items():
+                    mlflow.log_metric(k, v)
 
-        # Log output data artifacts (CSVs)
-        # Explicitly log only the CSVs to avoid duplicating logs and lp files
-        # which are subdirectories of output_dir but are logged to their own top-level artifact paths
-        schedule_file = outputs.get("schedule")
-        if schedule_file and os.path.exists(schedule_file):
-            mlflow.log_artifact(schedule_file, artifact_path="output_data")
+            total_spend = float(result.spend_profile.iloc[0, :].sum())
+            mlflow.log_metric("total_spend", total_spend)
 
-        cash_flow_file = outputs.get("cash_flow")
-        if cash_flow_file and os.path.exists(cash_flow_file):
-            mlflow.log_artifact(cash_flow_file, artifact_path="output_data")
+            schedule_file = outputs.get("schedule")
+            if schedule_file and os.path.exists(schedule_file):
+                mlflow.log_artifact(schedule_file, artifact_path="output_data")
 
-        # Log exported model representation alongside other artifacts
-        lp_file = outputs.get("lp_file")
-        if lp_file and os.path.exists(lp_file):
-            mlflow.log_artifact(lp_file, artifact_path="solver_model")
+            cash_flow_file = outputs.get("cash_flow")
+            if cash_flow_file and os.path.exists(cash_flow_file):
+                mlflow.log_artifact(cash_flow_file, artifact_path="output_data")
 
-        # Log MLflow pyfunc model for registration/serving in Databricks
+            lp_file = outputs.get("lp_file")
+            if lp_file and os.path.exists(lp_file):
+                mlflow.log_artifact(lp_file, artifact_path="solver_model")
+
+            log_file = outputs.get("log_file") or getattr(result, "log_file", None)
+            if log_file and os.path.exists(log_file):
+                mlflow.log_artifact(log_file, artifact_path="logs")
+            else:
+                log_dir = project_root / "logs"
+                if log_dir.exists():
+                    logs = list(log_dir.glob("*.log"))
+                    if logs:
+                        latest_log = max(logs, key=os.path.getctime)
+                        mlflow.log_artifact(str(latest_log), artifact_path="logs")
+        else:
+            print("Optimization failed or no solution found.")
+            mlflow.log_param("status", "FAILED")
+
+    if run_mode in {"both", "model_only"}:
         model_input_example = pd.DataFrame(
             [
                 {
@@ -220,21 +242,36 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
                 }
             ]
         )
+
+        schedule_file = outputs.get("schedule")
+        cash_flow_file = outputs.get("cash_flow")
+        log_file = outputs.get("log_file") or (getattr(result, "log_file", None) if result else None)
+
+        if result:
+            output_status = result.status
+            output_objective = float(result.objective_value)
+            output_gap = float(result.gap)
+            output_total_spend = float(total_spend) if total_spend is not None else None
+        else:
+            output_status = "NOT_RUN"
+            output_objective = None
+            output_gap = None
+            output_total_spend = None
+
         model_output_example = pd.DataFrame(
             [
                 {
-                    "status": result.status,
-                    "objective_value": float(result.objective_value),
-                    "gap": float(result.gap),
-                    "total_spend": float(total_spend),
+                    "status": output_status,
+                    "objective_value": output_objective,
+                    "gap": output_gap,
+                    "total_spend": output_total_spend,
                     "schedule_file": schedule_file,
                     "cash_flow_file": cash_flow_file,
-                    "log_file": outputs.get("log_file") or getattr(result, "log_file", None),
+                    "log_file": log_file,
                 }
             ]
         )
-        model_signature = infer_signature(
-            model_input_example, model_output_example)
+        model_signature = infer_signature(model_input_example, model_output_example)
         optimizer_model = OptimizerPyFuncModel(base_args=vars(args))
 
         mlflow.pyfunc.log_model(
@@ -244,21 +281,6 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
             signature=model_signature,
             input_example=model_input_example,
         )
+        print("MLflow pyfunc model artifact logged to 'model'.")
 
-        # Also log the log file
-        log_file = outputs.get("log_file") or getattr(result, "log_file", None)
-        if log_file and os.path.exists(log_file):
-            mlflow.log_artifact(log_file, artifact_path="logs")
-        else:
-            # Fallback logic if log_file not populated (e.g. error) or missing
-            log_dir = project_root / "logs"
-            if log_dir.exists():
-                logs = list(log_dir.glob("*.log"))
-                if logs:
-                    latest_log = max(logs, key=os.path.getctime)
-                    mlflow.log_artifact(str(latest_log), artifact_path="logs")
-
-        print("Run complete. Metrics and artifacts logged to MLflow.")
-    else:
-        print("Optimization failed or no solution found.")
-        mlflow.log_param("status", "FAILED")
+    print("Run complete. Metrics and artifacts logged to MLflow.")
