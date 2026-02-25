@@ -74,7 +74,7 @@ dbutils.widgets.text(
     "overflow_tiers", "0.12:1000,0.15:4000,0.20:12000", "Overflow Tiers")
 dbutils.widgets.dropdown("optimizer", "cp-sat",
                          ["cp-sat", "optimizer"], "Optimizer Backend")
-dbutils.widgets.text("time_limit", "300.0", "Time Limit (s)")
+dbutils.widgets.text("time_limit", "30.0", "Time Limit (s)")
 dbutils.widgets.text("workers", "0", "Num Workers")
 dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
 dbutils.widgets.text(
@@ -138,18 +138,10 @@ if model_source_run_id:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Run Optimisation
+# MAGIC ### Set model parameters for registering
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ### Trigger Model
-
-# COMMAND ----------
-
-# Start MLflow run
-# experiment_name = "CapitalProgrammeOptimizer"
-# mlflow.set_experiment(experiment_name)
 
 valid_modes = {"both", "optimize_only", "model_only"}
 if run_mode not in valid_modes:
@@ -204,6 +196,21 @@ if run_mode == "model_only":
 
 effective_run_name = f"{run_mode}_{args.dimension}_{args.funding_level}"
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Run Optimisation
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Trigger Model
+
+# COMMAND ----------
+
+# Start MLflow run
+# experiment_name = "CapitalProgrammeOptimizer"
+# mlflow.set_experiment(experiment_name)
 with mlflow.start_run(run_name=effective_run_name):
     if run_mode == "model_only":
         mlflow.set_tag("model_source_run_id", model_source_run_id)
