@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -694,6 +695,78 @@ def _region_dimension_table(mapping_df: pd.DataFrame) -> pd.DataFrame:
     return region_dim
 
 
+def _iter_lonlat_pairs(node: Any) -> Iterator[Tuple[float, float]]:
+    if isinstance(node, (list, tuple)):
+        if (
+            len(node) >= 2
+            and isinstance(node[0], (int, float))
+            and isinstance(node[1], (int, float))
+        ):
+            yield float(node[0]), float(node[1])
+            return
+        for child in node:
+            yield from _iter_lonlat_pairs(child)
+
+
+def _geometry_bbox(geometry: Dict[str, Any]) -> Tuple[float, float, float, float, int]:
+    coords = geometry.get("coordinates")
+    pairs = list(_iter_lonlat_pairs(coords))
+    if not pairs:
+        return (float("nan"), float("nan"), float("nan"), float("nan"), 0)
+    lons = [pair[0] for pair in pairs]
+    lats = [pair[1] for pair in pairs]
+    return min(lons), min(lats), max(lons), max(lats), len(pairs)
+
+
+def _region_boundary_table() -> pd.DataFrame:
+    geojson = dashboard_regions.fetch_region_geojson()
+    features = geojson.get("features", []) if isinstance(geojson, dict) else []
+    if not isinstance(features, list) or not features:
+        return pd.DataFrame()
+
+    name_field = dashboard_regions.get_geojson_name_field(geojson)
+    rows: List[Dict[str, Any]] = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        geometry = feature.get("geometry")
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            continue
+
+        raw_region = properties.get(name_field)
+        canonical_region = dashboard_regions._canonical_region_name(raw_region)
+        if not canonical_region:
+            continue
+
+        bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, point_count = _geometry_bbox(geometry)
+        rows.append(
+            {
+                "record_type": "region_boundary",
+                "region": canonical_region,
+                "join_key": dashboard_regions._canonical_join_key(canonical_region),
+                "join_key_norm": dashboard_regions._normalise_region_label(canonical_region),
+                "geojson_name_field": str(name_field),
+                "geojson_name_value": str(raw_region).strip() if raw_region is not None else "",
+                "geometry_type": geometry.get("type"),
+                "geometry_geojson": json.dumps(geometry, ensure_ascii=False),
+                "bbox_min_lon": bbox_min_lon,
+                "bbox_min_lat": bbox_min_lat,
+                "bbox_max_lon": bbox_max_lon,
+                "bbox_max_lat": bbox_max_lat,
+                "bbox_center_lon": (bbox_min_lon + bbox_max_lon) / 2.0 if point_count else float("nan"),
+                "bbox_center_lat": (bbox_min_lat + bbox_max_lat) / 2.0 if point_count else float("nan"),
+                "geometry_point_count": int(point_count),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out = out.drop_duplicates(subset=["region"], keep="first")
+    return out
+
+
 def _project_region_resolved_table(mapping_df: pd.DataFrame, region_dim: pd.DataFrame) -> pd.DataFrame:
     if mapping_df.empty:
         return pd.DataFrame()
@@ -866,13 +939,14 @@ def build_gps27_regions_economic_parquet(
 
     region_year = _region_metrics_table(scenario_meta, data, mapping_df)
     region_dim = _region_dimension_table(mapping_df)
+    region_boundary = _region_boundary_table()
     project_region_resolved = _project_region_resolved_table(mapping_df, region_dim)
     economic_year = _economic_year_table(region_year, scenario_meta)
 
     scenario_rows = scenario_meta.copy()
     scenario_rows["record_type"] = "region_scenario"
 
-    frames = [scenario_rows, region_year, economic_year, region_dim, project_region_resolved]
+    frames = [scenario_rows, region_year, economic_year, region_dim, region_boundary, project_region_resolved]
     frames = [frame for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
     if not frames:
         raise RuntimeError("No regional/economic data extracted from scenario results.")
@@ -921,6 +995,13 @@ def build_gps27_regions_economic_parquet(
         "benefit_spend_ratio_cum",
         "spend_total_regions_nzd",
         "benefit_total_regions_nzd",
+        "bbox_min_lon",
+        "bbox_min_lat",
+        "bbox_max_lon",
+        "bbox_max_lat",
+        "bbox_center_lon",
+        "bbox_center_lat",
+        "geometry_point_count",
     ]
     for col in numeric_columns:
         if col in combined.columns:
