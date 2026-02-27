@@ -6,7 +6,6 @@ import mlflow
 import pandas as pd
 from ortools.sat.python import cp_model
 
-
 P95_COST_UPLIFT = 1.2
 BEN_HIGH_UPLIFT = 1.2
 
