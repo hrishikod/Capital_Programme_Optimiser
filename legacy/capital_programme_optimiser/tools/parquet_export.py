@@ -28,6 +28,7 @@ class ExportSummary:
     rows: int
     row_counts: Dict[str, int]
     output_path: Path
+    boundaries_geojson_path: Optional[Path] = None
 
 
 @contextmanager
@@ -740,6 +741,22 @@ def _region_boundary_table() -> pd.DataFrame:
             continue
 
         bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, point_count = _geometry_bbox(geometry)
+        centroid_lon = (bbox_min_lon + bbox_max_lon) / 2.0 if point_count else float("nan")
+        centroid_lat = (bbox_min_lat + bbox_max_lat) / 2.0 if point_count else float("nan")
+        geometry_wkt: Optional[str] = None
+
+        if getattr(dashboard_regions, "_HAS_SHAPELY", False):
+            shape_fn = getattr(dashboard_regions, "shape", None)
+            if callable(shape_fn):
+                try:
+                    shape_obj = shape_fn(geometry)
+                    geometry_wkt = shape_obj.wkt
+                    representative_point = shape_obj.representative_point()
+                    centroid_lon = float(representative_point.x)
+                    centroid_lat = float(representative_point.y)
+                except Exception:
+                    geometry_wkt = None
+
         rows.append(
             {
                 "record_type": "region_boundary",
@@ -750,12 +767,17 @@ def _region_boundary_table() -> pd.DataFrame:
                 "geojson_name_value": str(raw_region).strip() if raw_region is not None else "",
                 "geometry_type": geometry.get("type"),
                 "geometry_geojson": json.dumps(geometry, ensure_ascii=False),
+                "geometry_wkt": geometry_wkt,
                 "bbox_min_lon": bbox_min_lon,
                 "bbox_min_lat": bbox_min_lat,
                 "bbox_max_lon": bbox_max_lon,
                 "bbox_max_lat": bbox_max_lat,
                 "bbox_center_lon": (bbox_min_lon + bbox_max_lon) / 2.0 if point_count else float("nan"),
                 "bbox_center_lat": (bbox_min_lat + bbox_max_lat) / 2.0 if point_count else float("nan"),
+                "longitude": centroid_lon,
+                "latitude": centroid_lat,
+                "centroid_longitude": centroid_lon,
+                "centroid_latitude": centroid_lat,
                 "geometry_point_count": int(point_count),
             }
         )
@@ -764,6 +786,137 @@ def _region_boundary_table() -> pd.DataFrame:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
     out = out.drop_duplicates(subset=["region"], keep="first")
+    return out
+
+
+def _build_region_boundary_geojson(
+    region_boundary: pd.DataFrame,
+    region_dim: pd.DataFrame,
+) -> Dict[str, Any]:
+    if region_boundary.empty or region_dim.empty:
+        return {"type": "FeatureCollection", "features": []}
+
+    boundary = region_boundary.copy()
+    if "join_key_norm" not in boundary.columns:
+        boundary["join_key_norm"] = boundary["join_key"].map(dashboard_regions._normalise_region_label)
+    if "region" in boundary.columns:
+        boundary = boundary.loc[boundary["region"] != dashboard_regions.AREA_OUTSIDE_REGION].copy()
+
+    boundary = boundary.dropna(subset=["join_key_norm", "geometry_geojson"])
+    boundary["join_key_norm"] = boundary["join_key_norm"].map(dashboard_regions._normalise_region_label)
+    boundary_lookup = (
+        boundary.drop_duplicates(subset=["join_key_norm"], keep="first")
+        .set_index("join_key_norm")
+        .to_dict("index")
+    )
+
+    dim = region_dim.copy()
+    if "join_key_norm" not in dim.columns:
+        dim["join_key_norm"] = dim["join_key"].map(dashboard_regions._normalise_region_label)
+    if "region" in dim.columns:
+        dim = dim.loc[dim["region"] != dashboard_regions.AREA_OUTSIDE_REGION].copy()
+    dim = dim.dropna(subset=["join_key_norm"]).copy()
+    dim["join_key_norm"] = dim["join_key_norm"].map(dashboard_regions._normalise_region_label)
+    dim = dim.drop_duplicates(subset=["join_key_norm"], keep="first")
+
+    features: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    for row in dim.itertuples():
+        join_key_norm = str(getattr(row, "join_key_norm", "")).strip()
+        if not join_key_norm:
+            continue
+        boundary_row = boundary_lookup.get(join_key_norm)
+        if boundary_row is None:
+            missing.append(join_key_norm)
+            continue
+
+        geometry_raw = boundary_row.get("geometry_geojson")
+        if isinstance(geometry_raw, dict):
+            geometry = geometry_raw
+        elif isinstance(geometry_raw, str):
+            try:
+                geometry = json.loads(geometry_raw)
+            except json.JSONDecodeError:
+                missing.append(join_key_norm)
+                continue
+        else:
+            missing.append(join_key_norm)
+            continue
+
+        region_label = getattr(row, "region", None) or boundary_row.get("region") or join_key_norm
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "join_key_norm": join_key_norm,
+                    "region": str(region_label),
+                },
+                "geometry": geometry,
+            }
+        )
+
+    if missing:
+        missing_preview = ", ".join(sorted(set(missing))[:10])
+        raise RuntimeError(
+            "Region boundary GeoJSON is missing geometry for join_key_norm values: "
+            f"{missing_preview}"
+        )
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _write_region_boundary_geojson(
+    region_boundary: pd.DataFrame,
+    region_dim: pd.DataFrame,
+    output_path: Path,
+) -> Path:
+    feature_collection = _build_region_boundary_geojson(region_boundary, region_dim)
+    output_path = output_path.with_suffix(".geojson")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(feature_collection, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def _attach_region_coordinates(
+    frame: pd.DataFrame,
+    boundary: pd.DataFrame,
+    *,
+    region_column: str,
+    join_key_norm_column: Optional[str] = None,
+    latitude_column: str = "latitude",
+    longitude_column: str = "longitude",
+) -> pd.DataFrame:
+    if frame.empty or boundary.empty:
+        return frame
+    if region_column not in frame.columns and (join_key_norm_column is None or join_key_norm_column not in frame.columns):
+        return frame
+
+    lookup = (
+        boundary[
+            [
+                "join_key_norm",
+                "latitude",
+                "longitude",
+                "centroid_latitude",
+                "centroid_longitude",
+            ]
+        ]
+        .dropna(subset=["join_key_norm"])
+        .drop_duplicates(subset=["join_key_norm"], keep="first")
+    )
+    lat_map = lookup.set_index("join_key_norm")["latitude"].to_dict()
+    lon_map = lookup.set_index("join_key_norm")["longitude"].to_dict()
+
+    out = frame.copy()
+    if join_key_norm_column is not None and join_key_norm_column in out.columns:
+        key_series = out[join_key_norm_column].map(dashboard_regions._normalise_region_label)
+    else:
+        key_series = out[region_column].map(dashboard_regions._normalise_region_label)
+    out[latitude_column] = key_series.map(lat_map)
+    out[longitude_column] = key_series.map(lon_map)
     return out
 
 
@@ -943,6 +1096,31 @@ def build_gps27_regions_economic_parquet(
     project_region_resolved = _project_region_resolved_table(mapping_df, region_dim)
     economic_year = _economic_year_table(region_year, scenario_meta)
 
+    region_year = _attach_region_coordinates(
+        region_year,
+        region_boundary,
+        region_column="region",
+        join_key_norm_column="join_key_norm",
+        latitude_column="latitude",
+        longitude_column="longitude",
+    )
+    region_dim = _attach_region_coordinates(
+        region_dim,
+        region_boundary,
+        region_column="region",
+        join_key_norm_column="join_key_norm",
+        latitude_column="latitude",
+        longitude_column="longitude",
+    )
+    project_region_resolved = _attach_region_coordinates(
+        project_region_resolved,
+        region_boundary,
+        region_column="resolved_region",
+        join_key_norm_column="resolved_join_key_norm",
+        latitude_column="resolved_latitude",
+        longitude_column="resolved_longitude",
+    )
+
     scenario_rows = scenario_meta.copy()
     scenario_rows["record_type"] = "region_scenario"
 
@@ -1001,15 +1179,28 @@ def build_gps27_regions_economic_parquet(
         "bbox_max_lat",
         "bbox_center_lon",
         "bbox_center_lat",
+        "longitude",
+        "latitude",
+        "centroid_longitude",
+        "centroid_latitude",
         "geometry_point_count",
+        "resolved_latitude",
+        "resolved_longitude",
     ]
     for col in numeric_columns:
         if col in combined.columns:
             combined[col] = pd.to_numeric(combined[col], errors="coerce")
 
     output_path = output_path.with_suffix(".parquet")
+    boundaries_geojson_path = output_path.with_name("gps27_region_boundaries.geojson")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(output_path, index=False, compression="snappy", engine="pyarrow")
+    boundaries_geojson_path = _write_region_boundary_geojson(region_boundary, region_dim, boundaries_geojson_path)
 
     row_counts = combined["record_type"].value_counts(dropna=False).to_dict()
-    return ExportSummary(rows=int(len(combined)), row_counts=row_counts, output_path=output_path)
+    return ExportSummary(
+        rows=int(len(combined)),
+        row_counts=row_counts,
+        output_path=output_path,
+        boundaries_geojson_path=boundaries_geojson_path,
+    )

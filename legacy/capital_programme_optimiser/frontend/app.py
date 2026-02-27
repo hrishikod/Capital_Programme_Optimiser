@@ -14235,8 +14235,14 @@ def render_scenarios_tab(
 
     st.markdown('<div class="pbi-section-title">Export GPS27 economic + regions parquet</div>', unsafe_allow_html=True)
     regions_parquet_path = gps27_dir / "gps27_regions_economic.parquet"
-    st.write("Build a tidy regional/economic parquet for Power BI (includes national/unmapped redistribution solved).")
-    st.caption(f"Source: {gps27_dir} | Output: {regions_parquet_path}")
+    regions_geojson_path = gps27_dir / "gps27_region_boundaries.geojson"
+    st.write(
+        "Build a tidy regional/economic parquet for Power BI "
+        "(includes national/unmapped redistribution solved)."
+    )
+    st.caption(
+        f"Source: {gps27_dir} | Outputs: {regions_parquet_path} and {regions_geojson_path}"
+    )
     if st.button("Run economic/regions parquet build", key="gps27_regions_parquet_build"):
         if not gps27_dir.exists():
             st.error(f"GPS27 folder not found: {gps27_dir}")
@@ -14251,6 +14257,8 @@ def render_scenarios_tab(
                     st.error(f"Economic/regions parquet build failed: {exc}")
                 else:
                     st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
+                    if summary.boundaries_geojson_path:
+                        st.success(f"GeoJSON written to {summary.boundaries_geojson_path}.")
                     if summary.row_counts:
                         st.write("Row counts:", summary.row_counts)
 
