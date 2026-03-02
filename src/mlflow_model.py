@@ -23,7 +23,7 @@ class OptimizerPyFuncModel(mlflow.pyfunc.PythonModel):
             return value
 
     def predict(self, context, model_input):
-        from main import run_optimization
+        from src.main import run_optimization
 
         if isinstance(model_input, pd.DataFrame):
             records = model_input.to_dict(orient="records")
