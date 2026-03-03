@@ -1622,12 +1622,18 @@ def collect_navigation_previews(
     preview_label = opt_label if preview_selection is opt_selection else cmp_label
     scenario_code = getattr(preview_selection, "code", None)
     if scenario_code:
+        spread_national_enabled = bool(st.session_state.get("region_spread_national_toggle", True))
         cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
-        cache_key = (cache_signature or "preview", scenario_code)
+        cache_key = (cache_signature or "preview", scenario_code, spread_national_enabled, spread_national_enabled)
         metrics_df = cache_bucket.get(cache_key)
         if metrics_df is None:
             try:
-                metrics_df = compute_region_metrics(data, scenario_code)
+                metrics_df = compute_region_metrics(
+                    data,
+                    scenario_code,
+                    spread_national=spread_national_enabled,
+                    spread_unmapped=spread_national_enabled,
+                )
             except Exception:
                 metrics_df = None
             else:
@@ -11934,6 +11940,21 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
     # Keep the server-side notion of the "current" year around for exports.
     st.session_state["region_metric_year"] = int(initial_year)
 
+    reconciliation_slice = metrics_df.loc[metrics_df["Year"] == int(initial_year)]
+    if not reconciliation_slice.empty:
+        row = reconciliation_slice.iloc[0]
+        included_cum = float(pd.to_numeric(row.get("Spend_Cum_National"), errors="coerce"))
+        full_cum = float(pd.to_numeric(row.get("Spend_Full_Cum"), errors="coerce"))
+        excluded_cum = float(pd.to_numeric(row.get("Spend_Excluded_Cum"), errors="coerce"))
+        spread_flag = bool(row.get("Spread_National_Enabled", True))
+        message = (
+            f"Reconciliation (FY {int(initial_year)}): included cumulative {format_currency(included_cum)} "
+            f"vs full cumulative {format_currency(full_cum)}."
+        )
+        if not spread_flag:
+            message += f" Excluded national/unmapped cumulative: {format_currency(excluded_cum)}."
+        st.caption(message)
+
     return initial_table if initial_table is not None and not initial_table.empty else None
 
 
@@ -11975,11 +11996,26 @@ def render_region_tab(
     if not scenario_code:
         st.info("Select a scenario with an available cache entry to view the regional investment map.")
         return export_tables
+    st.session_state.setdefault("region_spread_national_toggle", True)
+    spread_national_enabled = st.toggle(
+        "Spread national numbers across regions",
+        value=bool(st.session_state.get("region_spread_national_toggle", True)),
+        key="region_spread_national_toggle",
+        help=(
+            "When enabled, national and unmapped project totals are distributed across regions "
+            "using national allocation weights. When disabled, they are excluded from regional totals."
+        ),
+    )
     cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
     if st.session_state.get("_region_metrics_cache_version") != REGION_METRICS_CACHE_VERSION:
         cache_bucket.clear()
         st.session_state["_region_metrics_cache_version"] = REGION_METRICS_CACHE_VERSION
-    cache_key = (cache_signature or "default", scenario_code)
+    cache_key = (
+        cache_signature or "default",
+        scenario_code,
+        bool(spread_national_enabled),
+        bool(spread_national_enabled),
+    )
     metrics_df = cache_bucket.get(cache_key)
     if isinstance(metrics_df, pd.DataFrame):
         cached_version = metrics_df.attrs.get("cache_version")
@@ -12024,7 +12060,12 @@ def render_region_tab(
         return False
     if metrics_df is None:
         try:
-            metrics_df = compute_region_metrics(data, scenario_code)
+            metrics_df = compute_region_metrics(
+                data,
+                scenario_code,
+                spread_national=bool(spread_national_enabled),
+                spread_unmapped=bool(spread_national_enabled),
+            )
         except Exception as exc:
             st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
             return export_tables
@@ -12033,7 +12074,12 @@ def render_region_tab(
             cache_bucket[cache_key] = metrics_df
     elif _needs_refresh(metrics_df):
         try:
-            metrics_df = compute_region_metrics(data, scenario_code)
+            metrics_df = compute_region_metrics(
+                data,
+                scenario_code,
+                spread_national=bool(spread_national_enabled),
+                spread_unmapped=bool(spread_national_enabled),
+            )
         except Exception as exc:
             st.warning(f"Unable to refresh regional metrics for {selected_label}: {exc}")
             return export_tables
@@ -14243,6 +14289,24 @@ def render_scenarios_tab(
     st.caption(
         f"Source: {gps27_dir} | Outputs: {regions_parquet_path} and {regions_geojson_path}"
     )
+    spread_regions_export = st.toggle(
+        "Spread national numbers across regions",
+        value=True,
+        key="gps27_regions_export_spread_national_toggle",
+        help=(
+            "When enabled, national and unmapped rows are allocated to regions by national weights "
+            "in the exported regional/economic parquet."
+        ),
+    )
+    include_both_spread_modes = st.toggle(
+        "Include both spread modes in parquet",
+        value=False,
+        key="gps27_regions_export_include_both_modes_toggle",
+        help=(
+            "When enabled, exports both `spread_on` and `spread_off` rows with a `spread_mode` column "
+            "so Power BI can switch without rebuilding."
+        ),
+    )
     if st.button("Run economic/regions parquet build", key="gps27_regions_parquet_build"):
         if not gps27_dir.exists():
             st.error(f"GPS27 folder not found: {gps27_dir}")
@@ -14252,6 +14316,9 @@ def render_scenarios_tab(
                     summary = parquet_export.build_gps27_regions_economic_parquet(
                         gps27_dir,
                         regions_parquet_path,
+                        spread_national=bool(spread_regions_export),
+                        spread_unmapped=bool(spread_regions_export),
+                        include_both_spread_modes=bool(include_both_spread_modes),
                     )
                 except Exception as exc:
                     st.error(f"Economic/regions parquet build failed: {exc}")
