@@ -10768,6 +10768,34 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
         "table_label": "Benefit share (annual)",
     },
+    "BenefitPerCap_Cum": {
+        "label": "Cumulative benefit per capita",
+        "description": "Cumulative benefit per resident since the start of the programme.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Benefit per-cap cum",
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+    },
+    "BenefitPerCap_Year": {
+        "label": "Annual benefit per capita",
+        "description": "Annual benefit in the selected year per resident.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Benefit per-cap annual",
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+    },
 }
 
 
@@ -10785,6 +10813,8 @@ REGION_METRIC_GROUPS = {
     "Benefit share": [
         "BenefitShare_Cum",
         "BenefitShare_Year",
+        "BenefitPerCap_Cum",
+        "BenefitPerCap_Year",
     ],
 }
 
@@ -10795,8 +10825,12 @@ REGION_METRIC_DEFAULT = {
 REGION_METRIC_TOGGLE_PAIRS: Dict[str, Tuple[str, str]] = {
     "Share_Cum": ("Share_Cum", "Share_Year"),
     "Share_Year": ("Share_Cum", "Share_Year"),
+    "PerCap_Cum": ("PerCap_Cum", "PerCap_Year"),
+    "PerCap_Year": ("PerCap_Cum", "PerCap_Year"),
     "BenefitShare_Cum": ("BenefitShare_Cum", "BenefitShare_Year"),
     "BenefitShare_Year": ("BenefitShare_Cum", "BenefitShare_Year"),
+    "BenefitPerCap_Cum": ("BenefitPerCap_Cum", "BenefitPerCap_Year"),
+    "BenefitPerCap_Year": ("BenefitPerCap_Cum", "BenefitPerCap_Year"),
 }
 
 REGION_METRICS_CACHE_VERSION = 2
@@ -11110,7 +11144,14 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     table["_percap_year_fmt"] = (
         pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
     ).map(_format_currency_compact)
+    table["_benefit_percap_cum_fmt"] = (
+        pd.to_numeric(table.get("BenefitPerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
+    table["_benefit_percap_year_fmt"] = (
+        pd.to_numeric(table.get("BenefitPerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
     table.loc[~table["_has_data"], ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"]] = '-'
+    table.loc[~table["_has_data"], ["_benefit_percap_cum_fmt", "_benefit_percap_year_fmt"]] = '-'
 
     # Optional spend / benefit columns (shown when the metric group implies them)
     if "Spend_M" in table.columns:
@@ -11187,6 +11228,10 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
         columns["_benefit_year_fmt"] = f"Benefit in {fy_label}"
     if show_benefit_columns and "_benefit_cum_fmt" in table.columns:
         columns["_benefit_cum_fmt"] = f"Cumulative benefit to {fy_label}"
+    if show_benefit_columns and "BenefitPerCap_Cum" in df.columns:
+        columns["_benefit_percap_cum_fmt"] = "Benefit per-cap cum"
+    if show_benefit_columns and "BenefitPerCap_Year" in df.columns:
+        columns["_benefit_percap_year_fmt"] = "Benefit per-cap annual"
     if "PerCap_Cum" in df.columns and not show_benefit_columns:
         columns["_percap_cum_fmt"] = "Per-cap cum"
     if "PerCap_Year" in df.columns and not show_benefit_columns:
@@ -11859,6 +11904,24 @@ def render_region_map_reactive(
 
 
 def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *, settings: Settings) -> pd.DataFrame | None:
+    metrics_df = metrics_df.copy()
+    population_series = pd.to_numeric(metrics_df.get("population"), errors="coerce")
+    benefit_year_series = pd.to_numeric(metrics_df.get("Benefit_Year"), errors="coerce").fillna(0.0)
+    benefit_cum_series = pd.to_numeric(metrics_df.get("Benefit_Cum_Region"), errors="coerce").fillna(0.0)
+    denom = population_series.to_numpy(dtype=float)
+    metrics_df["BenefitPerCap_Year"] = np.divide(
+        benefit_year_series.to_numpy(dtype=float),
+        denom,
+        out=np.full(len(metrics_df), np.nan),
+        where=denom > 0,
+    )
+    metrics_df["BenefitPerCap_Cum"] = np.divide(
+        benefit_cum_series.to_numpy(dtype=float),
+        denom,
+        out=np.full(len(metrics_df), np.nan),
+        where=denom > 0,
+    )
+
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
@@ -11879,24 +11942,27 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
         key="region_heatmap_mode",
         label_visibility="collapsed",
     )
+    st.session_state.setdefault("region_heatmap_percap_toggle", False)
+    per_capita_heatmap_enabled = st.toggle(
+        "Colour heatmap by per-capita values",
+        value=bool(st.session_state.get("region_heatmap_percap_toggle", False)),
+        key="region_heatmap_percap_toggle",
+        help=(
+            "When enabled, the heatmap colour scale uses per-person values for the selected focus "
+            "(spend or benefit). Turn off to colour by share vs national."
+        ),
+    )
 
     # Metric selection UI
-    metric_options = REGION_METRIC_GROUPS[selected_mode]
-    metric_state_key = f"region_metric_key_{selected_mode.replace(' ', '_').lower()}"
-
     initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
     if initial_year not in available_years:
         initial_year = available_years[0]
 
-    default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
-    if default_metric not in metric_options:
-        default_metric = metric_options[0]
-    metric_key = default_metric
-
-
-    st.session_state[metric_state_key] = metric_key
+    if selected_mode == "Benefit share":
+        metric_key = "BenefitPerCap_Cum" if per_capita_heatmap_enabled else "BenefitShare_Cum"
+    else:
+        metric_key = "PerCap_Cum" if per_capita_heatmap_enabled else "Share_Cum"
     st.session_state["region_metric_key"] = metric_key
-
 
     toggle_metric_keys = REGION_METRIC_TOGGLE_PAIRS.get(metric_key)
 
