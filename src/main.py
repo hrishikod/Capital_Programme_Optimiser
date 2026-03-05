@@ -7,11 +7,20 @@ from pathlib import Path
 
 import mlflow
 
-from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
-from cp_sat_optimizer import solve_with_permutations
-from data_loader import DataLoader
-from financials import calculate_pv_coefficients
-from optimizer import CapitalProgrammeOptimizer as Optimizer
+try:
+    # Package context (e.g. imported as src.main in model serving).
+    from .cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
+    from .cp_sat_optimizer import solve_with_permutations
+    from .data_loader import DataLoader
+    from .financials import calculate_pv_coefficients
+    from .optimizer import CapitalProgrammeOptimizer as Optimizer
+except ImportError:
+    # Script / flat-module context (e.g. local notebook sys.path includes src/).
+    from cp_sat_optimizer import CapitalProgrammeOptimizer as CpSatOptimizer
+    from cp_sat_optimizer import solve_with_permutations
+    from data_loader import DataLoader
+    from financials import calculate_pv_coefficients
+    from optimizer import CapitalProgrammeOptimizer as Optimizer
 
 # Determine paths robustly (handles Databricks environments)
 try:
