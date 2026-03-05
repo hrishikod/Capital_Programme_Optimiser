@@ -1,133 +1,173 @@
-# Capital Project Optimiser Formulation
+# Capital Project Optimiser Formulation (Current CP-SAT Implementation)
 
 ## Fixed funding with piecewise soft cap
 
-This document describes the mathematical formulation of the capital project optimiser problem. The problem is to optimise the capital project portfolio subject to fixed funding with a piecewise soft cap on the net balance.
+This document describes the model currently implemented in `src/cp_sat_optimizer.py`.
+The optimisation is a pure CP-SAT integer model using scaled integer financial variables.
 
 ## 1. Sets and Indices
 
 * $v \in V$: Set of projects (variants).
-* $t \in \{0, \dots, T-1\}$: Time periods (years), where $T$ is the planning horizon (`Tn`).
+* $t \in \{0, \dots, T-1\}$: Time periods (years), where $T$ is the planning horizon.
 * $s$: Start year index for a project.
-* $i$: Index for piecewise soft cap tiers.
+* $A_v = \{0, \dots, T-D_v\}$ if $D_v \le T$, else $A_v = \emptyset$: Allowed starts for project $v$.
+* $i$: Index for piecewise soft-cap tiers.
 
 ## 2. Parameters
 
-* $E_t$: Funding envelope capacity (target) in year $t$ (`funding_target_S`).
-* $S_{v,k}$: Spend of project $v$ in the $k$-th year of its duration ($k=0, \dots, D_v-1$).
-* $D_v$: Duration of project $v$ in years.
-*   $\alpha_{pv}$: Small coefficient for the PV term in the objective (e.g. $10^{-4}$ or similar) to ensure it acts as a secondary objective.
-*   **Discount Rates (MBCM Schedule)**:
-    *   $r_1 = 0.02$ (2% per annum) for years $1 \le t \le 30$.
-    *   $r_2 = 0.015$ (1.5% per annum) for years $t > 30$.
-    *   $N = 30$ (Switch year).
-*   **Discount Factor** $D_t$:
-    $$
-    D_t = (1 + r_1)^{\min(t, N)} (1 + r_2)^{\max(0, t - N)}
-    $$
-* $W_{v,s}$: "PV coefficient (benefit) for starting project $v$ at year $s$."
-    $$
-    W_{v,s} = \sum_{k} \frac{B_{v, s, k}}{D_{s+k}}
-    $$
-    where $B_{v,s,k}$ is the monetised benefit realised in model year $t=s+k$ when project $v$ starts at $s$.
+* $E_t$: Funding target in year $t$ (`funding_target_M`).
+* $S_{v,k}$: Spend of project $v$ in its $k$-th year of duration.
+* $D_v$: Duration of project $v$.
 * $Cap_{starts}$: Maximum number of project starts allowed per year (`max_starts_per_year`).
-* $M$: A large constant used for big-M constraints (`net_bigM`), typically sum of all funding targets.
-* $Tier_{i, \text{thresh}}$: Threshold (fraction of envelope) for the $i$-th piecewise soft cap tier. Default tiers:
-  * Tier 1: 0.12 (12%)
-  * Tier 2: 0.15 (15%)
-  * Tier 3: 0.20 (20%)
-* $Tier_{i, \text{weight}}$: Penalty weight for the $i$-th piecewise soft cap tier. Default weights:
-  * Tier 1: 1000
-  * Tier 2: 4000
-  * Tier 3: 12000
-* $\alpha_{backlog}$: Weight for backlog penalty (`BACKLOG_WEIGHT` = 1.0).
-* $\alpha_{pv}$: Weight for PV reward (`PV_WEIGHT` = 1e-4).
+* $M$: Big-M for gating constraints (`big_M_scaled = 2 * sum(E_t) * scale`).
+* $U$: Shared upper bound for financial integer vars (`upper_bound = 5 * sum(E_t) * scale`).
+* $Tier_{i,\text{thresh}}$: Soft-cap threshold fraction for tier $i$ (defaults: 0.12, 0.15, 0.20).
+* $Tier_{i,\text{weight}}$: Tier penalty weight (defaults: 1000, 4000, 12000).
+* $\alpha_{backlog}$: Backlog weight (`backlog_weight`, default 1.0).
+* $\alpha_{pv}$: PV weight (`pv_weight`, default $1e-4$).
+* $W_{v,s}$: PV coefficient for project $v$ starting at $s$ (provided externally via `set_pv_coefficients`).
+* `scale`: Financial scaling factor (`scaling_factor`, default 1000).
+* `obj_scale`: Objective scaling factor (fixed at 10000).
 
 ## 3. Decision Variables
 
-* $x_{v,s} \in \{0, 1\}$: Binary variable, equal to 1 if project $v$ starts at year $s$, 0 otherwise. (Relaxed to continuous $[0,1]$ if `relax_binaries` is True).
-* $y_t \in [0, 1]$: Envelope active indicator for year $t$. Monotone non-increasing ($y_t \ge y_{t+1}$).
-* $funding_t \ge 0$: Funding actually drawn in year $t$.
-* $dividend_t \ge 0$: Unused funding returned in year $t$ (restricted to end-of-life).
-* $net_t \ge 0$: Net balance at the end of year $t$.
-* $excess\_tier_{i,t} \ge 0$: Excess net balance allocated to tier $i$ in year $t$.
-* $backlog_t \ge 0$: Auxiliary variable representing the backlog penalty in year $t$.
+* $x_{v,s} \in \{0,1\}$ for $s \in A_v$: 1 if project $v$ starts in year $s$.
+* $y_t \in \{0,1\}$: Envelope active indicator.
+* $funding_t, spend_t, dividend_t, net_t, backlog_t \in \mathbb{Z}_{\ge 0}$ (scaled units).
+* $excess_{i,t} \in \mathbb{Z}_{\ge 0}$ (scaled units).
+
+Implementation notes:
+
+* `relax_integrality` is currently ignored (CP-SAT remains integer).
+* `gap_limit` is accepted in API but not applied to solver parameters.
 
 ## 4. Objective Function
 
-Minimize the weighted sum of backlog penalties and excess tier penalties, minus the weighted PV reward:
+The implementation minimizes:
 
 $$
-\text{Minimize } Z = \alpha_{backlog} \sum_{t=0}^{T-1} backlog_t + \sum_{t=0}^{T-1} \sum_{i} (Tier_{i, \text{weight}} \cdot excess\_tier_{i,t}) - \alpha_{pv} \sum_{v \in V} \sum_{s} (W_{v,s} \cdot x_{v,s})
+Z = c_{backlog}\sum_t backlog_t + \sum_t\sum_i c_i\,excess_{i,t} - \sum_v\sum_{s \in A_v} c^{pv}_{v,s}\,x_{v,s}
 $$
+
+where:
+
+* $c_{backlog} = \lfloor \alpha_{backlog} \cdot obj\_scale \rfloor$
+* $c_i = \lfloor Tier_{i,\text{weight}} \cdot obj\_scale \rfloor$
+* $c^{pv}_{v,s} = \lfloor W_{v,s} \cdot scale \cdot obj\_scale \cdot \alpha_{pv} \rfloor$
+
+If no PV map is provided, the PV term is omitted.
 
 ## 5. Constraints
 
-### 5.1. Project Constraints
+### 5.1 Project Constraints
 
-* **Single Start:** Each project must start exactly once within the allowed start window.
+* **Single Start:**
 
-    $$\sum_{s} x_{v,s} = 1 \quad \forall v \in V
+$$
+\sum_{s \in A_v} x_{v,s} = 1 \quad \forall v \text{ with } A_v \neq \emptyset
+$$
 
- $$
+Projects with $A_v = \emptyset$ (duration longer than horizon) have no start variables.
 
-* **Starts Capacity:** Limit the number of project starts in any given year.
+* **Starts Capacity:**
 
-    $$\sum_{v} x_{v,t} \le Cap_{starts} \quad \forall t
- $$
+$$
+\sum_{v: t \in A_v} x_{v,t} \le Cap_{starts} \quad \forall t
+$$
 
-### 5.2. Financial Dynamics
+### 5.2 Financial Dynamics
 
-* **Spend Calculation:** Total spend in year $t$ is the sum of spend from all active projects.
+* **Spend Calculation:**
 
-    $$Spend_t = \sum_{v \in V} \sum_{s} x_{v,s} \cdot S_{v, t-s}
+$$
+spend_t = \sum_v \sum_{s \in A_v} x_{v,s} \cdot S_{v,t-s}
+$$
 
- $$
-    *(Sum includes only valid $ s $ such that $ s \le t < s + D_v $)*
+Only valid active-year terms are included ($s \le t < s + D_v$), and the implementation only adds strictly positive spend terms.
 
-* **Funding Draw:** Funding drawn is determined by the envelope capacity and the active indicator.
+* **Funding Draw:**
 
-    $$funding_t = y_t \cdot E_t \quad \forall t
- $$
+$$
+funding_t = y_t \cdot E_t \quad \forall t
+$$
 
 * **Net Balance:**
 
-    $$net_0 = funding_0 - Spend_0 - dividend_0
+$$
+net_0 = funding_0 - spend_0 - dividend_0
+$$
 
- $$
+$$
+net_t = net_{t-1} + funding_t - spend_t - dividend_t \quad \forall t > 0
+$$
 
-    $$net_t = net_{t-1} + funding_t - Spend_t - dividend_t \quad \forall t > 0
- $$
+### 5.3 Envelope and Dividend Logic
 
-### 5.3. Envelope and Dividend Logic
+* **Spend-Activation Link:**
 
-* **Envelope Activation:** If any project spends money in year $t$, the envelope must be active ($y_t=1$).
-    $$y_t \ge x_{v,s} \quad \forall v, s \text{ contributing to } Spend_t $$
+$$
+spend_t \le U \cdot y_t \quad \forall t
+$$
 
-* **Monotonicity:** The envelope active period must be contiguous from the start (cannot turn off and on again).
-    $$y_t \ge y_{t+1} \quad \forall t < T-1 $$
+* **Monotonic Envelope:**
 
-* **Dividend Restriction:** Dividends can only be paid out at the end of the programme's life (when the envelope becomes inactive).
-    $$ dividend_t \le M \cdot (1 - y_{t+1}) \quad \forall t < T-1 $$
+$$
+y_t \ge y_{t+1} \quad \forall t < T-1
+$$
 
-### 5.4. Piecewise Soft Cap on Net Balance
+* **Dividend Restriction:**
 
-The net balance is capped by a base threshold plus a series of excess tiers. If the balance exceeds the base, it spills into the excess tiers which incur penalties.
+$$
+dividend_t \le M \cdot (1 - y_{t+1}) \quad \forall t < T-1
+$$
 
-$$net_t \le E_t \cdot Tier_{0, \text{thresh}} + \sum_i excess\_tier_{i,t} + M \cdot (1 - y_{t+1}) $$
+### 5.4 Piecewise Soft Cap on Net Balance
 
-* **Tier Capacity:** Each excess tier has a maximum capacity based on the envelope size.
+For $t < T-1$:
 
-    $$0 \le excess\_tier_{i,t} \le E_t \cdot (Tier_{i+1, \text{thresh}} - Tier_{i, \text{thresh}}) $$
+$$
+net_t \le E_t \cdot Tier_{0,\text{thresh}} + \sum_i excess_{i,t} + M \cdot (1 - y_{t+1})
+$$
 
-*(Note: The term $ M \cdot (1 - y_{t+1}) $ allows the net balance to be arbitrarily large (up to $ M $) without penalty once the programme ends, i.e., when $ y_{t+1}=0 $.)*
+For $t = T-1$ (as implemented):
 
-### 5.5. Backlog Constraints
+$$
+net_{T-1} \le E_{T-1} \cdot Tier_{0,\text{thresh}} + \sum_i excess_{i,T-1} + M
+$$
 
-The backlog variable tracks the net balance but is forced to zero after the programme ends.
+Tier bounds:
 
-$$backlog_t \ge net_t - M \cdot (1 - y_{t+1}) $$
-$$backlog_t \le net_t + M \cdot (1 - y_{t+1}) $$
-$$backlog_{T-1} = 0 $$
+$$
+0 \le excess_{i,t} \le E_t \cdot (Tier_{i+1,\text{thresh}} - Tier_{i,\text{thresh}}) \quad \text{for non-last tiers}
+$$
 
-*(Effectively, $ backlog_t = net_t$ while $ y_{t+1}=1 $, and is unconstrained (can be 0) when $ y_{t+1}=0 $.)*
+The last tier is not threshold-capped in code; it is only bounded by the global integer upper bound $U$.
+
+### 5.5 Backlog Constraints
+
+$$
+backlog_t \ge net_t - M \cdot (1 - y_{t+1}) \quad \forall t < T-1
+$$
+
+$$
+backlog_t \le net_t + M \cdot (1 - y_{t+1}) \quad \forall t < T-1
+$$
+
+$$
+backlog_{T-1} = 0
+$$
+
+This enforces $backlog_t = net_t$ while $y_{t+1}=1$, and relaxes backlog once the envelope turns off.
+
+## 6. Scenario Permutations Around the Core Model
+
+The wrapper `solve_with_permutations(...)` solves four default combinations:
+
+* Cost scenarios:
+  * `Base Real` (original spends)
+  * `P95 Real` (spends multiplied by 1.2)
+* Benefit levels:
+  * `base` (original PV map)
+  * `high` (PV map multiplied by 1.2)
+
+Each combination is solved independently and then summarized.

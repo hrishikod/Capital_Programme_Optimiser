@@ -1,9 +1,9 @@
 """Utilities for exporting scenario pickles to a single parquet file."""
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -28,6 +28,7 @@ class ExportSummary:
     rows: int
     row_counts: Dict[str, int]
     output_path: Path
+    boundaries_geojson_path: Optional[Path] = None
 
 
 @contextmanager
@@ -582,6 +583,10 @@ def _region_metrics_table(
     scenario_meta: pd.DataFrame,
     data: dashboard_data.DashboardData,
     mapping_df: pd.DataFrame,
+    *,
+    spread_national: bool,
+    spread_unmapped: bool,
+    spread_mode: str,
 ) -> pd.DataFrame:
     if scenario_meta.empty:
         return pd.DataFrame()
@@ -589,13 +594,20 @@ def _region_metrics_table(
     frames: List[pd.DataFrame] = []
     for scenario_code in scenario_meta["scenario_code"].dropna().astype(str).unique():
         try:
-            region_df = dashboard_regions.compute_region_metrics(data, scenario_code, mapping=mapping_df)
+            region_df = dashboard_regions.compute_region_metrics(
+                data,
+                scenario_code,
+                mapping=mapping_df,
+                spread_national=spread_national,
+                spread_unmapped=spread_unmapped,
+            )
         except Exception:
             continue
         if not isinstance(region_df, pd.DataFrame) or region_df.empty:
             continue
         region_df = region_df.copy()
         region_df["scenario_code"] = scenario_code
+        region_df["spread_mode"] = str(spread_mode)
         frames.append(region_df)
 
     if not frames:
@@ -609,6 +621,16 @@ def _region_metrics_table(
             "Spend_National": "spend_national_nzd",
             "Spend_Cum_Region": "spend_cum_region_nzd",
             "Spend_Cum_National": "spend_cum_national_nzd",
+            "Spend_Full_Year": "spend_full_year_nzd",
+            "Spend_Source_National_Year": "spend_source_national_year_nzd",
+            "Spend_Source_Unmapped_Year": "spend_source_unmapped_year_nzd",
+            "Spend_Included_Year": "spend_included_year_nzd",
+            "Spend_Excluded_National_Year": "spend_excluded_national_year_nzd",
+            "Spend_Excluded_Unmapped_Year": "spend_excluded_unmapped_year_nzd",
+            "Spend_Excluded_Year": "spend_excluded_year_nzd",
+            "Spend_Full_Cum": "spend_full_cum_nzd",
+            "Spend_Included_Cum": "spend_included_cum_nzd",
+            "Spend_Excluded_Cum": "spend_excluded_cum_nzd",
             "Share_Year": "share_year",
             "Share_Cum": "share_cum",
             "PerCap_Year": "spend_per_cap_year_nzd",
@@ -622,8 +644,20 @@ def _region_metrics_table(
             "Benefit_National": "benefit_national_nzd",
             "Benefit_Cum_Region": "benefit_cum_region_nzd",
             "Benefit_Cum_National": "benefit_cum_national_nzd",
+            "Benefit_Full_Year": "benefit_full_year_nzd",
+            "Benefit_Source_National_Year": "benefit_source_national_year_nzd",
+            "Benefit_Source_Unmapped_Year": "benefit_source_unmapped_year_nzd",
+            "Benefit_Included_Year": "benefit_included_year_nzd",
+            "Benefit_Excluded_National_Year": "benefit_excluded_national_year_nzd",
+            "Benefit_Excluded_Unmapped_Year": "benefit_excluded_unmapped_year_nzd",
+            "Benefit_Excluded_Year": "benefit_excluded_year_nzd",
+            "Benefit_Full_Cum": "benefit_full_cum_nzd",
+            "Benefit_Included_Cum": "benefit_included_cum_nzd",
+            "Benefit_Excluded_Cum": "benefit_excluded_cum_nzd",
             "BenefitShare_Year": "benefit_share_year",
             "BenefitShare_Cum": "benefit_share_cum",
+            "Spread_National_Enabled": "spread_national_enabled",
+            "Spread_Unmapped_Enabled": "spread_unmapped_enabled",
         }
     )
     combined["join_key_norm"] = combined["join_key"].map(dashboard_regions._normalise_region_label)
@@ -633,8 +667,28 @@ def _region_metrics_table(
         "spend_national_nzd",
         "spend_cum_region_nzd",
         "spend_cum_national_nzd",
+        "spend_full_year_nzd",
+        "spend_source_national_year_nzd",
+        "spend_source_unmapped_year_nzd",
+        "spend_included_year_nzd",
+        "spend_excluded_national_year_nzd",
+        "spend_excluded_unmapped_year_nzd",
+        "spend_excluded_year_nzd",
+        "spend_full_cum_nzd",
+        "spend_included_cum_nzd",
+        "spend_excluded_cum_nzd",
         "spend_per_cap_year_nzd",
         "spend_per_cap_cum_nzd",
+        "benefit_full_year_nzd",
+        "benefit_source_national_year_nzd",
+        "benefit_source_unmapped_year_nzd",
+        "benefit_included_year_nzd",
+        "benefit_excluded_national_year_nzd",
+        "benefit_excluded_unmapped_year_nzd",
+        "benefit_excluded_year_nzd",
+        "benefit_full_cum_nzd",
+        "benefit_included_cum_nzd",
+        "benefit_excluded_cum_nzd",
     ]
     for col in spend_cols:
         if col in combined.columns:
@@ -740,6 +794,22 @@ def _region_boundary_table() -> pd.DataFrame:
             continue
 
         bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, point_count = _geometry_bbox(geometry)
+        centroid_lon = (bbox_min_lon + bbox_max_lon) / 2.0 if point_count else float("nan")
+        centroid_lat = (bbox_min_lat + bbox_max_lat) / 2.0 if point_count else float("nan")
+        geometry_wkt: Optional[str] = None
+
+        if getattr(dashboard_regions, "_HAS_SHAPELY", False):
+            shape_fn = getattr(dashboard_regions, "shape", None)
+            if callable(shape_fn):
+                try:
+                    shape_obj = shape_fn(geometry)
+                    geometry_wkt = shape_obj.wkt
+                    representative_point = shape_obj.representative_point()
+                    centroid_lon = float(representative_point.x)
+                    centroid_lat = float(representative_point.y)
+                except Exception:
+                    geometry_wkt = None
+
         rows.append(
             {
                 "record_type": "region_boundary",
@@ -750,12 +820,17 @@ def _region_boundary_table() -> pd.DataFrame:
                 "geojson_name_value": str(raw_region).strip() if raw_region is not None else "",
                 "geometry_type": geometry.get("type"),
                 "geometry_geojson": json.dumps(geometry, ensure_ascii=False),
+                "geometry_wkt": geometry_wkt,
                 "bbox_min_lon": bbox_min_lon,
                 "bbox_min_lat": bbox_min_lat,
                 "bbox_max_lon": bbox_max_lon,
                 "bbox_max_lat": bbox_max_lat,
                 "bbox_center_lon": (bbox_min_lon + bbox_max_lon) / 2.0 if point_count else float("nan"),
                 "bbox_center_lat": (bbox_min_lat + bbox_max_lat) / 2.0 if point_count else float("nan"),
+                "longitude": centroid_lon,
+                "latitude": centroid_lat,
+                "centroid_longitude": centroid_lon,
+                "centroid_latitude": centroid_lat,
                 "geometry_point_count": int(point_count),
             }
         )
@@ -764,6 +839,137 @@ def _region_boundary_table() -> pd.DataFrame:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
     out = out.drop_duplicates(subset=["region"], keep="first")
+    return out
+
+
+def _build_region_boundary_geojson(
+    region_boundary: pd.DataFrame,
+    region_dim: pd.DataFrame,
+) -> Dict[str, Any]:
+    if region_boundary.empty or region_dim.empty:
+        return {"type": "FeatureCollection", "features": []}
+
+    boundary = region_boundary.copy()
+    if "join_key_norm" not in boundary.columns:
+        boundary["join_key_norm"] = boundary["join_key"].map(dashboard_regions._normalise_region_label)
+    if "region" in boundary.columns:
+        boundary = boundary.loc[boundary["region"] != dashboard_regions.AREA_OUTSIDE_REGION].copy()
+
+    boundary = boundary.dropna(subset=["join_key_norm", "geometry_geojson"])
+    boundary["join_key_norm"] = boundary["join_key_norm"].map(dashboard_regions._normalise_region_label)
+    boundary_lookup = (
+        boundary.drop_duplicates(subset=["join_key_norm"], keep="first")
+        .set_index("join_key_norm")
+        .to_dict("index")
+    )
+
+    dim = region_dim.copy()
+    if "join_key_norm" not in dim.columns:
+        dim["join_key_norm"] = dim["join_key"].map(dashboard_regions._normalise_region_label)
+    if "region" in dim.columns:
+        dim = dim.loc[dim["region"] != dashboard_regions.AREA_OUTSIDE_REGION].copy()
+    dim = dim.dropna(subset=["join_key_norm"]).copy()
+    dim["join_key_norm"] = dim["join_key_norm"].map(dashboard_regions._normalise_region_label)
+    dim = dim.drop_duplicates(subset=["join_key_norm"], keep="first")
+
+    features: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    for row in dim.itertuples():
+        join_key_norm = str(getattr(row, "join_key_norm", "")).strip()
+        if not join_key_norm:
+            continue
+        boundary_row = boundary_lookup.get(join_key_norm)
+        if boundary_row is None:
+            missing.append(join_key_norm)
+            continue
+
+        geometry_raw = boundary_row.get("geometry_geojson")
+        if isinstance(geometry_raw, dict):
+            geometry = geometry_raw
+        elif isinstance(geometry_raw, str):
+            try:
+                geometry = json.loads(geometry_raw)
+            except json.JSONDecodeError:
+                missing.append(join_key_norm)
+                continue
+        else:
+            missing.append(join_key_norm)
+            continue
+
+        region_label = getattr(row, "region", None) or boundary_row.get("region") or join_key_norm
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "join_key_norm": join_key_norm,
+                    "region": str(region_label),
+                },
+                "geometry": geometry,
+            }
+        )
+
+    if missing:
+        missing_preview = ", ".join(sorted(set(missing))[:10])
+        raise RuntimeError(
+            "Region boundary GeoJSON is missing geometry for join_key_norm values: "
+            f"{missing_preview}"
+        )
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _write_region_boundary_geojson(
+    region_boundary: pd.DataFrame,
+    region_dim: pd.DataFrame,
+    output_path: Path,
+) -> Path:
+    feature_collection = _build_region_boundary_geojson(region_boundary, region_dim)
+    output_path = output_path.with_suffix(".geojson")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(feature_collection, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def _attach_region_coordinates(
+    frame: pd.DataFrame,
+    boundary: pd.DataFrame,
+    *,
+    region_column: str,
+    join_key_norm_column: Optional[str] = None,
+    latitude_column: str = "latitude",
+    longitude_column: str = "longitude",
+) -> pd.DataFrame:
+    if frame.empty or boundary.empty:
+        return frame
+    if region_column not in frame.columns and (join_key_norm_column is None or join_key_norm_column not in frame.columns):
+        return frame
+
+    lookup = (
+        boundary[
+            [
+                "join_key_norm",
+                "latitude",
+                "longitude",
+                "centroid_latitude",
+                "centroid_longitude",
+            ]
+        ]
+        .dropna(subset=["join_key_norm"])
+        .drop_duplicates(subset=["join_key_norm"], keep="first")
+    )
+    lat_map = lookup.set_index("join_key_norm")["latitude"].to_dict()
+    lon_map = lookup.set_index("join_key_norm")["longitude"].to_dict()
+
+    out = frame.copy()
+    if join_key_norm_column is not None and join_key_norm_column in out.columns:
+        key_series = out[join_key_norm_column].map(dashboard_regions._normalise_region_label)
+    else:
+        key_series = out[region_column].map(dashboard_regions._normalise_region_label)
+    out[latitude_column] = key_series.map(lat_map)
+    out[longitude_column] = key_series.map(lon_map)
     return out
 
 
@@ -874,13 +1080,34 @@ def _project_region_resolved_table(mapping_df: pd.DataFrame, region_dim: pd.Data
 def _economic_year_table(region_year: pd.DataFrame, scenario_meta: pd.DataFrame) -> pd.DataFrame:
     if region_year.empty:
         return pd.DataFrame()
+    group_keys = ["scenario_code", "year"]
+    if "spread_mode" in region_year.columns:
+        group_keys.append("spread_mode")
     grouped = (
-        region_year.groupby(["scenario_code", "year"], as_index=False)
+        region_year.groupby(group_keys, as_index=False)
         .agg(
+            spread_national_enabled=("spread_national_enabled", "max"),
+            spread_unmapped_enabled=("spread_unmapped_enabled", "max"),
             spend_national_nzd=("spend_national_nzd", "max"),
             spend_cum_national_nzd=("spend_cum_national_nzd", "max"),
+            spend_full_national_nzd=("spend_full_year_nzd", "max"),
+            spend_full_cum_national_nzd=("spend_full_cum_nzd", "max"),
+            spend_source_national_nzd=("spend_source_national_year_nzd", "max"),
+            spend_source_unmapped_nzd=("spend_source_unmapped_year_nzd", "max"),
+            spend_excluded_national_nzd=("spend_excluded_national_year_nzd", "max"),
+            spend_excluded_unmapped_nzd=("spend_excluded_unmapped_year_nzd", "max"),
+            spend_excluded_total_nzd=("spend_excluded_year_nzd", "max"),
+            spend_excluded_cum_nzd=("spend_excluded_cum_nzd", "max"),
             benefit_national_nzd=("benefit_national_nzd", "max"),
             benefit_cum_national_nzd=("benefit_cum_national_nzd", "max"),
+            benefit_full_national_nzd=("benefit_full_year_nzd", "max"),
+            benefit_full_cum_national_nzd=("benefit_full_cum_nzd", "max"),
+            benefit_source_national_nzd=("benefit_source_national_year_nzd", "max"),
+            benefit_source_unmapped_nzd=("benefit_source_unmapped_year_nzd", "max"),
+            benefit_excluded_national_nzd=("benefit_excluded_national_year_nzd", "max"),
+            benefit_excluded_unmapped_nzd=("benefit_excluded_unmapped_year_nzd", "max"),
+            benefit_excluded_total_nzd=("benefit_excluded_year_nzd", "max"),
+            benefit_excluded_cum_nzd=("benefit_excluded_cum_nzd", "max"),
             population_national=("population", "sum"),
             spend_total_regions_nzd=("spend_year_nzd", "sum"),
             benefit_total_regions_nzd=("benefit_year_nzd", "sum"),
@@ -925,6 +1152,10 @@ def build_gps27_regions_economic_parquet(
     output_path: Path,
     *,
     mapping_path: Optional[Path] = None,
+    attribute_workbook: Optional[Path] = None,
+    spread_national: bool = True,
+    spread_unmapped: bool = True,
+    include_both_spread_modes: bool = False,
 ) -> ExportSummary:
     if not scenario_dir.exists():
         raise FileNotFoundError(f"Scenario directory not found: {scenario_dir}")
@@ -935,13 +1166,64 @@ def build_gps27_regions_economic_parquet(
 
     meta = _scenario_meta_table(results, data.scenarios)
     scenario_meta = _region_scenario_meta(meta)
-    mapping_df = dashboard_regions.load_region_mapping(mapping_path)
+    workbook_path = attribute_workbook or DEFAULT_ATTRIBUTE_WORKBOOK
+    mapping_df = dashboard_regions.load_region_mapping(mapping_path, workbook_path=workbook_path)
 
-    region_year = _region_metrics_table(scenario_meta, data, mapping_df)
+    mode_specs: List[Tuple[str, bool, bool]]
+    if include_both_spread_modes:
+        mode_specs = [
+            ("spread_on", True, True),
+            ("spread_off", False, False),
+        ]
+    else:
+        mode_label = "spread_on" if spread_national and spread_unmapped else "spread_off"
+        mode_specs = [(mode_label, spread_national, spread_unmapped)]
+
+    region_frames: List[pd.DataFrame] = []
+    for mode_label, mode_spread_national, mode_spread_unmapped in mode_specs:
+        frame = _region_metrics_table(
+            scenario_meta,
+            data,
+            mapping_df,
+            spread_national=mode_spread_national,
+            spread_unmapped=mode_spread_unmapped,
+            spread_mode=mode_label,
+        )
+        if isinstance(frame, pd.DataFrame) and not frame.empty:
+            region_frames.append(frame)
+    if region_frames:
+        region_year = pd.concat(region_frames, ignore_index=True, sort=False)
+    else:
+        region_year = pd.DataFrame()
     region_dim = _region_dimension_table(mapping_df)
     region_boundary = _region_boundary_table()
     project_region_resolved = _project_region_resolved_table(mapping_df, region_dim)
     economic_year = _economic_year_table(region_year, scenario_meta)
+
+    region_year = _attach_region_coordinates(
+        region_year,
+        region_boundary,
+        region_column="region",
+        join_key_norm_column="join_key_norm",
+        latitude_column="latitude",
+        longitude_column="longitude",
+    )
+    region_dim = _attach_region_coordinates(
+        region_dim,
+        region_boundary,
+        region_column="region",
+        join_key_norm_column="join_key_norm",
+        latitude_column="latitude",
+        longitude_column="longitude",
+    )
+    project_region_resolved = _attach_region_coordinates(
+        project_region_resolved,
+        region_boundary,
+        region_column="resolved_region",
+        join_key_norm_column="resolved_join_key_norm",
+        latitude_column="resolved_latitude",
+        longitude_column="resolved_longitude",
+    )
 
     scenario_rows = scenario_meta.copy()
     scenario_rows["record_type"] = "region_scenario"
@@ -960,12 +1242,48 @@ def build_gps27_regions_economic_parquet(
     numeric_columns = [
         "spend_year_nzd",
         "spend_national_nzd",
+        "spend_full_year_nzd",
+        "spend_source_national_year_nzd",
+        "spend_source_unmapped_year_nzd",
+        "spend_included_year_nzd",
+        "spend_excluded_national_year_nzd",
+        "spend_excluded_unmapped_year_nzd",
+        "spend_excluded_year_nzd",
         "spend_cum_region_nzd",
         "spend_cum_national_nzd",
+        "spend_full_cum_nzd",
+        "spend_included_cum_nzd",
+        "spend_excluded_cum_nzd",
+        "spend_full_national_nzd",
+        "spend_full_cum_national_nzd",
+        "spend_source_national_nzd",
+        "spend_source_unmapped_nzd",
+        "spend_excluded_national_nzd",
+        "spend_excluded_unmapped_nzd",
+        "spend_excluded_total_nzd",
+        "spend_excluded_cum_nzd",
         "benefit_year_nzd",
         "benefit_national_nzd",
+        "benefit_full_year_nzd",
+        "benefit_source_national_year_nzd",
+        "benefit_source_unmapped_year_nzd",
+        "benefit_included_year_nzd",
+        "benefit_excluded_national_year_nzd",
+        "benefit_excluded_unmapped_year_nzd",
+        "benefit_excluded_year_nzd",
         "benefit_cum_region_nzd",
         "benefit_cum_national_nzd",
+        "benefit_full_cum_nzd",
+        "benefit_included_cum_nzd",
+        "benefit_excluded_cum_nzd",
+        "benefit_full_national_nzd",
+        "benefit_full_cum_national_nzd",
+        "benefit_source_national_nzd",
+        "benefit_source_unmapped_nzd",
+        "benefit_excluded_national_nzd",
+        "benefit_excluded_unmapped_nzd",
+        "benefit_excluded_total_nzd",
+        "benefit_excluded_cum_nzd",
         "share_year",
         "share_cum",
         "spend_per_cap_year_nzd",
@@ -1001,15 +1319,28 @@ def build_gps27_regions_economic_parquet(
         "bbox_max_lat",
         "bbox_center_lon",
         "bbox_center_lat",
+        "longitude",
+        "latitude",
+        "centroid_longitude",
+        "centroid_latitude",
         "geometry_point_count",
+        "resolved_latitude",
+        "resolved_longitude",
     ]
     for col in numeric_columns:
         if col in combined.columns:
             combined[col] = pd.to_numeric(combined[col], errors="coerce")
 
     output_path = output_path.with_suffix(".parquet")
+    boundaries_geojson_path = output_path.with_name("gps27_region_boundaries.geojson")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(output_path, index=False, compression="snappy", engine="pyarrow")
+    boundaries_geojson_path = _write_region_boundary_geojson(region_boundary, region_dim, boundaries_geojson_path)
 
     row_counts = combined["record_type"].value_counts(dropna=False).to_dict()
-    return ExportSummary(rows=int(len(combined)), row_counts=row_counts, output_path=output_path)
+    return ExportSummary(
+        rows=int(len(combined)),
+        row_counts=row_counts,
+        output_path=output_path,
+        boundaries_geojson_path=boundaries_geojson_path,
+    )

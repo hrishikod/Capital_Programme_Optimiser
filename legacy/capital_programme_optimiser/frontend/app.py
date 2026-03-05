@@ -1622,12 +1622,18 @@ def collect_navigation_previews(
     preview_label = opt_label if preview_selection is opt_selection else cmp_label
     scenario_code = getattr(preview_selection, "code", None)
     if scenario_code:
+        spread_national_enabled = bool(st.session_state.get("region_spread_national_toggle", True))
         cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
-        cache_key = (cache_signature or "preview", scenario_code)
+        cache_key = (cache_signature or "preview", scenario_code, spread_national_enabled, spread_national_enabled)
         metrics_df = cache_bucket.get(cache_key)
         if metrics_df is None:
             try:
-                metrics_df = compute_region_metrics(data, scenario_code)
+                metrics_df = compute_region_metrics(
+                    data,
+                    scenario_code,
+                    spread_national=spread_national_enabled,
+                    spread_unmapped=spread_national_enabled,
+                )
             except Exception:
                 metrics_df = None
             else:
@@ -10762,6 +10768,34 @@ REGION_METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
         "table_label": "Benefit share (annual)",
     },
+    "BenefitPerCap_Cum": {
+        "label": "Cumulative benefit per capita",
+        "description": "Cumulative benefit per resident since the start of the programme.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Benefit per-cap cum",
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+    },
+    "BenefitPerCap_Year": {
+        "label": "Annual benefit per capita",
+        "description": "Annual benefit in the selected year per resident.",
+        "type": "sequential",
+        "colorscale": PBI_SEQUENTIAL_SCALE,
+        "multiplier": 1_000_000.0,
+        "colorbar": "$ per person",
+        "tickformat": ",.0f",
+        "force_zero_min": True,
+        "formatter": _format_currency_nzd,
+        "table_label": "Benefit per-cap annual",
+        "sort": "desc",
+        "share_columns": {"cum": "BenefitShare_Cum", "year": "BenefitShare_Year"},
+    },
 }
 
 
@@ -10779,6 +10813,8 @@ REGION_METRIC_GROUPS = {
     "Benefit share": [
         "BenefitShare_Cum",
         "BenefitShare_Year",
+        "BenefitPerCap_Cum",
+        "BenefitPerCap_Year",
     ],
 }
 
@@ -10789,8 +10825,12 @@ REGION_METRIC_DEFAULT = {
 REGION_METRIC_TOGGLE_PAIRS: Dict[str, Tuple[str, str]] = {
     "Share_Cum": ("Share_Cum", "Share_Year"),
     "Share_Year": ("Share_Cum", "Share_Year"),
+    "PerCap_Cum": ("PerCap_Cum", "PerCap_Year"),
+    "PerCap_Year": ("PerCap_Cum", "PerCap_Year"),
     "BenefitShare_Cum": ("BenefitShare_Cum", "BenefitShare_Year"),
     "BenefitShare_Year": ("BenefitShare_Cum", "BenefitShare_Year"),
+    "BenefitPerCap_Cum": ("BenefitPerCap_Cum", "BenefitPerCap_Year"),
+    "BenefitPerCap_Year": ("BenefitPerCap_Cum", "BenefitPerCap_Year"),
 }
 
 REGION_METRICS_CACHE_VERSION = 2
@@ -11104,7 +11144,14 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
     table["_percap_year_fmt"] = (
         pd.to_numeric(table.get("PerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
     ).map(_format_currency_compact)
+    table["_benefit_percap_cum_fmt"] = (
+        pd.to_numeric(table.get("BenefitPerCap_Cum", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
+    table["_benefit_percap_year_fmt"] = (
+        pd.to_numeric(table.get("BenefitPerCap_Year", 0.0), errors="coerce").fillna(0.0) * 1_000_000
+    ).map(_format_currency_compact)
     table.loc[~table["_has_data"], ["_share_cum_fmt", "_share_year_fmt", "_percap_cum_fmt", "_percap_year_fmt"]] = '-'
+    table.loc[~table["_has_data"], ["_benefit_percap_cum_fmt", "_benefit_percap_year_fmt"]] = '-'
 
     # Optional spend / benefit columns (shown when the metric group implies them)
     if "Spend_M" in table.columns:
@@ -11181,6 +11228,10 @@ def build_region_summary_table(df: pd.DataFrame, metric_key: str, *, year: int) 
         columns["_benefit_year_fmt"] = f"Benefit in {fy_label}"
     if show_benefit_columns and "_benefit_cum_fmt" in table.columns:
         columns["_benefit_cum_fmt"] = f"Cumulative benefit to {fy_label}"
+    if show_benefit_columns and "BenefitPerCap_Cum" in df.columns:
+        columns["_benefit_percap_cum_fmt"] = "Benefit per-cap cum"
+    if show_benefit_columns and "BenefitPerCap_Year" in df.columns:
+        columns["_benefit_percap_year_fmt"] = "Benefit per-cap annual"
     if "PerCap_Cum" in df.columns and not show_benefit_columns:
         columns["_percap_cum_fmt"] = "Per-cap cum"
     if "PerCap_Year" in df.columns and not show_benefit_columns:
@@ -11853,6 +11904,24 @@ def render_region_map_reactive(
 
 
 def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *, settings: Settings) -> pd.DataFrame | None:
+    metrics_df = metrics_df.copy()
+    population_series = pd.to_numeric(metrics_df.get("population"), errors="coerce")
+    benefit_year_series = pd.to_numeric(metrics_df.get("Benefit_Year"), errors="coerce").fillna(0.0)
+    benefit_cum_series = pd.to_numeric(metrics_df.get("Benefit_Cum_Region"), errors="coerce").fillna(0.0)
+    denom = population_series.to_numpy(dtype=float)
+    metrics_df["BenefitPerCap_Year"] = np.divide(
+        benefit_year_series.to_numpy(dtype=float),
+        denom,
+        out=np.full(len(metrics_df), np.nan),
+        where=denom > 0,
+    )
+    metrics_df["BenefitPerCap_Cum"] = np.divide(
+        benefit_cum_series.to_numpy(dtype=float),
+        denom,
+        out=np.full(len(metrics_df), np.nan),
+        where=denom > 0,
+    )
+
     available_years = sorted(int(y) for y in metrics_df["Year"].dropna().unique())
     if not available_years:
         st.info("No spend data available for the selected scenario.")
@@ -11873,24 +11942,27 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
         key="region_heatmap_mode",
         label_visibility="collapsed",
     )
+    st.session_state.setdefault("region_heatmap_percap_toggle", False)
+    per_capita_heatmap_enabled = st.toggle(
+        "Colour heatmap by per-capita values",
+        value=bool(st.session_state.get("region_heatmap_percap_toggle", False)),
+        key="region_heatmap_percap_toggle",
+        help=(
+            "When enabled, the heatmap colour scale uses per-person values for the selected focus "
+            "(spend or benefit). Turn off to colour by share vs national."
+        ),
+    )
 
     # Metric selection UI
-    metric_options = REGION_METRIC_GROUPS[selected_mode]
-    metric_state_key = f"region_metric_key_{selected_mode.replace(' ', '_').lower()}"
-
     initial_year = int(st.session_state.get("region_metric_year", available_years[0]))
     if initial_year not in available_years:
         initial_year = available_years[0]
 
-    default_metric = st.session_state.get(metric_state_key, REGION_METRIC_DEFAULT[selected_mode])
-    if default_metric not in metric_options:
-        default_metric = metric_options[0]
-    metric_key = default_metric
-
-
-    st.session_state[metric_state_key] = metric_key
+    if selected_mode == "Benefit share":
+        metric_key = "BenefitPerCap_Cum" if per_capita_heatmap_enabled else "BenefitShare_Cum"
+    else:
+        metric_key = "PerCap_Cum" if per_capita_heatmap_enabled else "Share_Cum"
     st.session_state["region_metric_key"] = metric_key
-
 
     toggle_metric_keys = REGION_METRIC_TOGGLE_PAIRS.get(metric_key)
 
@@ -11934,6 +12006,21 @@ def render_region_map_controls(metrics_df: pd.DataFrame, scenario_label: str, *,
     # Keep the server-side notion of the "current" year around for exports.
     st.session_state["region_metric_year"] = int(initial_year)
 
+    reconciliation_slice = metrics_df.loc[metrics_df["Year"] == int(initial_year)]
+    if not reconciliation_slice.empty:
+        row = reconciliation_slice.iloc[0]
+        included_cum = float(pd.to_numeric(row.get("Spend_Cum_National"), errors="coerce"))
+        full_cum = float(pd.to_numeric(row.get("Spend_Full_Cum"), errors="coerce"))
+        excluded_cum = float(pd.to_numeric(row.get("Spend_Excluded_Cum"), errors="coerce"))
+        spread_flag = bool(row.get("Spread_National_Enabled", True))
+        message = (
+            f"Reconciliation (FY {int(initial_year)}): included cumulative {format_currency(included_cum)} "
+            f"vs full cumulative {format_currency(full_cum)}."
+        )
+        if not spread_flag:
+            message += f" Excluded national/unmapped cumulative: {format_currency(excluded_cum)}."
+        st.caption(message)
+
     return initial_table if initial_table is not None and not initial_table.empty else None
 
 
@@ -11975,11 +12062,26 @@ def render_region_tab(
     if not scenario_code:
         st.info("Select a scenario with an available cache entry to view the regional investment map.")
         return export_tables
+    st.session_state.setdefault("region_spread_national_toggle", True)
+    spread_national_enabled = st.toggle(
+        "Spread national numbers across regions",
+        value=bool(st.session_state.get("region_spread_national_toggle", True)),
+        key="region_spread_national_toggle",
+        help=(
+            "When enabled, national and unmapped project totals are distributed across regions "
+            "using national allocation weights. When disabled, they are excluded from regional totals."
+        ),
+    )
     cache_bucket = st.session_state.setdefault("_region_metrics_cache", {})
     if st.session_state.get("_region_metrics_cache_version") != REGION_METRICS_CACHE_VERSION:
         cache_bucket.clear()
         st.session_state["_region_metrics_cache_version"] = REGION_METRICS_CACHE_VERSION
-    cache_key = (cache_signature or "default", scenario_code)
+    cache_key = (
+        cache_signature or "default",
+        scenario_code,
+        bool(spread_national_enabled),
+        bool(spread_national_enabled),
+    )
     metrics_df = cache_bucket.get(cache_key)
     if isinstance(metrics_df, pd.DataFrame):
         cached_version = metrics_df.attrs.get("cache_version")
@@ -12024,7 +12126,12 @@ def render_region_tab(
         return False
     if metrics_df is None:
         try:
-            metrics_df = compute_region_metrics(data, scenario_code)
+            metrics_df = compute_region_metrics(
+                data,
+                scenario_code,
+                spread_national=bool(spread_national_enabled),
+                spread_unmapped=bool(spread_national_enabled),
+            )
         except Exception as exc:
             st.warning(f"Unable to compute regional metrics for {selected_label}: {exc}")
             return export_tables
@@ -12033,7 +12140,12 @@ def render_region_tab(
             cache_bucket[cache_key] = metrics_df
     elif _needs_refresh(metrics_df):
         try:
-            metrics_df = compute_region_metrics(data, scenario_code)
+            metrics_df = compute_region_metrics(
+                data,
+                scenario_code,
+                spread_national=bool(spread_national_enabled),
+                spread_unmapped=bool(spread_national_enabled),
+            )
         except Exception as exc:
             st.warning(f"Unable to refresh regional metrics for {selected_label}: {exc}")
             return export_tables
@@ -14235,8 +14347,32 @@ def render_scenarios_tab(
 
     st.markdown('<div class="pbi-section-title">Export GPS27 economic + regions parquet</div>', unsafe_allow_html=True)
     regions_parquet_path = gps27_dir / "gps27_regions_economic.parquet"
-    st.write("Build a tidy regional/economic parquet for Power BI (includes national/unmapped redistribution solved).")
-    st.caption(f"Source: {gps27_dir} | Output: {regions_parquet_path}")
+    regions_geojson_path = gps27_dir / "gps27_region_boundaries.geojson"
+    st.write(
+        "Build a tidy regional/economic parquet for Power BI "
+        "(includes national/unmapped redistribution solved)."
+    )
+    st.caption(
+        f"Source: {gps27_dir} | Outputs: {regions_parquet_path} and {regions_geojson_path}"
+    )
+    spread_regions_export = st.toggle(
+        "Spread national numbers across regions",
+        value=True,
+        key="gps27_regions_export_spread_national_toggle",
+        help=(
+            "When enabled, national and unmapped rows are allocated to regions by national weights "
+            "in the exported regional/economic parquet."
+        ),
+    )
+    include_both_spread_modes = st.toggle(
+        "Include both spread modes in parquet",
+        value=False,
+        key="gps27_regions_export_include_both_modes_toggle",
+        help=(
+            "When enabled, exports both `spread_on` and `spread_off` rows with a `spread_mode` column "
+            "so Power BI can switch without rebuilding."
+        ),
+    )
     if st.button("Run economic/regions parquet build", key="gps27_regions_parquet_build"):
         if not gps27_dir.exists():
             st.error(f"GPS27 folder not found: {gps27_dir}")
@@ -14246,11 +14382,16 @@ def render_scenarios_tab(
                     summary = parquet_export.build_gps27_regions_economic_parquet(
                         gps27_dir,
                         regions_parquet_path,
+                        spread_national=bool(spread_regions_export),
+                        spread_unmapped=bool(spread_regions_export),
+                        include_both_spread_modes=bool(include_both_spread_modes),
                     )
                 except Exception as exc:
                     st.error(f"Economic/regions parquet build failed: {exc}")
                 else:
                     st.success(f"Parquet written to {summary.output_path} ({summary.rows:,} rows).")
+                    if summary.boundaries_geojson_path:
+                        st.success(f"GeoJSON written to {summary.boundaries_geojson_path}.")
                     if summary.row_counts:
                         st.write("Row counts:", summary.row_counts)
 
