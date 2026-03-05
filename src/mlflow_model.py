@@ -60,8 +60,7 @@ class OptimizerPyFuncModel(mlflow.pyfunc.PythonModel):
                 if spend_profile is not None and not spend_profile.empty:
                     total_spend = float(spend_profile.iloc[0, :].sum())
 
-                log_file = written_outputs.get("log_file") or getattr(
-                    result, "log_file", None)
+                log_file = written_outputs.get("log_file") or getattr(result, "log_file", None)
                 outputs.append(
                     {
                         "status": result.status,

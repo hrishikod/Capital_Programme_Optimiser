@@ -88,8 +88,7 @@ def run_optimization(args):
             thresh, pen = t.split(":")
             piecewise_cap_tiers.append((float(thresh), float(pen)))
     except ValueError:
-        logging.error(
-            "Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
+        logging.error("Error: Invalid format for --overflow-tiers. Expected format: threshold:penalty,threshold:penalty")
         _flush_file_handlers()
         return None, outputs
 
@@ -152,8 +151,7 @@ def run_optimization(args):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(
-            log_file), logging.StreamHandler(sys.stdout)],
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
     )
 
     # Suppress noisy py4j logs in Databricks
@@ -199,17 +197,14 @@ def run_optimization(args):
     if args.optimizer == "cp-sat":
         logging.info("Using CP-SAT optimizer.")
         if args.relax:
-            logging.warning(
-                "--relax is ignored by CP-SAT (model remains integer).")
+            logging.warning("--relax is ignored by CP-SAT (model remains integer).")
 
         if getattr(args, "run_permutations", False) and args.generate_only:
-            logging.warning(
-                "--run-permutations is ignored when --generate-only is set.")
+            logging.warning("--run-permutations is ignored when --generate-only is set.")
 
         # Optional scenario-permutation solve path for the latest CP-SAT model.
         if getattr(args, "run_permutations", False) and not args.generate_only:
-            logging.info(
-                "Running scenario permutations (cost x benefit levels)...")
+            logging.info("Running scenario permutations (cost x benefit levels)...")
 
             optimizer_kwargs = {
                 "max_starts_per_year": 100,
@@ -227,8 +222,7 @@ def run_optimization(args):
                 pv_map_base=calculate_pv_coefficients(
                     data.variants,
                     data.kernels_by_dim,
-                    {vid: list(range(max(0, years - meta["dur"] + 1)))
-                     for vid, meta in data.variants.items()},
+                    {vid: list(range(max(0, years - meta["dur"] + 1))) for vid, meta in data.variants.items()},
                     start_fy,
                     years,
                     dim=target_dimension,
@@ -242,8 +236,7 @@ def run_optimization(args):
             outputs["permutation_summary"] = str(summary_file)
 
             # Keep backwards-compatible single-result return by selecting Base/base if available.
-            result = results.get(("Base Real", "base")) or next(
-                iter(results.values()), None)
+            result = results.get(("Base Real", "base")) or next(iter(results.values()), None)
 
             if result is None:
                 logging.info("No result returned from permutation solves.")
@@ -336,8 +329,7 @@ def run_optimization(args):
         logging.info("\nSchedule (Top 20):")
         # For dataframe printing, we might want to keep print or log as string
         logging.info("\n" + result.schedule.head(20).to_string())
-        logging.info(
-            f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
+        logging.info(f"\nTotal Spend: {result.spend_profile.iloc[0, :].sum():,.2f}")
 
         # Save results
         out_dir = resolved_output_dir
@@ -359,8 +351,7 @@ def run_optimization(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Capital Programme Optimizer")
-    parser.add_argument("--generate-only", action="store_true",
-                        help="Generate LP file only, do not solve.")
+    parser.add_argument("--generate-only", action="store_true", help="Generate LP file only, do not solve.")
     parser.add_argument(
         "--relax",
         action="store_true",
@@ -371,24 +362,18 @@ def main():
         action="store_true",
         help="CP-SAT only: run default cost/benefit scenario permutations and export a summary CSV.",
     )
-    parser.add_argument("--funding-level", type=float, default=1500.0,
-                        help="Annual funding envelope (default: 1500.0)")
-    parser.add_argument("--dimension", type=str, default="Total",
-                        help="Dimension to optimize (default: Total)")
+    parser.add_argument("--funding-level", type=float, default=1500.0, help="Annual funding envelope (default: 1500.0)")
+    parser.add_argument("--dimension", type=str, default="Total", help="Dimension to optimize (default: Total)")
     parser.add_argument(
         "--overflow-tiers",
         type=str,
         default="0.12:1000,0.15:4000,0.20:12000",
         help="Overflow tiers as threshold:penalty pairs (default: 0.12:1000,0.15:4000,0.20:12000)",
     )
-    parser.add_argument("--start-year", type=int, default=2026,
-                        help="Start financial year (default: 2026)")
-    parser.add_argument("--horizon", type=int, default=60,
-                        help="Planning horizon in years (default: 60)")
-    parser.add_argument("--time-limit", type=float, default=300.0,
-                        help="Solver time limit in seconds (default: 300.0)")
-    parser.add_argument("--workers", type=int, default=0,
-                        help="Number of search workers (default: 0 = all available)")
+    parser.add_argument("--start-year", type=int, default=2026, help="Start financial year (default: 2026)")
+    parser.add_argument("--horizon", type=int, default=60, help="Planning horizon in years (default: 60)")
+    parser.add_argument("--time-limit", type=float, default=300.0, help="Solver time limit in seconds (default: 300.0)")
+    parser.add_argument("--workers", type=int, default=0, help="Number of search workers (default: 0 = all available)")
     parser.add_argument(
         "--optimizer",
         type=str,
@@ -405,8 +390,7 @@ def main():
         default="input/benefits.csv",
         help="Path to benefits CSV file (default: input/benefits.csv)",
     )
-    parser.add_argument("--output-dir", type=str, default="output",
-                        help="Directory for output files (default: output)")
+    parser.add_argument("--output-dir", type=str, default="output", help="Directory for output files (default: output)")
 
     # Use parse_known_args to avoid crashing on Jupyter/Databricks kernel arguments (e.g. -f connection.json)
     args, _ = parser.parse_known_args()

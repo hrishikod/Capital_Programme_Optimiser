@@ -52,8 +52,7 @@ def _load_dataframe_from_payload(payload_path: Path) -> pd.DataFrame:
     columns = split.get("columns")
     data = split.get("data")
     if not isinstance(columns, list) or not isinstance(data, list):
-        raise ValueError(
-            "'dataframe_split' must include list fields 'columns' and 'data'.")
+        raise ValueError("'dataframe_split' must include list fields 'columns' and 'data'.")
 
     return pd.DataFrame(data, columns=columns)
 
@@ -75,8 +74,7 @@ def _coerce_input_schema(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col, dtype in SCHEMA_TYPE_MAP.items():
         if dtype == "float64":
-            out[col] = pd.to_numeric(
-                out[col], errors="raise").astype("float64")
+            out[col] = pd.to_numeric(out[col], errors="raise").astype("float64")
         elif dtype == "int64":
             out[col] = pd.to_numeric(out[col], errors="raise").astype("int64")
         elif dtype == "bool":
@@ -89,10 +87,8 @@ def _coerce_input_schema(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--run-id", help="MLflow run ID that logged artifact path 'model'.")
-    parser.add_argument(
-        "--model-uri", help="Explicit model URI (for example runs:/<run_id>/model).")
+    parser.add_argument("--run-id", help="MLflow run ID that logged artifact path 'model'.")
+    parser.add_argument("--model-uri", help="Explicit model URI (for example runs:/<run_id>/model).")
     parser.add_argument(
         "--payload-json",
         type=Path,
@@ -102,26 +98,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--registry-uri", help="Optional MLflow registry URI.")
 
     # Overrides when not using --payload-json
-    parser.add_argument("--funding-level", type=float,
-                        default=DEFAULT_ROW["funding_level"])
+    parser.add_argument("--funding-level", type=float, default=DEFAULT_ROW["funding_level"])
     parser.add_argument("--dimension", default=DEFAULT_ROW["dimension"])
-    parser.add_argument("--start-year", type=int,
-                        default=DEFAULT_ROW["start_year"])
+    parser.add_argument("--start-year", type=int, default=DEFAULT_ROW["start_year"])
     parser.add_argument("--horizon", type=int, default=DEFAULT_ROW["horizon"])
-    parser.add_argument("--overflow-tiers",
-                        default=DEFAULT_ROW["overflow_tiers"])
+    parser.add_argument("--overflow-tiers", default=DEFAULT_ROW["overflow_tiers"])
     parser.add_argument("--optimizer", default=DEFAULT_ROW["optimizer"])
-    parser.add_argument("--time-limit", type=float,
-                        default=DEFAULT_ROW["time_limit"])
+    parser.add_argument("--time-limit", type=float, default=DEFAULT_ROW["time_limit"])
     parser.add_argument("--workers", type=int, default=DEFAULT_ROW["workers"])
     parser.add_argument("--costs-path", default=DEFAULT_ROW["costs_path"])
-    parser.add_argument("--benefits-path",
-                        default=DEFAULT_ROW["benefits_path"])
+    parser.add_argument("--benefits-path", default=DEFAULT_ROW["benefits_path"])
     parser.add_argument("--output-dir", default=DEFAULT_ROW["output_dir"])
-    parser.add_argument("--generate-only", action="store_true",
-                        default=DEFAULT_ROW["generate_only"])
-    parser.add_argument("--relax", action="store_true",
-                        default=DEFAULT_ROW["relax"])
+    parser.add_argument("--generate-only", action="store_true", default=DEFAULT_ROW["generate_only"])
+    parser.add_argument("--relax", action="store_true", default=DEFAULT_ROW["relax"])
 
     return parser
 
