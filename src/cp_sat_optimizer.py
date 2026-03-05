@@ -6,6 +6,37 @@ import mlflow
 import pandas as pd
 from ortools.sat.python import cp_model
 
+P95_COST_UPLIFT = 1.2
+BEN_HIGH_UPLIFT = 1.2
+
+
+def _make_p95_variants_from_base(base_variants: Dict[str, dict], uplift: float) -> Dict[str, dict]:
+    p95 = {}
+    for vid, meta in base_variants.items():
+        m = dict(meta)
+        if "spend" in m and m["spend"] is not None:
+            m["spend"] = [float(x) * uplift for x in m["spend"]]
+        p95[vid] = m
+    return p95
+
+
+def _ensure_cost_scenarios(variants: Dict) -> Dict[str, Dict[str, dict]]:
+    sample = next(iter(variants.values())) if isinstance(variants, dict) and variants else None
+    is_flat = isinstance(sample, dict) and "dur" in sample and "spend" in sample
+    if is_flat:
+        base = variants
+        return {"Base Real": base, "P95 Real": _make_p95_variants_from_base(base, P95_COST_UPLIFT)}
+
+    base = variants.get("Base Real") or next(iter(variants.values()))
+    p95 = variants.get("P95 Real") or _make_p95_variants_from_base(base, P95_COST_UPLIFT)
+    return {"Base Real": base, "P95 Real": p95}
+
+
+def _benefit_levels_from_base(pv_map_base: Dict[Tuple[str, int], float]) -> Dict[str, Dict[Tuple[str, int], float]]:
+    base = pv_map_base or {}
+    high = {(k[0], k[1]): float(v) * BEN_HIGH_UPLIFT for k, v in base.items()} if base else {}
+    return {"base": base, "high": high}
+
 
 @dataclass
 class OptimizationResult:
@@ -378,3 +409,48 @@ class CapitalProgrammeOptimizer:
             breakdown=breakdown,
             log_file=None,  # Will be populated by main wrapper if needed
         )
+
+
+def solve_with_permutations(
+    variants: Dict,
+    funding_target_M: List[float],
+    start_fy: int,
+    years: int,
+    pv_map_base: Dict[Tuple[str, int], float] = None,
+    optimizer_kwargs: Dict = None,
+) -> Tuple[pd.DataFrame, Dict[Tuple[str, str], OptimizationResult]]:
+    cost_scenarios = _ensure_cost_scenarios(variants)
+    ben_levels = _benefit_levels_from_base(pv_map_base or {})
+    results: Dict[Tuple[str, str], OptimizationResult] = {}
+    rows = []
+
+    for cost_name, vset in cost_scenarios.items():
+        for ben_lel, pv_map in ben_levels.items():
+            opt = CapitalProgrammeOptimizer(
+                variants=vset,
+                funding_target_M=funding_target_M,
+                start_fy=start_fy,
+                years=years,
+                **(optimizer_kwargs or {}),
+            )
+            if pv_map:
+                opt.set_pv_coefficients(pv_map)
+
+            res = opt.solve()
+            results[(cost_name, ben_lel)] = res
+            b = res.breakdown or {}
+            rows.append(
+                {
+                    "cost_scenario": cost_name,
+                    "ben_lel": ben_lel,
+                    "status": res.status,
+                    "objective_value": res.objective_value,
+                    "gap": res.gap,
+                    "real_backlog_M": b.get("real_backlog_M"),
+                    "real_excess_above_soft_cap_M": b.get("real_excess_above_soft_cap_M"),
+                    "real_pv_M": b.get("real_pv_M"),
+                }
+            )
+
+    summary = pd.DataFrame(rows).sort_values(["cost_scenario", "ben_lel"]).reset_index(drop=True)
+    return summary, results

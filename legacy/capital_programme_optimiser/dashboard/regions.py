@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import json
+import re
+import shutil
+import tempfile
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import json
-import re
-import unicodedata
 import numpy as np
-import requests
 import pandas as pd
+import requests
 
 try:
     from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, mapping, shape
@@ -27,9 +29,8 @@ except Exception:  # pragma: no cover - optional dependency
     _shapely_make_valid = None
     _HAS_SHAPELY = False
 
-from .data import DashboardData
 from ..config import load_project_region_mapping, load_settings
-
+from .data import DashboardData
 
 # -----------------------------
 # Region geometry source (ArcGIS REST)
@@ -49,6 +50,8 @@ class RegionGeometrySource:
 
 
 GEOMETRY_LOCAL_PATH = Path(__file__).with_name("nz_regional_councils_2025.geojson")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_ATTRIBUTE_WORKBOOK = REPO_ROOT / "Cost_benefit_streams.xlsx"
 
 SETTINGS = load_settings()
 BENEFIT_SCENARIOS = dict(SETTINGS.data.benefit_scenarios)
@@ -128,6 +131,36 @@ OFFICIAL_REGION_NAMES: Dict[str, str] = {
 
 OFFICIAL_REGION_ASCII: Dict[str, str] = {
     key: _ascii_region_name(value) for key, value in OFFICIAL_REGION_NAMES.items()
+}
+
+_REGION_ALIAS_MAP: Dict[str, str] = {
+    _normalise_region_label("Northland"): "Northland Region",
+    _normalise_region_label("Auckland"): "Auckland Region",
+    _normalise_region_label("Waikato"): "Waikato Region",
+    _normalise_region_label("Bay of Plenty"): "Bay of Plenty Region",
+    _normalise_region_label("Gisborne"): "Gisborne Region",
+    _normalise_region_label("Tairawhiti"): "Gisborne Region",
+    _normalise_region_label("Tairāwhiti"): "Gisborne Region",
+    _normalise_region_label("Tairwhiti"): "Gisborne Region",
+    _normalise_region_label("Tairāwhiti (Gisborne)"): "Gisborne Region",
+    _normalise_region_label("Tairwhiti (Gisborne)"): "Gisborne Region",
+    _normalise_region_label("Hawkes Bay"): "Hawke's Bay Region",
+    _normalise_region_label("Hawke's Bay"): "Hawke's Bay Region",
+    _normalise_region_label("Taranaki"): "Taranaki Region",
+    _normalise_region_label("Manawatu Whanganui"): "Manawatū-Whanganui Region",
+    _normalise_region_label("Manawatū Whanganui"): "Manawatū-Whanganui Region",
+    _normalise_region_label("Manawatū/Whanganui"): "Manawatū-Whanganui Region",
+    _normalise_region_label("Manawatu/Whanganui"): "Manawatū-Whanganui Region",
+    _normalise_region_label("ManawatWhanganui"): "Manawatū-Whanganui Region",
+    _normalise_region_label("Wellington"): "Wellington Region",
+    _normalise_region_label("Tasman"): "Tasman Region",
+    _normalise_region_label("Nelson"): "Nelson Region",
+    _normalise_region_label("Marlborough"): "Marlborough Region",
+    _normalise_region_label("West Coast"): "West Coast Region",
+    _normalise_region_label("Canterbury"): "Canterbury Region",
+    _normalise_region_label("Otago"): "Otago Region",
+    _normalise_region_label("Southland"): "Southland Region",
+    _normalise_region_label("Area Outside"): "Area Outside Region",
 }
 
 AREA_OUTSIDE_REGION = "Area Outside Region"
@@ -212,6 +245,9 @@ def _canonical_region_name(value: Any) -> Optional[str]:
     # Direct try with our normaliser
     norm = _normalise_region_label(raw)
     if norm:
+        alias_hit = _REGION_ALIAS_MAP.get(norm)
+        if alias_hit:
+            return alias_hit
         hit = OFFICIAL_REGION_NAMES.get(norm)
         if hit:
             return hit
@@ -219,6 +255,9 @@ def _canonical_region_name(value: Any) -> Optional[str]:
     # Common oversight: caller forgot the 'Region' suffix
     fallback_norm = _normalise_region_label(f"{raw} Region")
     if fallback_norm and fallback_norm != norm:
+        alias_hit = _REGION_ALIAS_MAP.get(fallback_norm)
+        if alias_hit:
+            return alias_hit
         hit = OFFICIAL_REGION_NAMES.get(fallback_norm)
         if hit:
             return hit
@@ -726,10 +765,181 @@ def _standardise_mapping_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-@lru_cache(maxsize=1)
-def load_region_mapping(path: Optional[Path] = None) -> pd.DataFrame:
+def _clean_mapping_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def _read_excel_safe(path: Path, *, sheet_name: str) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        pass
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=path.suffix) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            shutil.copy2(path, tmp_path)
+            return pd.read_excel(tmp_path, sheet_name=sheet_name, engine="openpyxl")
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+    except Exception:
+        return pd.DataFrame()
+
+
+def _read_workbook_region_sheet(workbook_path: Path, *, sheet_name: str) -> pd.DataFrame:
+    df = _read_excel_safe(workbook_path, sheet_name=sheet_name)
+    if df.empty:
+        return pd.DataFrame(columns=["project", "region"])
+    df = df.copy()
+    df.columns = [str(col).strip() for col in df.columns]
+    lookup = {str(col).strip().lower(): col for col in df.columns}
+    project_col = lookup.get("project")
+    region_col = lookup.get("region")
+    if project_col is None or region_col is None:
+        return pd.DataFrame(columns=["project", "region"])
+
+    out = pd.DataFrame()
+    out["project"] = df[project_col].map(_clean_mapping_value)
+    out["region"] = df[region_col].map(_clean_mapping_value)
+    out = out.dropna(subset=["project"]).copy()
+    out["project"] = out["project"].astype(str).str.strip()
+    out["region"] = out["region"].fillna(UNMAPPED_REGION_LABEL).astype(str).str.strip()
+    out = out[out["project"].ne("")]
+    out["project_norm"] = _normalise_project(out["project"])
+    out["region"] = out["region"].apply(
+        lambda value: _canonical_region_name(value) or _canonical_join_key(value) or UNMAPPED_REGION_LABEL
+    )
+    out["join_key"] = out["region"].apply(_canonical_join_key)
+    out["join_key_norm"] = out["join_key"].map(_normalise_region_label)
+    return out[["project", "project_norm", "region", "join_key", "join_key_norm"]]
+
+
+def _load_workbook_project_region_mapping(
+    workbook_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    workbook = Path(workbook_path) if workbook_path is not None else DEFAULT_ATTRIBUTE_WORKBOOK
+    if not workbook.exists():
+        return pd.DataFrame(
+            columns=["project", "project_norm", "region", "join_key", "join_key_norm"]
+        )
+
+    costs = _read_workbook_region_sheet(workbook, sheet_name="Costs")
+    benefits = _read_workbook_region_sheet(workbook, sheet_name="Benefits Linear 40yrs")
+    if costs.empty and benefits.empty:
+        return pd.DataFrame(
+            columns=["project", "project_norm", "region", "join_key", "join_key_norm"]
+        )
+
+    if costs.empty:
+        combined = benefits.copy()
+    elif benefits.empty:
+        combined = costs.copy()
+    else:
+        combined = (
+            costs.set_index("project_norm")
+            .combine_first(benefits.set_index("project_norm"))
+            .reset_index()
+        )
+    if "project_norm" not in combined.columns:
+        combined["project_norm"] = _normalise_project(combined.get("project"))
+    combined = combined.drop_duplicates(subset=["project_norm"], keep="first")
+    return combined
+
+
+def _merge_project_mapping_sources(
+    base_mapping: pd.DataFrame,
+    workbook_mapping: pd.DataFrame,
+) -> pd.DataFrame:
+    if base_mapping is None or base_mapping.empty:
+        return workbook_mapping.copy()
+    if workbook_mapping is None or workbook_mapping.empty:
+        return base_mapping.copy()
+
+    baseline_regions = (
+        base_mapping[["region", "join_key", "join_key_norm", "population", "gdp_per_capita"]]
+        .dropna(subset=["region"])
+        .drop_duplicates(subset=["region"], keep="first")
+    )
+    baseline_regions = baseline_regions.copy()
+    baseline_regions["join_key_norm"] = baseline_regions["join_key_norm"].fillna(
+        baseline_regions["join_key"].map(_normalise_region_label)
+    )
+
+    workbook = workbook_mapping.copy()
+    workbook["region"] = workbook["region"].fillna(UNMAPPED_REGION_LABEL).astype(str).str.strip()
+    workbook["join_key"] = workbook["join_key"].fillna(workbook["region"]).astype(str).str.strip()
+    workbook["join_key_norm"] = workbook["join_key_norm"].fillna(
+        workbook["join_key"].map(_normalise_region_label)
+    )
+
+    workbook = workbook.merge(
+        baseline_regions[
+            ["region", "join_key_norm", "population", "gdp_per_capita"]
+        ].rename(
+            columns={
+                "region": "_baseline_region",
+                "population": "_baseline_population",
+                "gdp_per_capita": "_baseline_gdp_per_capita",
+            }
+        ),
+        on="join_key_norm",
+        how="left",
+    )
+    population_series = (
+        workbook["population"]
+        if "population" in workbook.columns
+        else pd.Series(np.nan, index=workbook.index)
+    )
+    gdp_series = (
+        workbook["gdp_per_capita"]
+        if "gdp_per_capita" in workbook.columns
+        else pd.Series(np.nan, index=workbook.index)
+    )
+    workbook["population"] = pd.to_numeric(population_series, errors="coerce").combine_first(
+        pd.to_numeric(workbook.get("_baseline_population"), errors="coerce")
+    )
+    workbook["gdp_per_capita"] = pd.to_numeric(gdp_series, errors="coerce").combine_first(
+        pd.to_numeric(workbook.get("_baseline_gdp_per_capita"), errors="coerce")
+    )
+    workbook["region"] = workbook["_baseline_region"].combine_first(workbook["region"])
+    workbook.drop(
+        columns=["_baseline_region", "_baseline_population", "_baseline_gdp_per_capita"],
+        inplace=True,
+        errors="ignore",
+    )
+
+    workbook = workbook.reindex(columns=base_mapping.columns, fill_value=np.nan)
+
+    combined = pd.concat([base_mapping, workbook], ignore_index=True, sort=False)
+    combined = _harmonise_join_keys(combined)
+    return combined
+
+
+@lru_cache(maxsize=8)
+def load_region_mapping(
+    path: Optional[Path] = None,
+    *,
+    workbook_path: Optional[Path] = None,
+    include_workbook: bool = True,
+) -> pd.DataFrame:
     raw = load_project_region_mapping(path)
-    return _harmonise_join_keys(raw)
+    base_mapping = _harmonise_join_keys(raw)
+    if not include_workbook:
+        return base_mapping
+    workbook_mapping = _load_workbook_project_region_mapping(workbook_path)
+    return _merge_project_mapping_sources(base_mapping, workbook_mapping)
 
 
 def _harmonise_join_keys(mapping: pd.DataFrame) -> pd.DataFrame:
@@ -768,8 +978,26 @@ def _harmonise_join_keys(mapping: pd.DataFrame) -> pd.DataFrame:
 
     aligned["join_key_norm"] = aligned["join_key"].map(_normalise_region_label)
 
-    # Keep a single row per project if duplicates appear; last-one-wins is fine
-    aligned = aligned.copy()
+    aligned["population"] = pd.to_numeric(aligned["population"], errors="coerce")
+    aligned["gdp_per_capita"] = pd.to_numeric(aligned["gdp_per_capita"], errors="coerce")
+
+    # Fill missing population/GDP values from any other row mapped to the same canonical region.
+    region_baseline = (
+        aligned[["region", "population", "gdp_per_capita"]]
+        .dropna(subset=["region"])
+        .drop_duplicates(subset=["region"], keep="first")
+        .set_index("region")
+    )
+    aligned["population"] = aligned["population"].combine_first(aligned["region"].map(region_baseline["population"]))
+    aligned["gdp_per_capita"] = aligned["gdp_per_capita"].combine_first(
+        aligned["region"].map(region_baseline["gdp_per_capita"])
+    )
+
+    # Keep a single row per project if duplicates appear; last-one-wins ensures workbook overrides baseline mapping.
+    if "project_norm" in aligned.columns:
+        aligned = aligned.drop_duplicates(subset=["project_norm"], keep="last").copy()
+    else:
+        aligned = aligned.copy()
 
     return aligned
 
@@ -842,23 +1070,33 @@ def _distribute_national_rows(
     region_col: str,
     value_col: str,
     weights: Optional[Dict[str, float]] = None,
+    spread_national: bool = True,
+    spread_unmapped: bool = True,
 ) -> pd.DataFrame:
     if df is None or df.empty:
         return df
+
+    is_national = df[region_col].map(_is_national_region_label)
+    is_unmapped = df[region_col].map(_is_unmapped_region_label)
+
+    spread_mask = (is_national & bool(spread_national)) | (is_unmapped & bool(spread_unmapped))
+    exclude_mask = (is_national & (not bool(spread_national))) | (is_unmapped & (not bool(spread_unmapped)))
+    if not spread_mask.any() and not exclude_mask.any():
+        return df
+
+    base = df.loc[~(spread_mask | exclude_mask)].copy()
+    if not spread_mask.any():
+        return base
+
     weights_map = dict(weights or NATIONAL_PROJECT_REGION_WEIGHTS)
     weights_map = {k: float(v) for k, v in weights_map.items() if k in DISPLAY_REGION_SET and float(v) > 0}
     weight_total = float(sum(weights_map.values()))
     if weight_total <= 0:
-        return df
+        return pd.concat([base, df.loc[spread_mask].copy()], ignore_index=True)
     if abs(weight_total - 1.0) > 1e-8:
         weights_map = {k: v / weight_total for k, v in weights_map.items()}
 
-    mask = df[region_col].map(_is_national_region_label) | df[region_col].map(_is_unmapped_region_label)
-    if not mask.any():
-        return df
-
-    base = df.loc[~mask].copy()
-    nat = df.loc[mask].copy()
+    nat = df.loc[spread_mask].copy()
 
     nat[value_col] = pd.to_numeric(nat[value_col], errors="coerce").fillna(0.0)
     nat = nat[nat[value_col] != 0.0].copy()
@@ -879,6 +1117,62 @@ def _distribute_national_rows(
     expanded.drop(columns=["_weight", "_target_region"], inplace=True)
 
     return pd.concat([base, expanded], ignore_index=True)
+
+
+def _apply_region_spread_policy(
+    df: pd.DataFrame,
+    *,
+    year_col: str,
+    region_col: str,
+    value_col: str,
+    spread_national: bool,
+    spread_unmapped: bool,
+    weights: Optional[Dict[str, float]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if df is None or df.empty:
+        empty_diag = pd.DataFrame(
+            columns=[
+                year_col,
+                "full_total",
+                "source_national",
+                "source_unmapped",
+                "included_total",
+                "excluded_national",
+                "excluded_unmapped",
+                "excluded_total",
+            ]
+        )
+        return df, empty_diag
+
+    working = df.copy()
+    working[value_col] = pd.to_numeric(working[value_col], errors="coerce").fillna(0.0)
+    is_national = working[region_col].map(_is_national_region_label)
+    is_unmapped = working[region_col].map(_is_unmapped_region_label)
+
+    full_total = working.groupby(year_col)[value_col].sum()
+    source_national = working.loc[is_national].groupby(year_col)[value_col].sum()
+    source_unmapped = working.loc[is_unmapped].groupby(year_col)[value_col].sum()
+
+    distributed = _distribute_national_rows(
+        working,
+        region_col=region_col,
+        value_col=value_col,
+        weights=weights,
+        spread_national=spread_national,
+        spread_unmapped=spread_unmapped,
+    )
+    included_total = distributed.groupby(year_col)[value_col].sum()
+
+    diag = pd.DataFrame({"full_total": full_total})
+    diag["source_national"] = source_national
+    diag["source_unmapped"] = source_unmapped
+    diag["included_total"] = included_total
+    diag = diag.fillna(0.0)
+    diag["excluded_national"] = diag["source_national"] if not spread_national else 0.0
+    diag["excluded_unmapped"] = diag["source_unmapped"] if not spread_unmapped else 0.0
+    diag["excluded_total"] = diag["excluded_national"] + diag["excluded_unmapped"]
+    diag = diag.reset_index()
+    return distributed, diag
 
 
 def region_baselines(mapping: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]:
@@ -1041,7 +1335,10 @@ def _benefit_region_from_raw_result(
     mapping_df: pd.DataFrame,
     years: List[int],
     regions: List[str],
-) -> Optional[pd.DataFrame]:
+    *,
+    spread_national: bool,
+    spread_unmapped: bool,
+) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
     benefit_matrix = raw_result.get("benefit_by_project_total")
     if not isinstance(benefit_matrix, pd.DataFrame) or benefit_matrix.empty:
         benefit_matrix = _total_benefit_matrix_from_dim(
@@ -1088,10 +1385,21 @@ def _benefit_region_from_raw_result(
     mapping_norm = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = long.merge(mapping_norm, on="project_norm", how="left")
     benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
-    benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
+    benefit_proj, benefit_diag = _apply_region_spread_policy(
+        benefit_proj,
+        year_col="Year",
+        region_col="region",
+        value_col="Benefit_Year",
+        spread_national=spread_national,
+        spread_unmapped=spread_unmapped,
+    )
 
     region_list = list(regions)
-    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+    if (
+        UNMAPPED_REGION_LABEL in benefit_proj["region"].values
+        and UNMAPPED_REGION_LABEL not in region_list
+        and spread_unmapped
+    ):
         region_list.append(UNMAPPED_REGION_LABEL)
 
     benefit_region = benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
@@ -1114,7 +1422,7 @@ def _benefit_region_from_raw_result(
     benefit_region["BenefitShare_Cum"] = _safe_divide(
         benefit_region["Benefit_Cum_Region"], benefit_region["Benefit_Cum_National"]
     ).fillna(0.0)
-    return benefit_region
+    return benefit_region, benefit_diag
 
 def _extract_total_benefit_map(benefit_df: pd.DataFrame) -> Dict[str, List[float]]:
     if benefit_df is None or benefit_df.empty or "Project" not in benefit_df.columns:
@@ -1154,7 +1462,10 @@ def _compute_region_benefit_metrics(
     mapping_df: pd.DataFrame,
     years: List[int],
     regions: List[str],
-) -> Optional[pd.DataFrame]:
+    *,
+    spread_national: bool,
+    spread_unmapped: bool,
+) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
     meta = getattr(data, "scenario_meta_by_code", {}).get(scenario_code)
     sheet_name = _benefit_scenario_sheet(meta)
     if not sheet_name:
@@ -1197,9 +1508,20 @@ def _compute_region_benefit_metrics(
     region_lookup = mapping_df[["project_norm", "region"]].drop_duplicates()
     benefit_proj = benefit_proj.merge(region_lookup, on="project_norm", how="left")
     benefit_proj["region"] = benefit_proj["region"].fillna(UNMAPPED_REGION_LABEL).replace({"": UNMAPPED_REGION_LABEL})
-    benefit_proj = _distribute_national_rows(benefit_proj, region_col="region", value_col="Benefit_Year")
+    benefit_proj, benefit_diag = _apply_region_spread_policy(
+        benefit_proj,
+        year_col="Year",
+        region_col="region",
+        value_col="Benefit_Year",
+        spread_national=spread_national,
+        spread_unmapped=spread_unmapped,
+    )
     region_list = list(regions)
-    if UNMAPPED_REGION_LABEL in benefit_proj["region"].values and UNMAPPED_REGION_LABEL not in region_list:
+    if (
+        UNMAPPED_REGION_LABEL in benefit_proj["region"].values
+        and UNMAPPED_REGION_LABEL not in region_list
+        and spread_unmapped
+    ):
         region_list.append(UNMAPPED_REGION_LABEL)
     benefit_region = (
         benefit_proj.groupby(["Year", "region"], as_index=False)["Benefit_Year"].sum()
@@ -1224,12 +1546,14 @@ def _compute_region_benefit_metrics(
     benefit_region["BenefitShare_Cum"] = _safe_divide(
         benefit_region["Benefit_Cum_Region"], benefit_region["Benefit_Cum_National"]
     ).fillna(0.0)
-    return benefit_region
+    return benefit_region, benefit_diag
 def compute_region_metrics(
     data: DashboardData,
     scenario_code: str,
     *,
     mapping: Optional[pd.DataFrame] = None,
+    spread_national: bool = True,
+    spread_unmapped: bool = True,
 ) -> pd.DataFrame:
     """Compute annual spend/benefit metrics per region for a scenario."""
     if scenario_code is None:
@@ -1286,11 +1610,22 @@ def compute_region_metrics(
     merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["join_key", "join_key_norm"]] = ""
     merged.loc[merged["region"] == UNMAPPED_REGION_LABEL, ["population", "gdp_per_capita"]] = np.nan
 
-    merged = _distribute_national_rows(merged, region_col="region", value_col="Spend_M")
+    merged, spend_diag = _apply_region_spread_policy(
+        merged,
+        year_col="Year",
+        region_col="region",
+        value_col="Spend_M",
+        spread_national=spread_national,
+        spread_unmapped=spread_unmapped,
+    )
 
     region_spend = merged.groupby(["Year", "region"], as_index=False)["Spend_M"].sum()
 
-    if (merged["region"] == UNMAPPED_REGION_LABEL).any() and UNMAPPED_REGION_LABEL not in region_info["region"].values:
+    if (
+        spread_unmapped
+        and (merged["region"] == UNMAPPED_REGION_LABEL).any()
+        and UNMAPPED_REGION_LABEL not in region_info["region"].values
+    ):
         extra = pd.DataFrame(
             {
                 "region": [UNMAPPED_REGION_LABEL],
@@ -1388,6 +1723,7 @@ def compute_region_metrics(
         "BenefitShare_Cum",
     ]
     benefit_frame = None
+    benefit_diag = pd.DataFrame()
     scenario_meta_lookup = getattr(data, "scenario_meta_by_code", {})
     meta = scenario_meta_lookup.get(scenario_code)
     raw_results = getattr(data, "raw_results", {})
@@ -1396,20 +1732,28 @@ def compute_region_metrics(
         if stem:
             raw_result = raw_results.get(stem)
             if raw_result is not None:
-                benefit_frame = _benefit_region_from_raw_result(
+                benefit_bundle = _benefit_region_from_raw_result(
                     raw_result,
                     mapping_df,
                     years_present,
                     all_regions,
+                    spread_national=spread_national,
+                    spread_unmapped=spread_unmapped,
                 )
+                if benefit_bundle is not None:
+                    benefit_frame, benefit_diag = benefit_bundle
     if benefit_frame is None:
-        benefit_frame = _compute_region_benefit_metrics(
+        benefit_bundle = _compute_region_benefit_metrics(
             data,
             scenario_code,
             mapping_df,
             years_present,
             all_regions,
+            spread_national=spread_national,
+            spread_unmapped=spread_unmapped,
         )
+        if benefit_bundle is not None:
+            benefit_frame, benefit_diag = benefit_bundle
     if benefit_frame is not None:
         region_spend = region_spend.merge(
             benefit_frame[["Year", "region"] + benefit_cols],
@@ -1421,6 +1765,73 @@ def compute_region_metrics(
             region_spend[col] = 0.0
     for col in benefit_cols:
         region_spend[col] = pd.to_numeric(region_spend[col], errors="coerce").fillna(0.0)
+
+    if spend_diag is None or spend_diag.empty:
+        spend_diag = pd.DataFrame({"Year": years_present})
+        spend_diag["full_total"] = 0.0
+        spend_diag["source_national"] = 0.0
+        spend_diag["source_unmapped"] = 0.0
+        spend_diag["included_total"] = 0.0
+        spend_diag["excluded_national"] = 0.0
+        spend_diag["excluded_unmapped"] = 0.0
+        spend_diag["excluded_total"] = 0.0
+    else:
+        spend_diag = spend_diag.rename(columns={"Year": "Year"})
+    spend_diag = spend_diag.sort_values("Year").copy()
+    spend_diag["full_total_cum"] = spend_diag["full_total"].cumsum()
+    spend_diag["included_total_cum"] = spend_diag["included_total"].cumsum()
+    spend_diag["excluded_total_cum"] = spend_diag["excluded_total"].cumsum()
+    spend_diag_idx = spend_diag.set_index("Year")
+
+    if benefit_diag is None or benefit_diag.empty:
+        benefit_diag = pd.DataFrame({"Year": years_present})
+        benefit_diag["full_total"] = 0.0
+        benefit_diag["source_national"] = 0.0
+        benefit_diag["source_unmapped"] = 0.0
+        benefit_diag["included_total"] = 0.0
+        benefit_diag["excluded_national"] = 0.0
+        benefit_diag["excluded_unmapped"] = 0.0
+        benefit_diag["excluded_total"] = 0.0
+    else:
+        benefit_diag = benefit_diag.rename(columns={"Year": "Year"})
+    benefit_diag = benefit_diag.sort_values("Year").copy()
+    benefit_diag["full_total_cum"] = benefit_diag["full_total"].cumsum()
+    benefit_diag["included_total_cum"] = benefit_diag["included_total"].cumsum()
+    benefit_diag["excluded_total_cum"] = benefit_diag["excluded_total"].cumsum()
+    benefit_diag_idx = benefit_diag.set_index("Year")
+
+    spend_diag_columns = {
+        "Spend_Full_Year": "full_total",
+        "Spend_Source_National_Year": "source_national",
+        "Spend_Source_Unmapped_Year": "source_unmapped",
+        "Spend_Included_Year": "included_total",
+        "Spend_Excluded_National_Year": "excluded_national",
+        "Spend_Excluded_Unmapped_Year": "excluded_unmapped",
+        "Spend_Excluded_Year": "excluded_total",
+        "Spend_Full_Cum": "full_total_cum",
+        "Spend_Included_Cum": "included_total_cum",
+        "Spend_Excluded_Cum": "excluded_total_cum",
+    }
+    for output_col, source_col in spend_diag_columns.items():
+        region_spend[output_col] = region_spend["Year"].map(spend_diag_idx[source_col]).fillna(0.0)
+
+    benefit_diag_columns = {
+        "Benefit_Full_Year": "full_total",
+        "Benefit_Source_National_Year": "source_national",
+        "Benefit_Source_Unmapped_Year": "source_unmapped",
+        "Benefit_Included_Year": "included_total",
+        "Benefit_Excluded_National_Year": "excluded_national",
+        "Benefit_Excluded_Unmapped_Year": "excluded_unmapped",
+        "Benefit_Excluded_Year": "excluded_total",
+        "Benefit_Full_Cum": "full_total_cum",
+        "Benefit_Included_Cum": "included_total_cum",
+        "Benefit_Excluded_Cum": "excluded_total_cum",
+    }
+    for output_col, source_col in benefit_diag_columns.items():
+        region_spend[output_col] = region_spend["Year"].map(benefit_diag_idx[source_col]).fillna(0.0)
+
+    region_spend["Spread_National_Enabled"] = bool(spread_national)
+    region_spend["Spread_Unmapped_Enabled"] = bool(spread_unmapped)
 
     region_spend.rename(
         columns={
@@ -1438,6 +1849,16 @@ def compute_region_metrics(
             "Spend_National",
             "Spend_Cum_Region",
             "Spend_Cum_National",
+            "Spend_Full_Year",
+            "Spend_Source_National_Year",
+            "Spend_Source_Unmapped_Year",
+            "Spend_Included_Year",
+            "Spend_Excluded_National_Year",
+            "Spend_Excluded_Unmapped_Year",
+            "Spend_Excluded_Year",
+            "Spend_Full_Cum",
+            "Spend_Included_Cum",
+            "Spend_Excluded_Cum",
             "Share_Year",
             "Share_Cum",
             "PerCap_Year",
@@ -1451,8 +1872,20 @@ def compute_region_metrics(
             "Benefit_National",
             "Benefit_Cum_Region",
             "Benefit_Cum_National",
+            "Benefit_Full_Year",
+            "Benefit_Source_National_Year",
+            "Benefit_Source_Unmapped_Year",
+            "Benefit_Included_Year",
+            "Benefit_Excluded_National_Year",
+            "Benefit_Excluded_Unmapped_Year",
+            "Benefit_Excluded_Year",
+            "Benefit_Full_Cum",
+            "Benefit_Included_Cum",
+            "Benefit_Excluded_Cum",
             "BenefitShare_Year",
             "BenefitShare_Cum",
+            "Spread_National_Enabled",
+            "Spread_Unmapped_Enabled",
             "population",
             "gdp_per_capita",
         ]
