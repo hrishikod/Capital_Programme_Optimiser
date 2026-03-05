@@ -71,6 +71,8 @@ dbutils.widgets.dropdown("optimizer", "cp-sat",
                          ["cp-sat", "optimizer"], "Optimizer Backend")
 dbutils.widgets.text("time_limit", "300.0", "Time Limit (s)")
 dbutils.widgets.text("workers", "0", "Num Workers")
+dbutils.widgets.dropdown("run_permutations", "false", [
+                         "false", "true"], "Run Cost/Benefit Permutations")
 dbutils.widgets.text("costs_path", "input/costs.csv", "Costs CSV Path")
 dbutils.widgets.text(
     "benefits_path", "input/benefits.csv", "Benefits CSV Path")
@@ -99,6 +101,8 @@ args.overflow_tiers = dbutils.widgets.get("overflow_tiers")
 args.optimizer = dbutils.widgets.get("optimizer")
 args.time_limit = float(dbutils.widgets.get("time_limit"))
 args.workers = int(dbutils.widgets.get("workers"))
+args.run_permutations = dbutils.widgets.get(
+    "run_permutations").strip().lower() == "true"
 args.costs_path = dbutils.widgets.get("costs_path")
 args.benefits_path = dbutils.widgets.get("benefits_path")
 args.output_dir = dbutils.widgets.get("output_dir")
@@ -203,6 +207,11 @@ with mlflow.start_run(run_name=f"opt_{args.dimension}_{args.funding_level}"):
         lp_file = outputs.get("lp_file")
         if lp_file and os.path.exists(lp_file):
             mlflow.log_artifact(lp_file, artifact_path="model")
+
+        permutation_summary_file = outputs.get("permutation_summary")
+        if permutation_summary_file and os.path.exists(permutation_summary_file):
+            mlflow.log_artifact(permutation_summary_file,
+                                artifact_path="output_data")
 
         # Also log the log file
         log_file = outputs.get("log_file") or getattr(result, "log_file", None)
