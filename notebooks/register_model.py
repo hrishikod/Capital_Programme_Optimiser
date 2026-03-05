@@ -1,169 +1,261 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Model Registration Notebook
-# MAGIC This notebook registers trained optimization models from MLflow runs to the model registry.
+# MAGIC # Register Optimiser Model in MLflow
+# MAGIC This notebook registers the `model/` artifact from an existing optimiser run.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Set up dependencies
+# MAGIC ## Imports
 
 # COMMAND ----------
 
-import json
-import os
-import sys
-from pathlib import Path
+import time
 
 import mlflow
+import pandas as pd
 from mlflow.tracking import MlflowClient
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Configure project paths
+# MAGIC ## Parameters
 
 # COMMAND ----------
 
-# Detect project root
-cwd = Path(os.getcwd())
-if (cwd / "src").exists():
-    project_root = cwd
-elif (cwd.parent / "src").exists():
-    project_root = cwd.parent
-else:
-    project_root = cwd.parent
+dbutils.widgets.text("run_id", "", "Run ID (required)")
+dbutils.widgets.text(
+    "model_name", "capital-programme-optimizer", "Registered Model Name")
+dbutils.widgets.dropdown("target_stage", "Staging", [
+                         "None", "Staging", "Production", "Archived"], "Target Stage")
+dbutils.widgets.dropdown("archive_existing_versions", "false", [
+                         "false", "true"], "Archive existing in target stage")
+dbutils.widgets.text("version_description", "",
+                     "Version Description (optional)")
+dbutils.widgets.dropdown("preflight_load", "true", [
+                         "true", "false"], "Preflight model load check")
+dbutils.widgets.dropdown("preflight_predict", "false", [
+                         "false", "true"], "Optional preflight predict smoke test")
 
-print(f"Current Working Directory: {cwd}")
-print(f"Detected Project Root: {project_root}")
+RUN_ID = dbutils.widgets.get("run_id").strip()
+MODEL_NAME = dbutils.widgets.get("model_name").strip()
+TARGET_STAGE = dbutils.widgets.get("target_stage").strip()
+ARCHIVE_EXISTING = dbutils.widgets.get(
+    "archive_existing_versions").strip().lower() == "true"
+VERSION_DESCRIPTION = dbutils.widgets.get("version_description").strip()
+PREFLIGHT_LOAD = dbutils.widgets.get(
+    "preflight_load").strip().lower() == "true"
+PREFLIGHT_PREDICT = dbutils.widgets.get(
+    "preflight_predict").strip().lower() == "true"
+
+if not RUN_ID:
+    raise ValueError(
+        "run_id is required. Paste the run ID from gps_programme_optimizer output/MLflow run page.")
+
+if not MODEL_NAME:
+    raise ValueError("model_name is required.")
+
+MODEL_URI = f"runs:/{RUN_ID}/model"
+
+# Use legacy Workspace Model Registry (non-Unity Catalog)
+mlflow.set_registry_uri("databricks")
+
+print(f"Run ID: {RUN_ID}")
+print(f"Model URI: {MODEL_URI}")
+print(f"Registered Model: {MODEL_NAME}")
+print(f"Target Stage: {TARGET_STAGE}")
+
+
+print("Registry URI: databricks (Will have to change for Unity Catalog)")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Define parameters
-
-# COMMAND ----------
-
-# Define parameters for model registration
-# Provide the run_id from the optimization run output
-
-RUN_ID = None  # Set this to the run ID from gps_programme_optimizer.py, e.g., "abc123def456"
-
-# Model registry settings
-MODEL_NAME = "capital-programme-optimizer"  # Set a descriptive model name
-MODEL_STAGE = "Staging"  # Options: "None", "Staging", "Production", "Archived"
-
-print(f"Model Name: {MODEL_NAME}")
-print(f"Target Stage: {MODEL_STAGE}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Search for optimization run
+# MAGIC ## Validate run and model artifact
 
 # COMMAND ----------
 
 client = MlflowClient()
 
-# Get the run from the provided RUN_ID
-if not RUN_ID:
-    print("Error: RUN_ID must be set. Copy the run ID from gps_programme_optimizer.py output.")
-    run = None
-else:
+try:
     run = client.get_run(RUN_ID)
-    print(f"Using run ID: {RUN_ID}")
-    print(f"\nRun Details:")
-    print(f"  Status: {run.info.status}")
-    print(f"  Params: {run.data.params}")
-    print(f"  Metrics: {run.data.metrics}")
+except Exception as exc:
+    raise RuntimeError(f"Unable to fetch run '{RUN_ID}'.") from exc
 
-# COMMAND ----------
+print("Run found.")
+print(f"Run status: {run.info.status}")
 
-# MAGIC %md
-# MAGIC ## Register model from run
+model_artifacts = client.list_artifacts(RUN_ID, "model")
+if not model_artifacts:
+    root_artifacts = client.list_artifacts(RUN_ID)
+    available = [a.path for a in root_artifacts]
+    raise RuntimeError(
+        "No MLflow model artifact found at 'model/'. "
+        f"Available top-level artifacts: {available}"
+    )
 
-# COMMAND ----------
+print("Model artifact directory exists:")
+for item in model_artifacts:
+    print(f"  - {item.path}")
 
-if run:
+if PREFLIGHT_LOAD:
+    print("Running preflight model load check...")
     try:
-        # Get the model URI from the run
-        model_uri = f"runs:/{run.info.run_id}/model"
+        loaded_model = mlflow.pyfunc.load_model(MODEL_URI)
+        print("Preflight load passed.")
 
-        # Check if model artifacts exist in the run
-        artifacts = client.list_artifacts(run.info.run_id, "model")
-        if artifacts:
-            print(f"Model artifacts found in run:")
-            for artifact in artifacts:
-                print(f"  - {artifact.path}")
-        else:
-            print("Warning: No model artifacts found in 'model' directory")
-            # List all artifacts to see what's available
-            all_artifacts = client.list_artifacts(run.info.run_id)
-            print(f"Available artifacts:")
-            for artifact in all_artifacts:
-                print(f"  - {artifact.path}")
-    except Exception as e:
-        print(f"Error checking artifacts: {e}")
+        if PREFLIGHT_PREDICT:
+            print("Running optional preflight predict smoke test...")
 
-# COMMAND ----------
+            def _to_bool(value, default=False):
+                if value is None:
+                    return default
+                return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
-# MAGIC %md
-# MAGIC ## Create and register model version
-
-# COMMAND ----------
-
-if run:
-    try:
-        # Register the model
-        model_uri = f"runs:/{run.info.run_id}/model"
-
-        model_version = mlflow.register_model(model_uri, MODEL_NAME)
-        print(f"Model registered successfully!")
-        print(f"  Model Name: {MODEL_NAME}")
-        print(f"  Version: {model_version.version}")
-        print(f"  URI: {model_uri}")
-
-        # Update model metadata with run details
-        description = f"Registered from run {run.info.run_id}"
-        client.update_model_version(
-            name=MODEL_NAME,
-            version=model_version.version,
-            description=description
-        )
-        print(f"  Description updated")
-
-        # Transition to target stage
-        if MODEL_STAGE and MODEL_STAGE != "None":
-            client.transition_model_version_stage(
-                name=MODEL_NAME,
-                version=model_version.version,
-                stage=MODEL_STAGE,
-                archive_existing_versions=False
+            params = run.data.params
+            smoke_input = pd.DataFrame(
+                [
+                    {
+                        "funding_level": float(params.get("funding_level", 1500.0)),
+                        "dimension": params.get("dimension", "Total"),
+                        "start_year": int(params.get("start_year", 2026)),
+                        "horizon": int(params.get("horizon", 2)),
+                        "overflow_tiers": params.get(
+                            "overflow_tiers", "0.12:1000,0.15:4000,0.20:12000"
+                        ),
+                        "optimizer": params.get("optimizer", "cp-sat"),
+                        "time_limit": float(params.get("time_limit", 1.0)),
+                        "workers": int(params.get("workers", 0)),
+                        "costs_path": params.get("costs_path", "input/costs.csv"),
+                        "benefits_path": params.get("benefits_path", "input/benefits.csv"),
+                        "output_dir": params.get("output_dir", "output"),
+                        "generate_only": _to_bool(params.get("generate_only"), default=True),
+                        "relax": _to_bool(params.get("relax"), default=False),
+                    }
+                ]
             )
-            print(f"  Transitioned to stage: {MODEL_STAGE}")
 
-    except Exception as e:
-        print(f"Error registering model: {e}")
-        print(f"Model artifacts may not exist in the run. Ensure gps_programme_optimizer.py logs the model artifacts.")
-else:
-    print("No run available for registration")
+            _ = loaded_model.predict(smoke_input)
+            print("Preflight predict smoke test passed.")
+    except Exception as exc:
+        root_message = str(exc)
+        hints = [
+            "Model artifact exists but failed to load with mlflow.pyfunc.load_model.",
+            f"Root error: {type(exc).__name__}: {root_message}",
+        ]
+
+        if "No module named 'mlflow_model'" in root_message:
+            hints.append(
+                "This run was likely logged before the by-value packaging fix. "
+                "Re-run gps_programme_optimizer.py to create a new run, then register that new run ID."
+            )
+
+        if "ortools" in root_message.lower() or "uninstalled" in root_message.lower():
+            hints.append(
+                "Install dependencies from the model artifact environment, or run this notebook in an environment with ortools available."
+            )
+
+        if "No module named 'src'" in root_message or "No module named 'main'" in root_message:
+            hints.append(
+                "The model code import path is incompatible with this environment. Re-log the model with latest src/mlflow_model.py and retry registration."
+            )
+
+        raise RuntimeError(" ".join(hints)) from exc
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## List registered models
+# MAGIC ## Ensure registered model exists
 
 # COMMAND ----------
 
-# Show all registered models and their versions
-models = client.search_registered_models()
-print(f"Registered Models ({len(models)}):")
-print()
+try:
+    client.get_registered_model(MODEL_NAME)
+    print(f"Registered model already exists: {MODEL_NAME}")
+except Exception:
+    client.create_registered_model(MODEL_NAME)
+    print(f"Created registered model: {MODEL_NAME}")
 
-for model in models:
-    print(f"Model: {model.name}")
-    print(
-        f"  Latest version: {model.latest_versions[0].version if model.latest_versions else 'N/A'}")
-    for version in model.latest_versions:
-        print(f"    Version {version.version}: {version.current_stage}")
-    print()
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Register or reuse model version
+
+# COMMAND ----------
+
+existing_versions = client.search_model_versions(f"name = '{MODEL_NAME}'")
+matching_version = None
+for mv in existing_versions:
+    mv_run_id = getattr(mv, "run_id", None)
+    mv_source = getattr(mv, "source", "") or ""
+    if mv_run_id == RUN_ID or mv_source.endswith(f"/{RUN_ID}/artifacts/model"):
+        matching_version = mv
+        break
+
+if matching_version:
+    version_number = str(matching_version.version)
+    print(f"Reusing existing version {version_number} for run {RUN_ID}")
+else:
+    created = mlflow.register_model(model_uri=MODEL_URI, name=MODEL_NAME)
+    version_number = str(created.version)
+    print(f"Registered new model version: {version_number}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Wait for READY and apply metadata/stage
+
+# COMMAND ----------
+
+for _ in range(30):
+    details = client.get_model_version(name=MODEL_NAME, version=version_number)
+    if details.status == "READY":
+        break
+    time.sleep(1)
+
+details = client.get_model_version(name=MODEL_NAME, version=version_number)
+if details.status != "READY":
+    raise RuntimeError(
+        f"Model version {version_number} not READY after waiting. Current status: {details.status}"
+    )
+
+description = VERSION_DESCRIPTION or f"Registered from run {RUN_ID}"
+client.update_model_version(
+    name=MODEL_NAME,
+    version=version_number,
+    description=description,
+)
+
+client.set_model_version_tag(
+    MODEL_NAME, version_number, "source_run_id", RUN_ID)
+client.set_model_version_tag(
+    MODEL_NAME, version_number, "source_model_uri", MODEL_URI)
+
+if TARGET_STAGE != "None":
+    client.transition_model_version_stage(
+        name=MODEL_NAME,
+        version=version_number,
+        stage=TARGET_STAGE,
+        archive_existing_versions=ARCHIVE_EXISTING,
+    )
+    print(f"Transitioned version {version_number} to stage: {TARGET_STAGE}")
+else:
+    print("Stage transition skipped (target_stage=None).")
+
+print("Registration pipeline complete.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Summary
+
+# COMMAND ----------
+
+summary = client.get_model_version(name=MODEL_NAME, version=version_number)
+print("Registration Summary")
+print(f"  Name: {summary.name}")
+print(f"  Version: {summary.version}")
+print(f"  Status: {summary.status}")
+print(f"  Stage: {summary.current_stage}")
+print(f"  Run ID: {summary.run_id}")
+print(f"  Source: {summary.source}")
