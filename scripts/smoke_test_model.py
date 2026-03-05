@@ -25,6 +25,22 @@ DEFAULT_ROW = {
     "relax": False,
 }
 
+SCHEMA_TYPE_MAP = {
+    "funding_level": "float64",
+    "dimension": "string",
+    "start_year": "int64",
+    "horizon": "int64",
+    "overflow_tiers": "string",
+    "optimizer": "string",
+    "time_limit": "float64",
+    "workers": "int64",
+    "costs_path": "string",
+    "benefits_path": "string",
+    "output_dir": "string",
+    "generate_only": "bool",
+    "relax": "bool",
+}
+
 
 def _load_dataframe_from_payload(payload_path: Path) -> pd.DataFrame:
     with payload_path.open("r", encoding="utf-8") as f:
@@ -49,6 +65,27 @@ def _resolve_model_uri(run_id: str | None, model_uri: str | None) -> str:
     if run_id:
         return f"runs:/{run_id}/model"
     raise ValueError("Provide either --run-id or --model-uri.")
+
+
+def _coerce_input_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce input columns to the exact MLflow model signature dtypes."""
+    missing = [c for c in SCHEMA_TYPE_MAP if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required input columns: {missing}")
+
+    out = df.copy()
+    for col, dtype in SCHEMA_TYPE_MAP.items():
+        if dtype == "float64":
+            out[col] = pd.to_numeric(
+                out[col], errors="raise").astype("float64")
+        elif dtype == "int64":
+            out[col] = pd.to_numeric(out[col], errors="raise").astype("int64")
+        elif dtype == "bool":
+            out[col] = out[col].astype("bool")
+        elif dtype == "string":
+            out[col] = out[col].astype("string")
+
+    return out[list(SCHEMA_TYPE_MAP.keys())]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,6 +159,8 @@ def main() -> int:
                 }
             ]
         )
+
+    df = _coerce_input_schema(df)
 
     model = mlflow.pyfunc.load_model(uri)
     prediction = model.predict(df)
