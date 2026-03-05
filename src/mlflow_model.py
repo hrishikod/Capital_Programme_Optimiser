@@ -22,8 +22,19 @@ class OptimizerPyFuncModel(mlflow.pyfunc.PythonModel):
         except Exception:
             return value
 
+    def _load_run_optimization(self):
+        """Support both local src package layout and code_paths-based model packaging."""
+        try:
+            from main import run_optimization
+
+            return run_optimization
+        except Exception:
+            from src.main import run_optimization
+
+            return run_optimization
+
     def predict(self, context, model_input):
-        from src.main import run_optimization
+        run_optimization = self._load_run_optimization()
 
         if isinstance(model_input, pd.DataFrame):
             records = model_input.to_dict(orient="records")
@@ -44,7 +55,13 @@ class OptimizerPyFuncModel(mlflow.pyfunc.PythonModel):
             result, written_outputs = run_optimization(args)
 
             if result:
-                total_spend = float(result.spend_profile.iloc[0, :].sum())
+                total_spend = None
+                spend_profile = getattr(result, "spend_profile", None)
+                if spend_profile is not None and not spend_profile.empty:
+                    total_spend = float(spend_profile.iloc[0, :].sum())
+
+                log_file = written_outputs.get("log_file") or getattr(
+                    result, "log_file", None)
                 outputs.append(
                     {
                         "status": result.status,
@@ -53,13 +70,14 @@ class OptimizerPyFuncModel(mlflow.pyfunc.PythonModel):
                         "total_spend": total_spend,
                         "schedule_file": written_outputs.get("schedule"),
                         "cash_flow_file": written_outputs.get("cash_flow"),
-                        "log_file": written_outputs.get("log_file"),
+                        "log_file": log_file,
                     }
                 )
             else:
+                status = "NOT_RUN" if merged.get("generate_only", False) else "FAILED"
                 outputs.append(
                     {
-                        "status": "FAILED",
+                        "status": status,
                         "objective_value": None,
                         "gap": None,
                         "total_spend": None,

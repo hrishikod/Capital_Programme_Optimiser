@@ -13,6 +13,7 @@
 import time
 
 import mlflow
+import pandas as pd
 from mlflow.tracking import MlflowClient
 
 # COMMAND ----------
@@ -33,6 +34,8 @@ dbutils.widgets.text("version_description", "",
                      "Version Description (optional)")
 dbutils.widgets.dropdown("preflight_load", "true", [
                          "true", "false"], "Preflight model load check")
+dbutils.widgets.dropdown("preflight_predict", "false", [
+                         "false", "true"], "Optional preflight predict smoke test")
 
 RUN_ID = dbutils.widgets.get("run_id").strip()
 MODEL_NAME = dbutils.widgets.get("model_name").strip()
@@ -42,6 +45,8 @@ ARCHIVE_EXISTING = dbutils.widgets.get(
 VERSION_DESCRIPTION = dbutils.widgets.get("version_description").strip()
 PREFLIGHT_LOAD = dbutils.widgets.get(
     "preflight_load").strip().lower() == "true"
+PREFLIGHT_PREDICT = dbutils.widgets.get(
+    "preflight_predict").strip().lower() == "true"
 
 if not RUN_ID:
     raise ValueError(
@@ -96,8 +101,42 @@ for item in model_artifacts:
 if PREFLIGHT_LOAD:
     print("Running preflight model load check...")
     try:
-        _ = mlflow.pyfunc.load_model(MODEL_URI)
+        loaded_model = mlflow.pyfunc.load_model(MODEL_URI)
         print("Preflight load passed.")
+
+        if PREFLIGHT_PREDICT:
+            print("Running optional preflight predict smoke test...")
+
+            def _to_bool(value, default=False):
+                if value is None:
+                    return default
+                return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+            params = run.data.params
+            smoke_input = pd.DataFrame(
+                [
+                    {
+                        "funding_level": float(params.get("funding_level", 1500.0)),
+                        "dimension": params.get("dimension", "Total"),
+                        "start_year": int(params.get("start_year", 2026)),
+                        "horizon": int(params.get("horizon", 2)),
+                        "overflow_tiers": params.get(
+                            "overflow_tiers", "0.12:1000,0.15:4000,0.20:12000"
+                        ),
+                        "optimizer": params.get("optimizer", "cp-sat"),
+                        "time_limit": float(params.get("time_limit", 1.0)),
+                        "workers": int(params.get("workers", 0)),
+                        "costs_path": params.get("costs_path", "input/costs.csv"),
+                        "benefits_path": params.get("benefits_path", "input/benefits.csv"),
+                        "output_dir": params.get("output_dir", "output"),
+                        "generate_only": _to_bool(params.get("generate_only"), default=True),
+                        "relax": _to_bool(params.get("relax"), default=False),
+                    }
+                ]
+            )
+
+            _ = loaded_model.predict(smoke_input)
+            print("Preflight predict smoke test passed.")
     except Exception as exc:
         root_message = str(exc)
         hints = [
@@ -114,6 +153,11 @@ if PREFLIGHT_LOAD:
         if "ortools" in root_message.lower() or "uninstalled" in root_message.lower():
             hints.append(
                 "Install dependencies from the model artifact environment, or run this notebook in an environment with ortools available."
+            )
+
+        if "No module named 'src'" in root_message or "No module named 'main'" in root_message:
+            hints.append(
+                "The model code import path is incompatible with this environment. Re-log the model with latest src/mlflow_model.py and retry registration."
             )
 
         raise RuntimeError(" ".join(hints)) from exc
