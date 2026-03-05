@@ -8,7 +8,6 @@ from pathlib import Path
 import mlflow
 import pandas as pd
 
-
 DEFAULT_ROW = {
     "funding_level": 1500,
     "dimension": "Total",
